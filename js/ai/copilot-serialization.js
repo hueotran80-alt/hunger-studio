@@ -154,6 +154,10 @@ export function sanitizeScenePayload(payload) {
       if (geometry && typeof geometry === 'object') {
         cleanMaterials(geometry.userData);
         if (geometry.userData !== undefined) geometry.userData = safeUserData(geometry.userData);
+        if (geometry.data && typeof geometry.data === 'object') {
+          delete geometry.data.boundingSphere;
+          delete geometry.data.boundingBox;
+        }
       }
     }
   }

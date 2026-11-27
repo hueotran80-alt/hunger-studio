@@ -135,7 +135,8 @@ jobs:
 
       - name: Run 14 Browser Suites + dist/ E2E Gate
         env:
-          SUITE_TIMEOUT_SEC: "600"
+          SUITE_TIMEOUT_SEC: "240"
+          PATHTRACE_TIMEOUT_SEC: "900"
         run: |
           npm run test:browser
           npm run test:dist

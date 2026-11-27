@@ -561,5 +561,16 @@ await test('AICopilot đánh dấu lỗi Worker CSP là không thể auto-repair
   }
 });
 
+await test('Serializer ignores volatile lazy boundingSphere/boundingBox caches', () => {
+  const root = new THREE.Group();
+  const mesh = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshStandardMaterial());
+  root.add(mesh);
+  const before = JSON.stringify(serializeScene(root));
+  mesh.geometry.computeBoundingSphere();
+  mesh.geometry.computeBoundingBox();
+  const after = JSON.stringify(serializeScene(root));
+  assert.equal(after, before);
+});
+
 console.log(`\nCopilot Worker isolation: ${passed} passed, ${failed} failed`);
 if (failed > 0) process.exitCode = 1;
