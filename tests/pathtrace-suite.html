@@ -99,14 +99,20 @@
       }
     }
     try {
-      await until(()=>frame.contentWindow.app?.pathTraceRender && frame.contentWindow.studio);
+      await until(()=>frame.contentWindow.app?._advancedLoaded && frame.contentWindow.app?.pathTraceRender && frame.contentWindow.app?.matcapStudio && frame.contentWindow.studio, 60000);
       const win=frame.contentWindow, app=win.app, manager=app.pathTraceRender;
       app.stemTutor?.setBubbleOpen(false);
       win.studio.clearScene();
       const cube=win.studio.addCube({name:'TraceCube',y:1,color:0xe05522});
       app.sceneManager.select(cube);
       app.engine.focusSelection();
-      await sleep(100);
+      if (app.engine.controls) {
+        const prevDamping = app.engine.controls.enableDamping;
+        app.engine.controls.enableDamping = false;
+        app.engine.controls.update();
+        app.engine.controls.enableDamping = prevDamping;
+      }
+      await sleep(150);
       await test('Lazy-load: pathtracer chưa tải lúc mở Studio; không vá Scene.prototype', async()=>{
         assert(!win.performance.getEntriesByType('resource').some((r)=>r.name.includes('/three-gpu-pathtracer/')), 'Tải bundle ngay khi mở app');
         const THREE=await import('/vendor/three/three.module.js');

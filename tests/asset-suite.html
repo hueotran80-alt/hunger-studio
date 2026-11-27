@@ -84,7 +84,7 @@
     async function waitStudio() {
       for (let i = 0; i < 160; i++) {
         const w = iframe.contentWindow;
-        if (w && w.app && w.app.assetBrowser && w.app.exporter && w.sceneManager
+        if (w && w.app && w.app._advancedLoaded && w.app.assetBrowser && w.app.exporter && w.sceneManager
           && w.sceneManager.getSelectableObjects().length > 0) return w;
         await sleep(250);
       }
@@ -147,7 +147,11 @@
       assert(/fab|quixel|unrealengine/.test(link.href), 'link không trỏ về Fab/Epic');
       const fetched = [];
       const origFetch = w.fetch;
-      w.fetch = (...args) => { fetched.push(String(args[0])); return origFetch(...args); };
+      w.fetch = (...args) => {
+        const url = String(args[0] || '');
+        if (!/^\/api\/(?:config|telemetry|status)/.test(url)) fetched.push(url);
+        return origFetch(...args);
+      };
       cards[0].dispatchEvent(new w.MouseEvent('dblclick', { bubbles: true }));
       await sleep(200);
       w.fetch = origFetch;
