@@ -123,7 +123,13 @@
     }
     .tpl-card:hover { border-color: #f97316; transform: translateY(-2px); }
     .tpl-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-    .tpl-icon { font-size: 28px; line-height: 1; }
+    .tpl-icon {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 34px; height: 34px; border-radius: 8px;
+      background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.09);
+      color: #e2e8f0;
+    }
+    .tpl-icon svg { width: 18px; height: 18px; stroke: currentColor; fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
     .tpl-badge {
       font-size: 11px; font-weight: 600; padding: 3px 9px; border-radius: 999px;
       background: rgba(56,189,248,0.12); color: #7dd3fc; border: 1px solid rgba(56,189,248,0.28);
@@ -192,16 +198,16 @@
 
   <main class="container">
     <section class="hero">
-      <div class="eyebrow">⚡ 100% Client-Side Rust WASM + WebCodecs · Zero Server GPU</div>
+      <div class="eyebrow">100% Client-Side Rust WASM + WebCodecs · Zero Server GPU</div>
       <h1>Video to <span>Game-Ready 3D Motion</span> in Your Browser.</h1>
       <p>
         Drop any phone or TikTok video, extract full-body pose + 21-point hands + 52 ARKit facial blendshapes with
         Foot-Lock IK, and export clean <strong>.GLB / .FBX / .BVH / 9:16 .MP4</strong> in minutes — your video never leaves your device.
       </p>
       <div class="hero-cta">
-        <a class="btn btn-primary" href="/?workspace=motion" data-cta="hero-motion">🎬 Open Hunger Motion (Free Beta)</a>
-        <a class="btn" href="/?workspace=motion&amp;template=unity_humanoid" data-cta="hero-unity">🎮 Try Unity Humanoid Demo</a>
-        <a class="btn" href="/?workspace=layout" data-cta="hero-advanced">⚙ Open Full 3D Studio</a>
+        <a class="btn btn-primary" href="/?workspace=motion" data-cta="hero-motion">Open Hunger Motion (Free Beta)</a>
+        <a class="btn" href="/?workspace=motion&amp;template=unity_humanoid" data-cta="hero-unity">Try Unity Humanoid Demo</a>
+        <a class="btn" href="/?workspace=layout" data-cta="hero-advanced">Open Full 3D Studio</a>
       </div>
       <div class="trust-strip">
         <span><i class="dot"></i> No install · Runs on Mac, Windows &amp; Chromebook</span>
@@ -219,7 +225,7 @@
         <div class="step-card">
           <div class="step-num">2</div>
           <h3>1-Click Browser AI Mocap</h3>
-          <p>WebCodecs decodes 5× faster while Rust WASM applies 1-Euro smoothing, Foot-Lock IK, and anti-twist stabilization.</p>
+          <p>WebCodecs decodes 5x faster while Rust WASM applies 1-Euro smoothing, Foot-Lock IK, and anti-twist stabilization.</p>
         </div>
         <div class="step-card">
           <div class="step-num">3</div>
@@ -239,7 +245,7 @@
       <div class="templates">
         <article class="tpl-card">
           <div class="tpl-top">
-            <span class="tpl-icon" aria-hidden="true">🎮</span>
+            <span class="tpl-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9L12 3z"/><path d="M12 12l8-4.5M12 12v9M12 12L4 7.5"/></svg></span>
             <span class="tpl-badge">Game Dev · GLB / FBX</span>
           </div>
           <h3>Unity Humanoid</h3>
@@ -254,11 +260,11 @@
 
         <article class="tpl-card">
           <div class="tpl-top">
-            <span class="tpl-icon" aria-hidden="true">🧑‍🎤</span>
+            <span class="tpl-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M5 20a7 7 0 0 1 14 0"/></svg></span>
             <span class="tpl-badge">VTuber · Face + Hands</span>
           </div>
           <h3>VRM / VTuber Avatar</h3>
-          <p>Pre-tuned for VRM (`J_Bip_*` 18/18 bone mapping) with 52 ARKit face blendshapes and 21-point finger solving. Drag-and-drop your own <code>.vrm</code> anytime.</p>
+          <p>Pre-tuned for VRM (<code>J_Bip_*</code> 18/18 bone mapping) with 52 ARKit face blendshapes and 21-point finger solving. Drag-and-drop your own <code>.vrm</code> anytime.</p>
           <ul class="tpl-specs">
             <li>ARKit 52 Face</li>
             <li>30 Finger Bones</li>
@@ -269,7 +275,7 @@
 
         <article class="tpl-card">
           <div class="tpl-top">
-            <span class="tpl-icon" aria-hidden="true">🎵</span>
+            <span class="tpl-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="6" y="2" width="12" height="20" rx="2"/><path d="M10 9l5 3-5 3V9z"/></svg></span>
             <span class="tpl-badge">Creator · 9:16 MP4 + Audio</span>
           </div>
           <h3>TikTok / Shorts Dance</h3>
@@ -293,15 +299,15 @@
       </div>
       <div class="features">
         <div class="feat">
-          <h3>🔒 100% Local Privacy</h3>
+          <h3>100% Local Privacy</h3>
           <p>MediaPipe + Rust <code>mocap_kernel.wasm</code> run directly in your browser. Your raw videos are never uploaded to third-party GPU farms.</p>
         </div>
         <div class="feat">
-          <h3>🦶 True Foot-Lock IK &amp; Bone Heat</h3>
+          <h3>True Foot-Lock IK &amp; Bone Heat</h3>
           <p>Anchors planted feet to eliminate moonwalking, with 1-Euro filtering and circular-median facing alignment for clean loops.</p>
         </div>
         <div class="feat">
-          <h3>🎛 Need Deeper Control? Click Advanced</h3>
+          <h3>Full DCC Suite Under Advanced</h3>
           <p>Unlock F-Curve Bezier Graph Editor, NLA Mixer, Manual Bone Posing (FK/IK), UV/Shader Nodes, WebGPU Cycles-style Path Tracing, and AI Copilot.</p>
         </div>
       </div>
@@ -310,7 +316,7 @@
     <section class="cta-box">
       <h2>Go from Phone Clip to Playable 3D Animation Today</h2>
       <p>Free during Public Beta. No credit card required, no software download, commercial-safe CC0 starter rigs included.</p>
-      <a class="btn btn-primary" href="/?workspace=motion" data-cta="footer-launch">🚀 Launch Hunger Motion Now</a>
+      <a class="btn btn-primary" href="/?workspace=motion" data-cta="footer-launch">Launch Hunger Motion Now</a>
     </section>
   </main>
 

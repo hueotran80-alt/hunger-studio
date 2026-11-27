@@ -85,7 +85,7 @@ class BlenderApp {
       const bar = document.createElement('div');
       bar.id = 'hunger-stale-bundle-banner';
       bar.style.cssText = 'position:fixed;top:12px;left:50%;transform:translateX(-50%);z-index:99999;display:flex;align-items:center;gap:10px;padding:10px 14px;border-radius:8px;background:#1b2130;color:#f3f6fc;border:1px solid #f97316;box-shadow:0 10px 30px rgba(0,0,0,0.55);font:12.5px Inter,system-ui,sans-serif;';
-      bar.innerHTML = '<span>🔄 <strong>Hunger Studio vừa cập nhật phiên bản mới.</strong> Tải lại trang để dùng AI Copilot &amp; Worker mới nhất.</span><button type="button" id="btn-stale-reload" style="padding:5px 11px;border:none;border-radius:6px;background:#f97316;color:#fff;font-weight:600;cursor:pointer;">Tải lại ngay</button>';
+      bar.innerHTML = '<span><strong>Hunger Studio vừa cập nhật phiên bản mới.</strong> Tải lại trang để dùng AI Copilot &amp; Worker mới nhất.</span><button type="button" id="btn-stale-reload" style="padding:5px 11px;border:none;border-radius:6px;background:#f97316;color:#fff;font-weight:600;cursor:pointer;">Tải lại ngay</button>';
       document.body.appendChild(bar);
       bar.querySelector('#btn-stale-reload')?.addEventListener('click', () => window.location.reload());
     });

@@ -59,7 +59,7 @@ export class ExportOptionsDialog {
       if (this.app?.exporter?._exportInProgress) {
         runBtn.textContent = 'Exporting...';
         runBtn.disabled = true;
-        if (statusHint) statusHint.textContent = '⏳ Previous export is finishing cleanup… button will re-enable automatically.';
+        if (statusHint) statusHint.textContent = 'Previous export is finishing cleanup — button will re-enable automatically.';
       } else {
         runBtn.textContent = 'Export Model';
         runBtn.disabled = false;

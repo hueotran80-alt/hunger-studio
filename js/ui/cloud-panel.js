@@ -192,7 +192,7 @@ export class CloudPanel {
         <div class="cp-tabs" role="tablist">
           <button class="cp-tab active" type="button" data-tab="account" role="tab">Account</button>
           <button class="cp-tab" type="button" data-tab="projects" role="tab">Projects</button>
-          <button class="cp-tab" type="button" data-tab="community" role="tab">Community 🌐</button>
+          <button class="cp-tab" type="button" data-tab="community" role="tab">Community</button>
           <button class="cp-tab" type="button" data-tab="credits" role="tab">Credits</button>
         </div>
         <div class="cp-body">
@@ -310,9 +310,9 @@ export class CloudPanel {
               <div class="cp-row between" style="align-items:flex-end">
                 <div class="cp-row">
                   <img id="cp-pub-thumb-preview" class="cp-thumb-preview" alt="Viewport preview" hidden>
-                  <button class="cp-btn" type="button" id="cp-pub-capture">📷 Chụp Viewport</button>
+                  <button class="cp-btn" type="button" id="cp-pub-capture">Chụp Viewport</button>
                 </div>
-                <button class="cp-btn primary" type="button" id="cp-pub-btn">🌐 Đăng lên Hunger Community</button>
+                <button class="cp-btn primary" type="button" id="cp-pub-btn">Đăng lên Hunger Community</button>
               </div>
               <p class="cp-muted" id="cp-pub-hint" style="margin:8px 0 0"></p>
             </div>

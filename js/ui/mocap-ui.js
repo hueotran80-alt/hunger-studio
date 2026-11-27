@@ -125,7 +125,7 @@ export class MocapUI {
             ${listMotionTemplates().map((tpl) => `
               <button type="button" class="mocap-tpl-card" data-template="${tpl.id}" title="${tpl.tagline}">
                 <div class="mocap-tpl-head">
-                  <span>${tpl.icon} ${tpl.name}</span>
+                  <span>${tpl.name}</span>
                   <span class="mocap-tpl-badge">${tpl.badge}</span>
                 </div>
                 <span class="mocap-tpl-desc">${tpl.tagline}</span>
@@ -134,7 +134,7 @@ export class MocapUI {
           </div>
           <div id="mocap-template-hint" class="mocap-mode-banner" style="display:none;">
             <span id="mocap-template-hint-text"></span>
-            <button type="button" id="btn-mocap-open-advanced" class="mp-btn" style="padding:3px 8px;font-size:10.5px;">⚙ Advanced Tools</button>
+            <button type="button" id="btn-mocap-open-advanced" class="mp-btn" style="padding:3px 8px;font-size:10.5px;">Advanced Tools</button>
           </div>
 
           <!-- Primary actions: 1-Click Full Video + Step Actions + Live Progress -->
@@ -205,7 +205,7 @@ export class MocapUI {
                   <select id="mocap-target-character" class="mp-field" style="flex: 1;">
                     <option value="">(Auto-detect rigged character in scene)</option>
                   </select>
-                  <button id="btn-mocap-refresh-targets" class="mp-btn mp-btn--icon" title="Rescan scene characters">🔄</button>
+                  <button id="btn-mocap-refresh-targets" class="mp-btn mp-btn--icon" title="Rescan scene characters">Refresh</button>
                 </div>
                 <div class="mp-row">
                   <button id="btn-mocap-load-michelle" class="mp-btn" style="flex: 1;" title="Load Mannequin CC0 rigged humanoid character">+ Mannequin CC0</button>
@@ -368,7 +368,7 @@ export class MocapUI {
                 <input type="checkbox" id="mocap-render-audio" checked> Include Source Audio / Music
               </label>
 
-              <button id="btn-mocap-render" class="mp-btn mp-btn--render">🎬 Render Full 3D Clip</button>
+              <button id="btn-mocap-render" class="mp-btn mp-btn--render">Render Full 3D Clip</button>
 
               <!-- Smart Auto Camera & Angle Controls -->
               <div style="margin-top: 8px; padding-top: 8px; border-top: 1px solid rgba(255,255,255,0.08);">
@@ -418,7 +418,7 @@ export class MocapUI {
                 </div>
 
                 <div class="mp-row" style="margin-top: 6px;">
-                  <button id="btn-mocap-fit-camera" class="mp-btn" style="flex: 1;" title="Snap viewport camera to character & selected viewing angle">🎯 Auto-Frame Camera Now</button>
+                  <button id="btn-mocap-fit-camera" class="mp-btn" style="flex: 1;" title="Snap viewport camera to character & selected viewing angle">Auto-Frame Camera</button>
                 </div>
                 <div id="mocap-camera-status" class="mp-hint">Auto-aim enabled: hides starter Cube & frames character cleanly on apply.</div>
               </div>
@@ -445,9 +445,9 @@ export class MocapUI {
             </summary>
             <div class="mp-card-body">
               <div class="mp-row">
-                <button id="btn-pose-edit-toggle" class="mp-btn mp-btn--primary" style="flex: 1;">✏️ Enable Bone Posing</button>
-                <button id="btn-pose-edit-reset" class="mp-btn" title="Reset all bones to Rest Pose">↺ Rest</button>
-                <button id="btn-pose-edit-mirror" class="mp-btn mp-btn--icon" title="Mirror Left arm/leg pose to Right">🪞</button>
+                <button id="btn-pose-edit-toggle" class="mp-btn mp-btn--primary" style="flex: 1;">Enable Bone Posing</button>
+                <button id="btn-pose-edit-reset" class="mp-btn" title="Reset all bones to Rest Pose">Rest</button>
+                <button id="btn-pose-edit-mirror" class="mp-btn mp-btn--icon" title="Mirror Left arm/leg pose to Right">Mirror</button>
               </div>
               <div class="mp-row">
                 <select id="pose-edit-joint" class="mp-field" style="flex: 1;">
@@ -459,9 +459,9 @@ export class MocapUI {
                 </select>
               </div>
               <div class="mp-row">
-                <button id="btn-pose-edit-load-mocap" class="mp-btn" style="flex: 1;" title="Reload character and seek to start of mocap clip">🎞 Load Mocap</button>
-                <button id="btn-pose-edit-export" class="mp-btn" style="flex: 1;" title="Export current pose as JSON">💾 Export Pose</button>
-                <button id="btn-pose-edit-bake" class="mp-btn mp-btn--success" style="flex: 1;" title="Bake current pose as a keyframe">⚓ Bake</button>
+                <button id="btn-pose-edit-load-mocap" class="mp-btn" style="flex: 1;" title="Reload character and seek to start of mocap clip">Load Mocap</button>
+                <button id="btn-pose-edit-export" class="mp-btn" style="flex: 1;" title="Export current pose as JSON">Export Pose</button>
+                <button id="btn-pose-edit-bake" class="mp-btn mp-btn--success" style="flex: 1;" title="Bake current pose as a keyframe">Bake</button>
               </div>
             </div>
           </details>
@@ -1161,10 +1161,10 @@ export class MocapUI {
       this.poseEditor.enable(false);
       this.poseEditor.disposeHandles();
       const btn = document.getElementById('btn-pose-edit-toggle');
-      if (btn) { btn.textContent = '✏️ Enable Bone Posing'; btn.style.background = '#1f6f8b'; }
+      if (btn) { btn.textContent = 'Enable Bone Posing'; btn.style.background = '#1f6f8b'; }
       const statusEl = document.getElementById('pose-edit-status');
       if (statusEl) { statusEl.textContent = 'Baked'; statusEl.style.color = '#2ecc71'; }
-      this._log(`⚓ Baked pose to clip "${clip.name}" (${clip.tracks.length} tracks).`, '#2ecc71');
+      this._log(`Baked pose to clip "${clip.name}" (${clip.tracks.length} tracks).`, '#2ecc71');
     });
 
     const exportBtn = document.getElementById('btn-pose-edit-export');
@@ -1180,7 +1180,7 @@ export class MocapUI {
       a.download = `pose_${Date.now()}.json`;
       a.click();
       URL.revokeObjectURL(a.href);
-      this._log('💾 Exported pose to JSON file.', '#2ecc71');
+      this._log('Exported pose to JSON file.', '#2ecc71');
     });
   }
 
@@ -1388,7 +1388,7 @@ export class MocapUI {
     const hintBox = document.getElementById('mocap-template-hint');
     const hintText = document.getElementById('mocap-template-hint-text');
     if (hintBox && hintText) {
-      hintText.textContent = `${tpl.icon} ${tpl.name}: ${tpl.exportNote}`;
+      hintText.textContent = `${tpl.name}: ${tpl.exportNote}`;
       hintBox.style.display = 'flex';
     }
 
@@ -1439,7 +1439,7 @@ export class MocapUI {
 
     this.loadVideo(tpl.videoUrl);
     telemetry.track('template_selected', { templateId: tpl.id, exportTarget: tpl.exportTarget });
-    this._log(`✨ Loaded template "${tpl.name}" (${tpl.badge})`, '#f97316');
+    this._log(`Loaded template "${tpl.name}" (${tpl.badge})`, '#f97316');
 
     try {
       await this._loadPresetCharacter(tpl.characterUrl, tpl.characterName, { autoApply: false });
