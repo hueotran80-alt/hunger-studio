@@ -77,6 +77,29 @@
         tone:r.toneMapping,exposure:r.toneMappingExposure,clearAlpha:r.getClearAlpha(),
         renderTarget:r.getRenderTarget()?.uuid,children:app.sceneManager.getAllObjects().map((o)=>o.uuid) });
     }
+    function diffState(beforeStr, afterStr, extra = {}) {
+      if (beforeStr === afterStr && Object.values(extra).every((v) => v === true)) return '';
+      const diffs = [];
+      try {
+        const a = JSON.parse(beforeStr), b = JSON.parse(afterStr);
+        for (const k of new Set([...Object.keys(a), ...Object.keys(b)])) {
+          if (JSON.stringify(a[k]) !== JSON.stringify(b[k])) {
+            diffs.push(`${k}: ${JSON.stringify(a[k])} -> ${JSON.stringify(b[k])}`);
+          }
+        }
+      } catch (_) {
+        diffs.push('state mismatch');
+      }
+      for (const [k, ok] of Object.entries(extra)) {
+        if (!ok) diffs.push(`${k}=false`);
+      }
+      return diffs.join('; ');
+    }
+    const nextFrames = (win, count = 2) => new Promise((resolve) => {
+      let left = count;
+      const step = () => { if (--left <= 0) resolve(); else win.requestAnimationFrame(step); };
+      win.requestAnimationFrame(step);
+    });
     async function test(name, fn) {
       const idx = ++stepIndex;
       const t0 = performance.now();
@@ -99,9 +122,10 @@
       }
     }
     try {
-      await until(()=>frame.contentWindow.app?._advancedLoaded && frame.contentWindow.app?.pathTraceRender && frame.contentWindow.app?.matcapStudio && frame.contentWindow.studio, 60000);
+      await until(()=>frame.contentWindow.document?.readyState==='complete' && frame.contentWindow.app?._advancedLoaded && frame.contentWindow.app?.pathTraceRender && frame.contentWindow.app?.matcapStudio && frame.contentWindow.studio && frame.contentWindow.studioBridge, 60000);
       const win=frame.contentWindow, app=win.app, manager=app.pathTraceRender;
       app.stemTutor?.setBubbleOpen(false);
+      app.engine.onResize?.();
       win.studio.clearScene();
       const cube=win.studio.addCube({name:'TraceCube',y:1,color:0xe05522});
       app.sceneManager.select(cube);
@@ -112,7 +136,9 @@
         app.engine.controls.update();
         app.engine.controls.enableDamping = prevDamping;
       }
+      await nextFrames(win, 2);
       await sleep(150);
+      await nextFrames(win, 1);
       await test('Lazy-load: pathtracer chưa tải lúc mở Studio; không vá Scene.prototype', async()=>{
         assert(!win.performance.getEntriesByType('resource').some((r)=>r.name.includes('/three-gpu-pathtracer/')), 'Tải bundle ngay khi mở app');
         const THREE=await import('/vendor/three/three.module.js');
@@ -121,12 +147,14 @@
       await test('PNG PBR qua MatCap: màu thật, cảnh/camera/renderer không đổi', async()=>{
         app.matcapStudio.toggleMatCapMode(true);
         assert(cube.material.isMeshMatcapMaterial && cube.userData.__originalMaterial?.isMeshStandardMaterial,'MatCap fixture absent');
+        await nextFrames(win, 1);
         const before=state(app), displayed=cube.material, geometry=cube.geometry;
         const result=await manager.render({samples:4,scale:0.5});
         const image=await pixels(result.dataUrl,win);
         assert(image.colors>10 && image.opaque>100,'PNG trống hoặc đồng màu');
         assert(result.width===image.width && result.height===image.height,'PNG sai kích thước');
-        assert(state(app)===before && cube.material===displayed && cube.geometry===geometry,'Cảnh gốc bị thay đổi');
+        const delta=diffState(before,state(app),{materialSame:cube.material===displayed,geometrySame:cube.geometry===geometry});
+        assert(!delta,'Cảnh gốc bị thay đổi: '+delta);
         document.querySelector('#rendered').src=result.dataUrl;
         return `${image.width}×${image.height}; ${image.colors} màu`;
       });
@@ -134,10 +162,12 @@
         app.engine.toggleProjection();
         const background=app.engine.scene.background; app.engine.scene.background=null;
         try {
+          await nextFrames(win, 1);
           const before=state(app), result=await manager.render({samples:4,scale:0.5});
           const image=await pixels(result.dataUrl,win);
           assert(image.colors>10 && image.opaque>20 && image.transparent>20,'Không có mesh/nền alpha');
-          assert(state(app)===before,'Orthographic bị thay đổi');
+          const delta=diffState(before,state(app));
+          assert(!delta,'Orthographic bị thay đổi: '+delta);
         } finally { app.engine.scene.background=background;app.engine.toggleProjection(); }
       });
       const THREE=await import('/vendor/three/three.module.js');
