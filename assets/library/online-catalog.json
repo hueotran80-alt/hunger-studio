@@ -1,0 +1,94 @@
+{
+  "version": 1,
+  "note": "Chỉ asset được phép redistribute (CC0 / CC-BY). KHÔNG chứa asset Fab/Epic/Megascans — xem FAB_CATALOG trong js/ui/asset-library-sources.js (link-only).",
+  "items": [
+    {
+      "id": "khronos_boombox",
+      "name": "BoomBox",
+      "category": "Props",
+      "license": "CC0-1.0",
+      "author": "Khronos Group / glTF-Sample-Assets",
+      "source": "khronos",
+      "url": "https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/main/Models/BoomBox/glTF-Binary/BoomBox.glb",
+      "thumb": "https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/main/Models/BoomBox/screenshot/screenshot.jpg",
+      "tags": ["prop", "electronics", "cc0", "pbr"]
+    },
+    {
+      "id": "khronos_avocado",
+      "name": "Avocado",
+      "category": "Food",
+      "license": "CC0-1.0",
+      "author": "Khronos Group / glTF-Sample-Assets",
+      "source": "khronos",
+      "url": "https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/main/Models/Avocado/glTF-Binary/Avocado.glb",
+      "thumb": "https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/main/Models/Avocado/screenshot/screenshot.jpg",
+      "tags": ["food", "organic", "cc0", "pbr"]
+    },
+    {
+      "id": "khronos_waterbottle",
+      "name": "Water Bottle",
+      "category": "Props",
+      "license": "CC0-1.0",
+      "author": "Khronos Group / glTF-Sample-Assets",
+      "source": "khronos",
+      "url": "https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/main/Models/WaterBottle/glTF-Binary/WaterBottle.glb",
+      "thumb": "https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/main/Models/WaterBottle/screenshot/screenshot.jpg",
+      "tags": ["prop", "container", "cc0", "pbr"]
+    },
+    {
+      "id": "khronos_lantern",
+      "name": "Lantern",
+      "category": "Props",
+      "license": "CC0-1.0",
+      "author": "Khronos Group / glTF-Sample-Assets",
+      "source": "khronos",
+      "url": "https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/main/Models/Lantern/glTF-Binary/Lantern.glb",
+      "thumb": "https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/main/Models/Lantern/screenshot/screenshot.jpg",
+      "tags": ["prop", "light", "cc0", "pbr"]
+    },
+    {
+      "id": "khronos_toycar",
+      "name": "Toy Car",
+      "category": "Props",
+      "license": "CC0-1.0",
+      "author": "Khronos Group / glTF-Sample-Assets",
+      "source": "khronos",
+      "url": "https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/main/Models/ToyCar/glTF-Binary/ToyCar.glb",
+      "thumb": "https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/main/Models/ToyCar/screenshot/screenshot.jpg",
+      "tags": ["vehicle", "toy", "cc0", "pbr"]
+    },
+    {
+      "id": "khronos_damagedhelmet",
+      "name": "Damaged Helmet",
+      "category": "Props",
+      "license": "CC-BY-4.0",
+      "author": "theblueturtle_ (via Khronos glTF-Sample-Assets)",
+      "source": "khronos",
+      "url": "https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/main/Models/DamagedHelmet/glTF-Binary/DamagedHelmet.glb",
+      "thumb": "https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/main/Models/DamagedHelmet/screenshot/screenshot.png",
+      "tags": ["prop", "sci-fi", "cc-by", "pbr", "attribution"]
+    },
+    {
+      "id": "khronos_corset",
+      "name": "Corset",
+      "category": "Props",
+      "license": "CC0-1.0",
+      "author": "Khronos Group / glTF-Sample-Assets",
+      "source": "khronos",
+      "url": "https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/main/Models/Corset/glTF-Binary/Corset.glb",
+      "thumb": "https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/main/Models/Corset/screenshot/screenshot.jpg",
+      "tags": ["cloth", "prop", "cc0", "pbr"]
+    },
+    {
+      "id": "khronos_barramundifish",
+      "name": "Barramundi Fish",
+      "category": "Nature",
+      "license": "CC0-1.0",
+      "author": "Khronos Group / glTF-Sample-Assets",
+      "source": "khronos",
+      "url": "https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/main/Models/BarramundiFish/glTF-Binary/BarramundiFish.glb",
+      "thumb": "https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/main/Models/BarramundiFish/screenshot/screenshot.jpg",
+      "tags": ["animal", "fish", "nature", "cc0", "pbr"]
+    }
+  ]
+}

@@ -1,0 +1,53 @@
+# Security & API Secrets
+ai_config.json
+.studio_token
+.env
+.env.*
+*.pem
+*.key
+secrets*.json
+.cloud-attachments/
+.freebuff/
+.qoder/
+.vscode/
+.log
+
+# Local scratch & benchmark outputs
+bench_out/
+exports/
+agent_assets/
+
+# Cloud (local provider data + real secrets + Cloudflare build state)
+cloud_config.json
+cloud_config.local.json
+cloud_data/
+.cloudflare/
+
+# Python
+__pycache__/
+*.pyc
+venv/
+.venv/
+
+# Rust build artifacts
+crates/*/target/
+target/
+
+# Testing & temporary artifacts
+test_*.py
+update_*.py
+fix_*.py
+verify_*.py
+*.log
+.DS_Store
+Thumbs.db
+
+# Runtime user uploads & heavy non-commercial server scratch
+models/hunyuan_inputs/
+models/hunyuan_outputs/
+models/uploaded_mocap_*
+models/uploaded_mocap.png
+
+# Node / Vite production build (additive; dev flow stays server.py)
+node_modules/
+dist/

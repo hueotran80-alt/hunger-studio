@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <title>Web Blender Studio — Character Workflow & UI Regression Suite</title>
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "../vendor/three/three.module.js",
+      "three/addons/": "../vendor/three/addons/"
+    }
+  }
+  </script>
+  <style>
+    :root { color-scheme: dark; }
+    body { margin: 0; background: #141414; color: #e6e6e6; font: 13px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    header { padding: 16px 20px; border-bottom: 1px solid #2f2f2f; display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+    h1 { font-size: 15px; margin: 0; font-weight: 600; }
+    #summary { padding: 3px 10px; border-radius: 999px; background: #2a2a2a; border: 1px solid #3d3d3d; font-variant-numeric: tabular-nums; }
+    #summary.pass { background: #12351f; border-color: #2ecc71; color: #8ef0b0; }
+    #summary.fail { background: #3a1414; border-color: #e74c3c; color: #ff9b90; }
+    main { display: grid; grid-template-columns: minmax(460px, 1fr) 640px; gap: 16px; padding: 16px 20px; align-items: start; }
+    ol { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 8px; }
+    li { border: 1px solid #2f2f2f; border-radius: 6px; padding: 9px 11px; background: #1b1b1b; }
+    li.pass { border-color: #245c39; }
+    li.fail { border-color: #7a2e2a; background: #221515; }
+    li.xfail { border-color: #6b5a2a; background: #201c12; }
+    li.running { border-color: #4a4a2a; }
+    .name { font-weight: 600; }
+    .detail { color: #9aa0a6; margin-top: 2px; white-space: pre-wrap; word-break: break-word; }
+    .badge { float: right; font-size: 11px; padding: 1px 7px; border-radius: 999px; background: #2a2a2a; }
+    li.pass .badge { background: #1d4d30; color: #8ef0b0; }
+    li.fail .badge { background: #5a1f1c; color: #ffb4ab; }
+    li.xfail .badge { background: #4d3d16; color: #ffd479; }
+    iframe { width: 640px; height: 480px; border: 1px solid #2f2f2f; border-radius: 6px; background: #000; }
+    code { color: #8ab4f8; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Character Workflow &amp; UI Regression Suite</h1>
+    <span id="summary">Đang chạy…</span>
+    <span class="detail">Kết quả: <code>window.__CHARACTER_SUITE_RESULTS__</code> (bao gồm regression D2/D3).</span>
+  </header>
+
+  <main>
+    <ol id="results"></ol>
+    <iframe id="studio" src="/index.html" title="Web Blender Studio under test"></iframe>
+  </main>
+
+  <script type="module">
+    import { saveDraft, clearDraft } from '../js/core/autosave.js';
+
+    const resultsEl = document.getElementById('results');
+    const summaryEl = document.getElementById('summary');
+    const iframe = document.getElementById('studio');
+    const items = [];
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+    function addItem(name) {
+      const li = document.createElement('li');
+      li.className = 'running';
+      li.innerHTML = '<span class="badge">…</span><div class="name"></div><div class="detail"></div>';
+      li.querySelector('.name').textContent = name;
+      resultsEl.appendChild(li);
+      return li;
+    }
+    function finishItem(li, status, detail) {
+      li.className = status;
+      li.querySelector('.badge').textContent = status === 'pass' ? 'PASS' : status === 'xfail' ? 'XFAIL' : 'FAIL';
+      li.querySelector('.detail').textContent = detail || '';
+    }
+    function record(li, name, status, detail) {
+      items.push({ name, status, detail: detail || '' });
+      finishItem(li || addItem(name), status, detail);
+    }
+    async function test(name, fn) {
+      const li = addItem(name);
+      try {
+        const detail = await fn();
+        record(li, name, 'pass', detail);
+      } catch (error) {
+        record(li, name, 'fail', String(error && error.message || error));
+      }
+    }
+    async function knownDefect(id, name, fn) {
+      const li = addItem(`${id} — ${name}`);
+      try {
+        await fn();
+        record(li, `${id} — ${name}`, 'pass', 'XPASS: defect không còn tái hiện, hãy gỡ nhãn xfail');
+      } catch (error) {
+        record(li, `${id} — ${name}`, 'xfail', String(error && error.message || error));
+      }
+    }
+    const assert = (cond, msg) => { if (!cond) throw new Error(msg); };
+
+    async function waitStudio() {
+      for (let i = 0; i < 160; i++) {
+        const w = iframe.contentWindow;
+        if (w && w.studio && w.sceneManager && w.app && w.app.exporter
+          && w.app.modelingSuite && w.app.editMode
+          && w.sceneManager.getSelectableObjects().length > 0) return w;
+        await sleep(250);
+      }
+      throw new Error('Studio iframe không sẵn sàng sau 40s');
+    }
+    const key = (w, k, mods = {}) => w.dispatchEvent(new w.KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true, ...mods }));
+    const meshCount = (w) => { let n = 0; w.scene.getObjectByName('Scene_Collection').traverse((o) => { if (o.isMesh) n++; }); return n; };
+
+    const w = await waitStudio();
+    const doc = w.document;
+
+    await test('Viewport header controls are hit-testable (no overlapping neighbours)', () => {
+      for (const id of ['btn-vp-select', 'btn-vp-view', 'btn-vp-add']) {
+        const b = doc.getElementById(id);
+        assert(b, `missing ${id}`);
+        const r = b.getBoundingClientRect();
+        const hit = doc.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+        assert(hit === b || b.contains(hit), `${id} bị phần tử khác đè: ${hit && (hit.id || hit.className)}`);
+      }
+      return 'Select/View/Add đều nhận click tại tâm';
+    });
+
+    await test('Narrow-window header wrap rule exists (<=1400px two rows)', async () => {
+      const css = await (await fetch('/css/blender-theme.css')).text();
+      const block = css.slice(css.indexOf('@media (max-width: 1400px)'));
+      assert(block.includes('.viewport-header'), 'thiếu media query 1400px cho viewport-header');
+      assert(/flex-wrap:\s*wrap/.test(block.slice(0, 900)), 'header hẹp phải wrap thay vì chồng lấn');
+      return 'media query wrap hiện diện';
+    });
+
+    await test('Object Mode: A selects every selectable object (menu advertises A)', () => {
+      w.sceneManager.clearSelection();
+      key(w, 'a');
+      const expected = w.sceneManager.getSelectableObjects().filter((o) => o.parent === w.sceneManager.rootContainer).length;
+      assert(expected >= 1, 'scene chưa có object selectable để test phím A');
+      assert(w.sceneManager.selectedObjects.size === expected, `A chọn ${w.sceneManager.selectedObjects.size}/${expected}`);
+      w.sceneManager.clearSelection();
+      return `A chọn đủ ${expected} object`;
+    });
+
+    await test('Keyboard focus returns to viewport after a toolbar click', () => {
+      const btn = [...doc.querySelectorAll('.viewport-header button, .blender-toolbar button')]
+        .find((b) => /Focus/.test(b.textContent || ''));
+      assert(btn, 'không tìm thấy nút Focus');
+      btn.click();
+      const canvas = doc.querySelector('#viewport-canvas-host canvas');
+      assert(doc.activeElement === canvas, `focus đang ở ${doc.activeElement && doc.activeElement.tagName}`);
+      return 'activeElement = viewport canvas';
+    });
+
+    await test('File > Export submenu stays open on parent click and lists formats', () => {
+      doc.querySelector('#menu-file .menu-btn').click();
+      doc.querySelector('#menu-file-export > .dropdown-item').click();
+      assert(doc.getElementById('menu-file').classList.contains('open'), 'menu File đóng khi click submenu parent');
+      const fly = doc.querySelector('#menu-file-export .submenu-flyout');
+      // Flyout reveal is CSS :hover (not scriptable); assert structure + open state.
+      const formats = [...fly.querySelectorAll('.dropdown-item')];
+      assert(formats.length >= 5, `flyout chỉ có ${formats.length} format`);
+      assert(/glb|gltf/i.test(fly.textContent), 'flyout thiếu định dạng glTF');
+      doc.body.click();
+      return `${formats.length} format trong flyout`;
+    });
+
+    await test('clearScene + setupProStudio guarantees a render camera', async () => {
+      w.studio.clearScene();
+      w.studio.setupProStudio();
+      await sleep(200);
+      assert(w.cameraManager.getActiveCameraObject(), 'không còn camera nào sau clearScene + setupProStudio');
+      return 'camera tồn tại';
+    });
+
+    await test('Add > Image > Reference creates a textured reference plane', async () => {
+      const png = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+      const mesh = await w.studio.addImage({ src: png, mode: 'reference', name: 'SuiteRef' });
+      assert(mesh && mesh.isMesh && mesh.material.map, 'reference plane thiếu texture');
+      assert(/Ref_Image|SuiteRef/.test(mesh.name), `tên không đúng: ${mesh.name}`);
+      w.sceneManager.removeObject(mesh, false, true);
+      return mesh.name;
+    });
+
+    await test('Ctrl+J joins with multi-material and undoes in ONE step', async () => {
+      w.studio.clearScene();
+      const a = w.studio.addCube({ name: 'SuiteA', width: 1, height: 1, depth: 1, x: 0, color: '#8a5a2b' });
+      const b = w.studio.addCube({ name: 'SuiteB', width: 1, height: 1, depth: 1, x: 2, color: '#40454c' });
+      w.sceneManager.setSelection([a, b]);
+      w.sceneManager.select(a, true);
+      const before = w.sceneManager.undoStack.length;
+      key(w, 'j', { ctrlKey: true });
+      await sleep(200);
+      assert(meshCount(w) === 1, 'join không gom về 1 mesh');
+      const joined = w.sceneManager.activeObject;
+      assert(Array.isArray(joined.material) && joined.material.length === 2, 'join mất multi-material');
+      assert(w.sceneManager.undoStack.length === before + 1, 'join không atomic trong undo');
+      w.sceneManager.undo();
+      await sleep(200);
+      assert(meshCount(w) === 2, 'undo 1 bước không khôi phục đủ 2 mesh');
+      return '2 material, 1 bước undo';
+    });
+
+    await test('Viewport render PNG contains the scene and no gizmo/grid pixels', async () => {
+      const res = await w.app.exporter.captureRenderPNG({ scale: 0.5, download: false });
+      const img = new Image();
+      await new Promise((ok, err) => { img.onload = ok; img.onerror = err; img.src = res.dataUrl; });
+      const c = doc.createElement('canvas');
+      c.width = img.width; c.height = img.height;
+      const ctx = c.getContext('2d');
+      ctx.drawImage(img, 0, 0);
+      const d = ctx.getImageData(0, 0, c.width, c.height).data;
+      const colors = new Set();
+      let gizmo = 0;
+      for (let i = 0; i < d.length; i += 4) {
+        colors.add((d[i] >> 4) + ',' + (d[i + 1] >> 4) + ',' + (d[i + 2] >> 4));
+        const pure = (d[i] > 200 && d[i + 1] < 60 && d[i + 2] < 60)
+          || (d[i] < 60 && d[i + 1] > 200 && d[i + 2] < 60)
+          || (d[i] < 60 && d[i + 1] < 60 && d[i + 2] > 200);
+        if (pure) gizmo++;
+      }
+      assert(colors.size > 2, 'ảnh render trống (chỉ nền)');
+      assert(gizmo === 0, `ảnh render lẫn ${gizmo} pixel gizmo thuần đỏ/lục/lam`);
+      return `${colors.size} tông màu, 0 pixel gizmo`;
+    });
+
+    await test('D3 — Autosaved Draft banner must not block the open Add menu', async () => {
+      await saveDraft(JSON.stringify({ version: 1, objects: [] }), { savedAt: Date.now() });
+      await w.app._offerDraftRestore();
+      const banner = doc.getElementById('autosave-restore-banner');
+      assert(banner, 'banner không hiện');
+      doc.querySelector('#menu-add .menu-btn').click();
+      const panel = doc.querySelector('#menu-add .menu-dropdown');
+      assert(doc.getElementById('menu-add').classList.contains('open'), 'menu Add không mở');
+      const pr = panel.getBoundingClientRect();
+      const br = banner.getBoundingClientRect();
+      const ix0 = Math.max(pr.x, br.x), ix1 = Math.min(pr.right, br.right);
+      const iy0 = Math.max(pr.y, br.y), iy1 = Math.min(pr.bottom, br.bottom);
+      let detail = 'banner không đè lên menu Add';
+      if (ix1 > ix0 && iy1 > iy0) {
+        const hit = doc.elementFromPoint((ix0 + ix1) / 2, (iy0 + iy1) / 2);
+        detail = `vùng giao nhau bị chặn bởi ${hit && (hit.id || hit.className)}`;
+        assert(panel.contains(hit), detail);
+      }
+      banner.remove();
+      doc.body.click();
+      await clearDraft();
+      return detail;
+    });
+
+    await test('D2 — Rigged armature appears in Outliner / scene graph', async () => {
+      w.studio.clearScene();
+      const mesh = w.studio.addCube({ name: 'SuiteChar', width: 0.4, height: 1.2, depth: 0.3, y: 0.6 });
+      const { armatureGroup } = w.rigSystem.createHumanoidArmature(1.8);
+      w.rigSystem.autoSkinMesh(mesh, armatureGroup);
+      await sleep(300);
+      let p = armatureGroup;
+      while (p.parent) p = p.parent;
+      assert(p === w.scene, 'Humanoid_Armature không nằm trong scene graph');
+    });
+
+    const passed = items.filter((i) => i.status === 'pass').length;
+    const failed = items.filter((i) => i.status === 'fail').length;
+    const xfail = items.filter((i) => i.status === 'xfail').length;
+    window.__CHARACTER_SUITE_RESULTS__ = { passed, failed, xfail, items };
+    summaryEl.textContent = `${passed} passed · ${failed} failed · ${xfail} xfail`;
+    summaryEl.className = failed ? 'fail' : 'pass';
+    console.log(`[character-suite] ${passed} passed, ${failed} failed, ${xfail} xfail`);
+  </script>
+</body>
+</html>

@@ -1,0 +1,33 @@
+[Script Info]
+Title: MV Kinh Kính Mừng (Ave Maria) - 5 Shots Full
+Original Script: Antigravity Director
+ScriptType: v4.00+
+WrapStyle: 0
+ScaledBorderAndShadow: yes
+YCbCr Matrix: TV.601
+PlayResX: 1280
+PlayResY: 720
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Karaoke,Arial,34,&H00FFFFFF,&H0000D7FF,&H00101015,&H70000000,-1,0,0,0,100,100,0.5,0,1,3.0,2.0,2,40,40,50,1
+Style: TitleBig,Arial,42,&H0000D7FF,&H00FFFFFF,&H00101015,&H70000000,-1,0,0,0,100,100,1.5,0,1,3.2,2.5,2,40,40,320,1
+Style: TitleSub,Arial,24,&H00E8E8F0,&H0000D7FF,&H00101015,&H70000000,0,0,0,0,100,100,0.8,0,1,2.2,1.8,2,40,40,265,1
+Style: Annotation,Arial,22,&H00D0D4E0,&H0000D7FF,&H00101015,&H70000000,0,-1,0,0,100,100,0.5,0,1,2.0,1.5,2,40,40,50,1
+Style: AnnotationUpper,Arial,21,&H00E0E4F0,&H0000D7FF,&H00101015,&H70000000,0,-1,0,0,100,100,0.5,0,1,2.0,1.5,2,40,40,98,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:02.20,0:00:08.80,TitleBig,,0,0,0,,{\fad(800,800)}KINH KÍNH MỪNG
+Dialogue: 0,0:00:02.50,0:00:08.80,TitleSub,,0,0,0,,{\fad(800,800)}Ave Maria • Nhạc Thánh Ca Uy Nghiêm
+Dialogue: 0,0:00:09.50,0:00:13.80,Annotation,,0,0,0,,{\fad(500,500)}♫ Khúc nhạc dạo đầu — Ca đoàn & Đại phong cầm Cung Thánh ♫
+Dialogue: 0,0:00:14.20,0:00:24.50,Karaoke,,0,0,0,,{\fad(300,300)}{\k50}{\kf85}Kính {\kf110}mừng {\kf170}Ma{\kf100}ri{\kf140}a {\kf55}đầy {\kf115}ơn {\kf145}phúc,
+Dialogue: 0,0:00:24.70,0:00:27.95,Karaoke,,0,0,0,,{\fad(200,200)}{\k15}{\kf40}Đức {\kf40}Chúa {\kf80}Trời {\kf35}ở {\kf40}cùng {\kf65}Bà.
+Dialogue: 0,0:00:28.40,0:00:35.90,Karaoke,,0,0,0,,{\fad(300,300)}{\k40}{\kf55}Bà {\kf45}có {\kf80}phúc {\kf90}lạ {\kf120}hơn {\kf90}mọi {\kf90}người {\kf110}nữ,
+Dialogue: 0,0:00:36.15,0:00:42.95,Karaoke,,0,0,0,,{\fad(250,250)}{\k20}{\kf50}và {\kf50}Giê{\kf45}su {\kf80}con {\kf110}lòng {\kf80}Bà {\kf100}gồm {\kf90}phúc {\kf50}lạ.
+Dialogue: 0,0:00:43.50,0:00:49.80,Karaoke,,0,0,0,,{\fad(300,300)}{\k30}{\kf105}Thánh {\kf60}Ma{\kf40}ri{\kf35}a {\kf50}Đức {\kf50}Mẹ {\kf80}Chúa {\kf80}Trời,
+Dialogue: 0,0:00:50.40,0:00:55.80,Karaoke,,0,0,0,,{\fad(250,250)}{\k40}{\kf55}cầu {\kf45}cho {\kf60}chúng {\kf60}con {\kf50}là {\kf50}kẻ {\kf60}có {\kf80}tội,
+Dialogue: 0,0:00:55.95,0:01:02.95,Karaoke,,0,0,0,,{\fad(250,250)}{\k25}{\kf55}khi {\kf55}này {\kf45}và {\kf45}trong {\kf80}giờ {\kf100}lâm {\kf90}tử. {\kf120}A{\kf70}men.
+Dialogue: 0,0:01:03.40,0:01:22.80,AnnotationUpper,,0,0,0,,{\fad(600,600)}♫ Độc tấu Grand Piano thánh thót dâng kính Mẹ Maria ♫
+Dialogue: 0,0:01:04.00,0:01:12.80,Karaoke,,0,0,0,,{\fad(300,300)}{\k40}{\kf160}A{\kf110}ve {\kf140}Ma{\kf80}ri{\kf310}a...
+Dialogue: 0,0:01:13.00,0:01:22.80,Karaoke,,0,0,0,,{\fad(300,300)}{\k10}{\kf130}A{\kf140}ve {\kf130}Ma{\kf80}ri{\kf280}a...

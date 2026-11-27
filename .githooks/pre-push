@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Local safety guard complementing GitHub branch protection on `main`
+CURRENT_BRANCH="$(git symbolic-ref --short HEAD 2>/dev/null || echo '')"
+if [ "$CURRENT_BRANCH" = "main" ] && [ "${ALLOW_MAIN_PUSH:-0}" != "1" ]; then
+  echo "GUARD: Direct push to 'main' is discouraged. Open a PR from feat/* or fix/* (or override intentionally with ALLOW_MAIN_PUSH=1)."
+  exit 1
+fi

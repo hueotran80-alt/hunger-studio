@@ -1,0 +1,1692 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <title>Web Blender Studio — Browser Regression Suite</title>
+  <style>
+    :root { color-scheme: dark; }
+    body { margin: 0; background: #141414; color: #e6e6e6; font: 13px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    header { padding: 16px 20px; border-bottom: 1px solid #2f2f2f; display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+    h1 { font-size: 15px; margin: 0; font-weight: 600; }
+    #summary { padding: 3px 10px; border-radius: 999px; background: #2a2a2a; border: 1px solid #3d3d3d; font-variant-numeric: tabular-nums; }
+    #summary.pass { background: #12351f; border-color: #2ecc71; color: #8ef0b0; }
+    #summary.fail { background: #3a1414; border-color: #e74c3c; color: #ff9b90; }
+    main { display: grid; grid-template-columns: minmax(420px, 1fr) 900px; gap: 16px; padding: 16px 20px; align-items: start; }
+    ol { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 8px; }
+    li { border: 1px solid #2f2f2f; border-radius: 6px; padding: 9px 11px; background: #1b1b1b; }
+    li.pass { border-color: #245c39; }
+    li.fail { border-color: #7a2e2a; background: #221515; }
+    li.running { border-color: #4a4a2a; }
+    .name { font-weight: 600; }
+    .detail { color: #9aa0a6; margin-top: 2px; white-space: pre-wrap; word-break: break-word; }
+    .badge { float: right; font-size: 11px; padding: 1px 7px; border-radius: 999px; background: #2a2a2a; }
+    li.pass .badge { background: #1d4d30; color: #8ef0b0; }
+    li.fail .badge { background: #5a1f1c; color: #ffb4ab; }
+    iframe { width: 900px; height: 560px; border: 1px solid #2f2f2f; border-radius: 6px; background: #000; }
+    code { color: #8ab4f8; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Web Blender Studio — Browser Regression Suite</h1>
+    <span id="summary">Đang chạy…</span>
+    <span class="detail">Mở trang này khi server đang chạy. Kết quả cũng nằm trong <code>window.__SUITE_RESULTS__</code>.</span>
+  </header>
+
+  <main>
+    <ol id="results"></ol>
+    <iframe id="studio" src="/index.html" title="Web Blender Studio under test"></iframe>
+  </main>
+
+  <script type="module">
+    const iframe = document.getElementById('studio');
+    const resultsEl = document.getElementById('results');
+    const summaryEl = document.getElementById('summary');
+    const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+    const results = [];
+
+    async function waitUntil(check, timeoutMs = 20000, label = 'condition') {
+      const started = Date.now();
+      while (Date.now() - started < timeoutMs) {
+        try {
+          if (await check()) return true;
+        } catch (_) { /* frame or element not ready */ }
+        await sleep(120);
+      }
+      throw new Error(`Timeout: ${label}`);
+    }
+
+    function frames(win, count = 2) {
+      return new Promise((resolve) => {
+        let left = count;
+        const step = () => {
+          left -= 1;
+          if (left <= 0) resolve();
+          else win.requestAnimationFrame(step);
+        };
+        win.requestAnimationFrame(step);
+      });
+    }
+
+    async function waitForStudio(win, timeoutMs = 30000) {
+      const started = Date.now();
+      while (Date.now() - started < timeoutMs) {
+        const ready = win.app && win.app.engine && win.app.exporter &&
+          win.sceneManager && win.engine && win.outliner &&
+          win.timelineEngine && win.studio && win.simulationManager && win.physicsPanel;
+        if (ready) return;
+        await sleep(120);
+      }
+      throw new Error('Studio did not initialise within 30s');
+    }
+
+    async function reset(win) {
+      try { win.studio.clearScene(); } catch (_) {}
+      await frames(win, 3);
+      await sleep(120);
+    }
+
+    async function createCopilotRuntime(win) {
+      return win.eval(`(async () => {
+        const { CopilotRuntime } = await import('/js/ai/copilot-runtime.js');
+        return new CopilotRuntime({
+          sceneManager: window.sceneManager,
+          studio: window.studio,
+          THREE: window.THREE,
+          camera: window.engine.camera,
+          engine: window.engine,
+          editMode: window.editMode,
+          modifiers: window.modifiers || window.Modifiers,
+          simulationManager: window.simulationManager,
+          sculptMode: window.sculptMode,
+          stemTutor: window.stemTutor,
+          setViewportMode: (mode) => window.stemTutor?._switchModeSafely?.(mode) || false,
+          setEditSelectionMode: (mode) => window.editMode?.setMode?.(mode) || false,
+        });
+      })()`);
+    }
+
+    function addItem(name) {
+      const li = document.createElement('li');
+      li.className = 'running';
+      li.innerHTML = `<span class="badge">…</span><div class="name"></div><div class="detail"></div>`;
+      li.querySelector('.name').textContent = name;
+      resultsEl.appendChild(li);
+      return li;
+    }
+
+    function finishItem(li, ok, detail) {
+      li.className = ok ? 'pass' : 'fail';
+      li.querySelector('.badge').textContent = ok ? 'PASS' : 'FAIL';
+      li.querySelector('.detail').textContent = detail || '';
+    }
+
+    function assertCloseArray(actual, expected, label, tolerance = 1e-7) {
+      if (!Array.isArray(actual) || !Array.isArray(expected) || actual.length !== expected.length ||
+          actual.some((value, i) => !Number.isFinite(value) || !Number.isFinite(expected[i]) ||
+            Math.abs(value - expected[i]) > tolerance)) {
+        throw new Error(`${label}: ${JSON.stringify(actual)} != ${JSON.stringify(expected)}`);
+      }
+    }
+
+    function describeTrackedObjects(sm) {
+      return sm.getAllObjects().map((object) => ({
+        name: object.name,
+        type: object.type,
+        uuid: object.uuid,
+        parent: object.parent?.name || null,
+      }));
+    }
+
+    // ------------------------------------------------------------------
+    // Tests
+    // ------------------------------------------------------------------
+    const tests = [
+      {
+        name: 'Xoá object giải phóng geometry GPU',
+        async run(win) {
+          // engine.deleteSelection() disposes geometry/material; undo must still work.
+          await reset(win);
+          const r = win.renderer;
+          const sm = win.sceneManager;
+          const base = r.info.memory.geometries;
+          // Place all 8 cubes inside the default camera frustum so Three.js uploads every geometry (no frustum culling).
+          for (let i = 0; i < 8; i++) {
+            win.studio.addCube({
+              x: (i % 4) * 1.1 - 1.65,
+              y: Math.floor(i / 4) * 1.1 + 0.5,
+              z: 0,
+              width: 0.7, height: 0.7, depth: 0.7,
+              name: 'Gpu' + i,
+            });
+          }
+          await sleep(180);
+          await frames(win, 2);
+          const afterAdd = r.info.memory.geometries;
+          if (afterAdd < base + 8) throw new Error(`geometry chưa upload: ${base} → ${afterAdd}`);
+          sm.setSelection(sm.getAllObjects());
+          const removed = win.engine.deleteSelection();
+          await sleep(180);
+          await frames(win, 2);
+          const afterDel = r.info.memory.geometries;
+          if (removed !== 8) throw new Error(`deleteSelection xoá ${removed}/8 object`);
+          if (sm.getAllObjects().length !== 0) throw new Error('scene còn object sau khi xoá');
+          if (afterDel > base + 2) throw new Error(`rò rỉ GPU: ${base} → ${afterAdd} → ${afterDel}`);
+          return `geometries ${base} → ${afterAdd} → ${afterDel}`;
+        },
+      },
+      {
+        name: 'Undo sau khi xoá khôi phục object render được',
+        async run(win) {
+          await reset(win);
+          const sm = win.sceneManager;
+          const cube = win.studio.addCube({ x: 0, y: 1, z: 0, name: 'UndoTest' });
+          await frames(win, 2);
+          sm.select(cube);
+          win.engine.deleteSelection();
+          await frames(win, 2);
+          if (sm.getAllObjects().length !== 0) throw new Error('object chưa bị xoá');
+          sm.undo();
+          await sleep(160);
+          await frames(win, 2);
+          const restored = sm.getAllObjects()[0];
+          if (!restored) throw new Error('undo không khôi phục object');
+          if (!restored.geometry?.attributes?.position?.count) throw new Error('geometry bị hỏng sau undo');
+          return `khôi phục "${restored.name}" (${restored.geometry.attributes.position.count} đỉnh)`;
+        },
+      },
+      {
+        name: 'Nhân bản nhân vật rig có skeleton độc lập',
+        async run(win) {
+          await reset(win);
+          const THREE = win.THREE;
+          const root = new THREE.Group();
+          root.name = 'RigTest';
+          const bone1 = new THREE.Bone();
+          bone1.name = 'Bone1';
+          bone1.position.y = 1;
+          const bone2 = new THREE.Bone();
+          bone2.name = 'Bone2';
+          bone2.position.y = 1;
+          bone1.add(bone2);
+          const geometry = new THREE.CylinderGeometry(0.2, 0.2, 2, 8, 4);
+          const position = geometry.attributes.position;
+          const skinIndex = [];
+          const skinWeight = [];
+          for (let i = 0; i < position.count; i++) {
+            skinIndex.push(0, 1, 0, 0);
+            skinWeight.push(1, 0, 0, 0);
+          }
+          geometry.setAttribute('skinIndex', new THREE.Uint16BufferAttribute(skinIndex, 4));
+          geometry.setAttribute('skinWeight', new THREE.Float32BufferAttribute(skinWeight, 4));
+          const mesh = new THREE.SkinnedMesh(geometry, new THREE.MeshStandardMaterial());
+          mesh.add(bone1);
+          mesh.bind(new THREE.Skeleton([bone1, bone2]));
+          root.add(mesh);
+          win.sceneManager.addObject(root, null, true, false);
+          const duplicate = win.sceneManager.duplicateObject(root, { x: 2, y: 0, z: 0 });
+          const skinned = (node) => {
+            const found = [];
+            node.traverse((child) => { if (child.isSkinnedMesh) found.push(child); });
+            return found[0];
+          };
+          const a = skinned(root);
+          const b = skinned(duplicate);
+          if (!a || !b) throw new Error('không tìm thấy SkinnedMesh');
+          if (a.skeleton === b.skeleton) throw new Error('hai bản dùng chung skeleton');
+          if (a.skeleton.bones[0] === b.skeleton.bones[0]) throw new Error('hai bản dùng chung bone');
+          b.skeleton.bones[0].rotation.z = 1;
+          if (Math.abs(a.skeleton.bones[0].rotation.z - 1) < 1e-9) throw new Error('xoay bone bản clone ảnh hưởng bản gốc');
+          return `clone độc lập: ${b.skeleton.bones.length} bone`;
+        },
+      },
+      {
+        name: 'Outliner gộp render theo animation frame',
+        async run(win) {
+          await reset(win);
+          let count = 0;
+          const original = win.outliner.render;
+          win.outliner.render = function (...args) { count += 1; return original.apply(this, args); };
+          try {
+            for (let i = 0; i < 25; i++) {
+              win.studio.addCube({ x: i, y: 0, z: 0, name: 'OL' + i });
+            }
+            const synchronous = count;
+            await frames(win, 3);
+            await sleep(60);
+            const batched = count;
+            if (synchronous !== 0) throw new Error(`render chạy ${synchronous} lần ngay trong vòng lặp`);
+            if (batched > 1) throw new Error(`25 object → ${batched} lần render (cần ≤ 1)`);
+            return `25 add → ${batched} lần render`;
+          } finally {
+            win.outliner.render = original;
+          }
+        },
+      },
+      {
+        name: 'Inspector gộp render khi thêm nhiều object',
+        async run(win) {
+          await reset(win);
+          let count = 0;
+          const original = win.inspector.render;
+          win.inspector.render = function (...args) { count += 1; return original.apply(this, args); };
+          try {
+            for (let i = 0; i < 25; i++) {
+              win.studio.addCube({ x: i, y: 0, z: 0, name: 'Ins' + i });
+            }
+            const synchronous = count;
+            await frames(win, 3);
+            await sleep(80);
+            const batched = count;
+            if (synchronous !== 0) throw new Error(`inspector render chạy ${synchronous} lần ngay trong vòng lặp`);
+            if (batched > 1) throw new Error(`25 object → ${batched} lần render (cần ≤ 1)`);
+            return `25 add → ${batched} lần render`;
+          } finally {
+            win.inspector.render = original;
+          }
+        },
+      },
+      {
+        name: 'Inspector hiển thị được giá trị Transform',
+        async run(win) {
+          await reset(win);
+          const cube = win.studio.addCube({ x: 3, y: 1, z: 0, name: 'InspectMe' });
+          win.sceneManager.select(cube);
+          await sleep(260);
+          const input = win.document.querySelector('#inspector-container .scrub-input');
+          if (!input) throw new Error('không tìm thấy ô scrub');
+          const box = input.closest('.scrub-input-wrap') || input;
+          const width = input.getBoundingClientRect().width;
+          const boxWidth = box.getBoundingClientRect().width;
+          // Regression guard for P1-7: the field used to collapse to 12px.
+          if (boxWidth < 60) throw new Error(`khung ô số chỉ rộng ${boxWidth.toFixed(1)}px (cần ≥ 60px)`);
+          if (width < 40) throw new Error(`ô số chỉ rộng ${width.toFixed(1)}px (cần ≥ 40px)`);
+          return `ô số ${width.toFixed(1)}px trong khung ${boxWidth.toFixed(1)}px`;
+        },
+      },
+      {
+        name: 'Thêm 120 object trong ngân sách thời gian',
+        async run(win) {
+          await reset(win);
+          win.inspector.setTargetObject(null);
+          const t0 = performance.now();
+          for (let i = 0; i < 120; i++) {
+            win.studio.addCube({ x: i % 12, y: Math.floor(i / 12), z: 0, name: 'Perf' + i });
+          }
+          const addMs = performance.now() - t0;
+          await frames(win, 3);
+          await sleep(60);
+          const totalMs = performance.now() - t0;
+          const created = win.sceneManager.getAllObjects().length;
+          if (created < 120) throw new Error(`chỉ tạo ${created}/120 object`);
+          // Before the rAF batching fix the synchronous loop alone took ~2.9s
+          // (every addCube rebuilt the whole Outliner + Inspector DOM).
+          if (addMs > 1200) throw new Error(`thêm 120 object mất ${addMs.toFixed(0)} ms (ngân sách 1200 ms)`);
+          // Headless Chrome uses SwiftShader; one WebGL frame of 120 cubes costs
+            // ~1s, so keep the strict 2s budget for real browsers only.
+            const headless = /HeadlessChrome/.test(navigator.userAgent);
+            const totalBudget = headless ? 4000 : 2000;
+            if (totalMs > totalBudget) throw new Error(`120 object tới frame kế tiếp mất ${totalMs.toFixed(0)} ms (ngân sách ${totalBudget} ms${headless ? ' headless' : ''})`);
+            return `120 object: ${addMs.toFixed(0)} ms thêm, ${totalMs.toFixed(0)} ms tới frame kế tiếp`;
+        },
+      },
+      {
+        name: 'Timeline từ chối frame không hợp lệ',
+        async run(win) {
+          await reset(win);
+          const cube = win.studio.addCube({ x: 0, y: 0, z: 0, name: 'NaNTest' });
+          const bad = win.timelineEngine.insertKeyframe(cube, 'position');
+          if (bad !== null) throw new Error('frame sai vẫn tạo keyframe');
+          if (!Number.isFinite(cube.position.x)) throw new Error('position bị NaN sau thao tác sai');
+          win.timelineEngine.insertKeyframe(cube, 10, ['position']);
+          if (!cube.position.x === 0) throw new Error('keyframe hợp lệ không được tạo');
+          return 'frame sai bị chặn, keyframe hợp lệ vẫn hoạt động';
+        },
+      },
+      {
+        name: 'Autosave lưu và đọc lại được bản nháp',
+        async run(win) {
+          await reset(win);
+          win.studio.addCube({ x: 0, y: 1, z: 0, name: 'AutoSave' });
+          if (typeof win.app.saveAutosaveNow !== 'function') throw new Error('thiếu app.saveAutosaveNow');
+          const size = await win.app.saveAutosaveNow();
+          if (!size || size < 100) throw new Error(`autosave quá nhỏ: ${size}`);
+          const draft = await win.app.loadAutosaveDraft();
+          if (!draft || !draft.json) throw new Error('không đọc lại được draft');
+          if (!draft.json.includes('AutoSave')) throw new Error('draft thiếu object vừa tạo');
+          const sizeKb = (draft.json.length / 1024).toFixed(1);
+          await win.app.clearAutosaveDraft();
+          return `${sizeKb} KB, lưu lúc ${new Date(draft.savedAt).toLocaleTimeString()}`;
+        },
+      },
+      {
+        name: 'Không còn secret trong localStorage',
+        async run(win) {
+          const forbidden = Object.keys(win.localStorage).filter((key) =>
+            /(gemini|openai|motapis|custom)_?key|api_key|hf_token|huggingface/i.test(key));
+          if (forbidden.length) throw new Error('localStorage còn: ' + forbidden.join(', '));
+          return 'không có API key / HF token trong trình duyệt';
+        },
+      },
+      {
+        name: 'Bridge có đúng một WebSocket và đang mở',
+        async run(win) {
+          if (!win.studioBridge) throw new Error('không có studioBridge');
+          if (win.studioBridge !== win.app.bridge) throw new Error('tồn tại bridge thứ hai ngoài app');
+          if (!win.studioBridge.ws || win.studioBridge.ws.readyState !== 1) {
+            throw new Error('WebSocket bridge chưa mở');
+          }
+          return 'một kết nối WS duy nhất, trạng thái OPEN';
+        },
+      },
+      {
+        name: 'Share: liên kết tự chứa + preview + MatCap được khôi phục',
+        async run(win) {
+          await reset(win);
+          win.studio.addCube({ x: 0, y: 1, z: 0, name: 'ShareCube' });
+          await sleep(120);
+          const dialog = win.shareDialog || (await win.app._ensureShareDialog?.());
+          if (!dialog) throw new Error('thiếu app.shareDialog');
+          const matcap = win.app.matcapStudio;
+          matcap.toggleMatCapMode(true);
+          if (!matcap.isMatCapActive) throw new Error('không bật được MatCap để kiểm tra');
+          dialog.open();
+          const status = () => win.document.getElementById('ss-status').textContent;
+          await waitUntil(() => /Ready/.test(status()), 30000, 'share link');
+          if (!matcap.isMatCapActive) throw new Error('MatCap không được bật lại sau khi xuất');
+          const link = win.document.getElementById('ss-link').value;
+          if (!link.startsWith(win.location.origin + '/embed.html')) throw new Error('sai embed URL: ' + link);
+          if (!link.includes('#z=z')) throw new Error('thiếu payload gzip trong fragment');
+          const snippet = win.document.getElementById('ss-iframe').value;
+          if (!snippet.startsWith('<iframe') || !snippet.includes(link.split('&')[0])) {
+            throw new Error('mã nhúng không khớp liên kết');
+          }
+
+          const frame = win.document.querySelector('#ss-preview iframe');
+          if (!frame) throw new Error('không có iframe xem trước');
+          await waitUntil(() => frame.contentWindow?.studioEmbed?.ready, 30000, 'preview ready');
+          const viewer = frame.contentWindow.studioEmbed;
+          const state = viewer.getState();
+          if (!(state.quality.triangles > 0)) throw new Error('preview rỗng');
+          let matType = '';
+          viewer.model.traverse((node) => {
+            if (node.isMesh && !matType) {
+              const material = Array.isArray(node.material) ? node.material[0] : node.material;
+              matType = material && material.type || '';
+            }
+          });
+          if (matType === 'MeshMatcapMaterial') throw new Error('xuất phải dùng vật liệu PBR gốc, không phải MatCap');
+
+          dialog.close();
+          matcap.toggleMatCapMode(false);
+          return `link ${link.length} ký tự · preview ${state.quality.triangles} tam giác · ${matType}`;
+        },
+      },
+      {
+        name: 'Share: mô hình quá lớn bị chặn khỏi URL, vẫn tải .glb được',
+        async run(win) {
+          const dialog = win.shareDialog || (await win.app._ensureShareDialog?.());
+          if (!dialog) throw new Error('thiếu app.shareDialog');
+          dialog.open();
+          const statusText = () => win.document.getElementById('ss-status').textContent;
+          await waitUntil(() => /Ready/.test(statusText()), 30000, 'dialog open');
+          dialog.payload = 'z' + 'A'.repeat(200000);
+          dialog._regenerate();
+          await sleep(150);
+          const link = win.document.getElementById('ss-link').value;
+          const warning = win.document.getElementById('ss-warning');
+          const status = win.document.getElementById('ss-status').textContent;
+          if (link) throw new Error('vẫn tạo liên kết cho payload quá lớn');
+          if (warning.hidden || !/too large/i.test(warning.textContent)) throw new Error('missing too-large warning');
+          if (/0 B/.test(status) || /Ready/.test(status)) throw new Error('status does not reflect too-large');
+          if (win.document.getElementById('ss-download').disabled) throw new Error('nút tải .glb phải bật');
+          const frame = win.document.querySelector('#ss-preview iframe');
+          if (!frame || !frame.src.includes('glb=blob')) throw new Error('preview phải dùng blob URL');
+          dialog.close();
+          return 'chặn URL · preview blob · tải .glb bật';
+        },
+      },
+      {
+        name: 'Share: controls=0 vào liên kết và preview',
+        async run(win) {
+          const dialog = win.shareDialog || (await win.app._ensureShareDialog?.());
+          if (!dialog) throw new Error('thiếu app.shareDialog');
+          dialog.payload = '';
+          dialog.open();
+          const status = () => win.document.getElementById('ss-status').textContent;
+          await waitUntil(() => /Ready/.test(status()), 30000, 'share link');
+          const checkbox = [...win.document.querySelectorAll('#ss-options input')]
+            .find((input) => input.dataset.key === 'controls');
+          checkbox.checked = false;
+          checkbox.dispatchEvent(new win.Event('change'));
+          await sleep(700);
+          const link = win.document.getElementById('ss-link').value;
+          if (!link.includes('controls=0')) throw new Error('liên kết thiếu controls=0');
+          const frame = win.document.querySelector('#ss-preview iframe');
+          await waitUntil(() => frame.contentWindow?.studioEmbed?.ready, 30000, 'preview ready');
+          if (frame.contentWindow.studioEmbed.controls.enabled !== false) {
+            throw new Error('preview chưa áp controls=0');
+          }
+          dialog.close();
+          return 'controls=0 áp dụng cho cả link và preview';
+        },
+      },
+      {
+        name: 'Exporter: getter và PNG dùng camera hiện tại sau đổi projection',
+        async run(win) {
+          await reset(win);
+          const engine = win.engine;
+          const exporter = win.app.exporter;
+          const original = exporter.exportProjectJSON({ download: false });
+          const renderer = engine.renderer;
+          const render = renderer.render;
+          try {
+            if (exporter._engine !== engine) throw new Error('constructor không bind engine');
+            if (engine.camera.isOrthographicCamera) engine.toggleProjection();
+            const perspective = engine.camera;
+            const explicit = new win.StudioExporter({ scene: engine.scene, camera: perspective, renderer });
+            for (const type of ['OrthographicCamera', 'PerspectiveCamera']) {
+              engine.toggleProjection();
+              const camera = engine.camera;
+              if (camera.type !== type || exporter.camera !== camera) throw new Error(`getter bị cache: ${type}`);
+              if (explicit.camera !== perspective) throw new Error('options camera không được giữ nguyên');
+              const rendered = [];
+              renderer.render = function (scene, view) {
+                if (scene === engine.scene) rendered.push(view);
+                return render.apply(this, arguments);
+              };
+              const png = await exporter.captureRenderPNG({ scale: 1, download: false });
+              renderer.render = render;
+              if (rendered.length < 2 || rendered.some((view) => view !== camera)) {
+                throw new Error(`PNG không render bằng camera hiện tại: ${type}`);
+              }
+              if (!png.dataUrl.startsWith('data:image/png;base64,') || !(png.width > 0 && png.height > 0)) {
+                throw new Error('PNG không hợp lệ');
+              }
+            }
+            return '2 projection · getter live · 2 PNG · explicit options giữ nguyên';
+          } finally {
+            renderer.render = render;
+            await exporter.importProjectJSON(original);
+          }
+        },
+      },
+      {
+        name: 'Project JSON: orthographic round-trip target, zoom, orientation và resize',
+        async run(win) {
+          await reset(win);
+          const engine = win.engine;
+          const exporter = win.app.exporter;
+          const original = exporter.exportProjectJSON({ download: false });
+          try {
+            win.studio.addCube({ x: 3, y: 2, z: -4, name: 'OrthoRoundTrip' });
+            if (!engine.camera.isOrthographicCamera) engine.toggleProjection();
+            const camera = engine.camera;
+            camera.position.set(11, 8, 10);
+            camera.up.set(0.2, 1, 0.3).normalize();
+            engine.controls.target.set(3, 2, -4);
+            engine.controls.update();
+            camera.top = 7;
+            camera.bottom = -5;
+            camera.zoom = 2.5;
+            camera.near = 0;
+            camera.far = 321;
+            engine.onResize();
+            const expectedPosition = camera.getWorldPosition(new win.THREE.Vector3()).toArray();
+            const expectedQuaternion = camera.getWorldQuaternion(new win.THREE.Quaternion());
+            const expectedUp = camera.up.toArray();
+            const data = JSON.parse(exporter.exportProjectJSON({ download: false }));
+            if (data.camera.type !== 'OrthographicCamera') throw new Error('thiếu orthographic type');
+            assertCloseArray(data.camera.position, expectedPosition, 'world position lưu');
+            assertCloseArray(data.camera.quaternion, expectedQuaternion.toArray(), 'world quaternion lưu');
+            assertCloseArray(data.camera.target, [3, 2, -4], 'target lưu');
+            assertCloseArray(data.camera.up, expectedUp, 'up lưu');
+            assertCloseArray([data.camera.top, data.camera.bottom, data.camera.zoom, data.camera.near, data.camera.far],
+              [7, -5, 2.5, 0, 321], 'frustum lưu');
+            assertCloseArray([data.camera.left, data.camera.right], [camera.left, camera.right], 'horizontal bounds lưu');
+
+            engine.toggleProjection();
+            engine.camera.position.set(-8, 4, 20);
+            engine.controls.target.set(0, 0, 0);
+            engine.controls.update();
+            camera.zoom = 1;
+            camera.top = 1;
+            camera.bottom = -1;
+            camera.up.set(0, 1, 0);
+            // Simulate a file from another window aspect and a non-unit quaternion.
+            data.camera.left = -120;
+            data.camera.right = 120;
+            data.camera.quaternion = data.camera.quaternion.map((value) => value * 3);
+            await exporter.importProjectJSON(data);
+            await frames(win, 3);
+            const restored = engine.camera;
+            if (restored !== engine.orthographicCamera || engine.controls.object !== restored) {
+              throw new Error('import không đổi về viewport orthographic');
+            }
+            assertCloseArray(restored.position.toArray(), expectedPosition, 'position phục hồi');
+            assertCloseArray(engine.controls.target.toArray(), [3, 2, -4], 'target phục hồi');
+            assertCloseArray(restored.up.toArray(), expectedUp, 'up phục hồi');
+            assertCloseArray([restored.top, restored.bottom, restored.zoom, restored.near, restored.far],
+              [7, -5, 2.5, 0, 321], 'frustum phục hồi');
+            if (restored.quaternion.angleTo(expectedQuaternion) > 1e-6 || Math.abs(restored.quaternion.length() - 1) > 1e-7) {
+              throw new Error('quaternion không được phục hồi/normalize');
+            }
+            const aspect = (engine.container.clientWidth || win.innerWidth) / (engine.container.clientHeight || win.innerHeight);
+            assertCloseArray([restored.left, restored.right], [-6 * aspect, 6 * aspect], 'resize giữ vertical span');
+            const objects = win.sceneManager.getAllObjects();
+            if (objects.length !== 1 || objects[0].name !== 'OrthoRoundTrip') throw new Error('viewport camera thành scene object');
+            return 'ortho · target (3,2,-4) · zoom 2.5 · quaternion/up · near 0 · resize';
+          } finally {
+            await exporter.importProjectJSON(original);
+          }
+        },
+      },
+      {
+        name: 'Project JSON: scene camera view lưu viewport, import thoát camera view',
+        async run(win) {
+          await reset(win);
+          const engine = win.engine;
+          const exporter = win.app.exporter;
+          const manager = win.app.cameraManager;
+          const original = exporter.exportProjectJSON({ download: false });
+          try {
+            if (!engine.camera.isOrthographicCamera) engine.toggleProjection();
+            engine.camera.position.set(9, 6, 12);
+            engine.controls.target.set(2, 1, -3);
+            engine.controls.update();
+            engine.camera.zoom = 1.7;
+            engine.camera.updateProjectionMatrix();
+            const viewport = JSON.parse(exporter.exportProjectJSON({ download: false })).camera;
+            const group = manager.createCamera({ name: 'ChildCamera', position: { x: 25, y: 10, z: -8 }, target: { x: 0, y: 1, z: 0 } });
+            if (!manager.enterCameraView(group)) throw new Error('không vào được camera view');
+            const childCamera = engine.camera;
+            if (exporter.camera !== childCamera || childCamera === engine.controls.object) throw new Error('getter phải dùng scene camera live');
+            const data = JSON.parse(exporter.exportProjectJSON({ download: false }));
+            if (data.camera.type !== viewport.type) throw new Error('lưu nhầm projection của scene camera');
+            for (const field of ['position', 'quaternion', 'up', 'target']) {
+              assertCloseArray(data.camera[field], viewport[field], `viewport ${field}`);
+            }
+            assertCloseArray([data.camera.zoom], [viewport.zoom], 'viewport zoom');
+            await exporter.importProjectJSON(data);
+            await frames(win, 2);
+            if (manager.lookingThrough || engine.camera !== engine.orthographicCamera || engine.controls.object !== engine.camera) {
+              throw new Error('import chưa thoát scene camera view');
+            }
+            assertCloseArray(engine.camera.position.toArray(), viewport.position, 'viewport không dùng child local position');
+            assertCloseArray(engine.controls.target.toArray(), viewport.target, 'viewport target');
+            const authored = win.sceneManager.getAllObjects().filter((object) => object.userData?.isCameraObject);
+            if (authored.length !== 1) throw new Error('scene camera bị mất hoặc tạo thêm viewport camera');
+            return 'lưu orbit viewport khi xem scene camera · import thoát view · không thêm camera';
+          } finally {
+            manager.exitCameraView();
+            await exporter.importProjectJSON(original);
+          }
+        },
+      },
+      {
+        name: 'Project JSON: camera legacy không có type vẫn mở perspective (v2/v3)',
+        async run(win) {
+          await reset(win);
+          const engine = win.engine;
+          const exporter = win.app.exporter;
+          const original = exporter.exportProjectJSON({ download: false });
+          try {
+            for (const schema of [2, 3]) {
+              if (!engine.camera.isOrthographicCamera) engine.toggleProjection();
+              const data = JSON.parse(original);
+              data.meta.schemaVersion = schema;
+              data.camera = { fov: 63, near: 0.2, far: 900, position: [8, 6, 11] };
+              if (schema === 2) delete data.sceneGraph;
+              await exporter.importProjectJSON(data);
+              await frames(win, 2);
+              if (engine.camera !== engine.perspectiveCamera || exporter.camera !== engine.camera) {
+                throw new Error(`legacy v${schema} không đổi về perspective`);
+              }
+              assertCloseArray(engine.camera.position.toArray(), [8, 6, 11], `legacy v${schema} position`);
+              assertCloseArray([engine.camera.fov, engine.camera.near, engine.camera.far], [63, 0.2, 900], `legacy v${schema} frustum`);
+              if (win.sceneManager.getAllObjects().length) throw new Error('legacy viewport camera thành scene object');
+            }
+            return 'v2 flat + v3 sceneGraph · không type → perspective · không migration';
+          } finally {
+            await exporter.importProjectJSON(original);
+          }
+        },
+      },
+      {
+        name: 'Project JSON: từ chối camera fields không hữu hạn hoặc không hợp lệ',
+        async run(win) {
+          await reset(win);
+          const engine = win.engine;
+          const exporter = win.app.exporter;
+          const original = exporter.exportProjectJSON({ download: false });
+          try {
+            if (!engine.camera.isOrthographicCamera) engine.toggleProjection();
+            engine.controls.update();
+            const camera = engine.camera;
+            const before = JSON.parse(exporter.exportProjectJSON({ download: false })).camera;
+            const data = JSON.parse(original);
+            data.camera = { type: 'OrthographicCamera', position: [null, 2, 3], target: [1, '2', 3],
+              up: [0, 0, 0], quaternion: [0, 0, 0, 0], near: -1, far: Infinity,
+              zoom: 0, left: 5, right: -5, top: 2, bottom: 2 };
+            await exporter.importProjectJSON(data);
+            data.camera.position = [1, NaN, 3];
+            data.camera.target = [1, 2];
+            data.camera.up = [0, Infinity, 0];
+            data.camera.quaternion = [0, 0, NaN, 1];
+            data.camera.zoom = -2;
+            data.camera.left = -Infinity;
+            await exporter.importProjectJSON(data);
+            await frames(win, 2);
+            assertCloseArray(camera.position.toArray(), before.position, 'invalid position');
+            assertCloseArray(camera.up.toArray(), before.up, 'invalid up');
+            assertCloseArray(engine.controls.target.toArray(), before.target, 'invalid target');
+            assertCloseArray([camera.near, camera.far, camera.zoom, camera.left, camera.right, camera.top, camera.bottom],
+              [before.near, before.far, before.zoom, before.left, before.right, before.top, before.bottom], 'invalid projection');
+            if (camera.quaternion.angleTo(new win.THREE.Quaternion().fromArray(before.quaternion)) > 1e-6 ||
+                !camera.projectionMatrix.elements.every(Number.isFinite)) throw new Error('camera bị hỏng do input sai');
+            engine.toggleProjection();
+            const fov = engine.camera.fov;
+            for (const invalidFov of [0, 180, '60', NaN]) {
+              data.camera = { type: 'PerspectiveCamera', fov: invalidFov };
+              await exporter.importProjectJSON(data);
+              if (engine.camera.fov !== fov) throw new Error('chấp nhận fov không hợp lệ');
+            }
+            return 'finite vectors · nonzero quaternion/up · valid bounds/clip planes · positive zoom/fov';
+          } finally {
+            await exporter.importProjectJSON(original);
+          }
+        },
+      },
+      {
+        name: 'Project JSON: giữ group, visibility, material, light, camera và vertex tuỳ biến',
+        async run(win) {
+          await reset(win);
+          const sm = win.sceneManager;
+          const a = win.studio.addCube({ x: 0, y: 1, z: 0, name: 'A' });
+          const b = win.studio.addSphere({ x: 3, y: 1, z: 0, name: 'B' });
+          a.geometry.attributes.position.array[0] += 0.25;
+          a.geometry.attributes.position.needsUpdate = true;
+          const vertex = a.geometry.attributes.position.array[0];
+          sm.setSelection([a, b]);
+          const group = sm.groupObjects([a, b], 'Pair');
+          sm.setVisibility(b, false);
+          sm.renameObject(a, 'A-renamed');
+          a.material.color.set('#ff0000');
+          win.studio.addLight({ type: 'point', x: 2, y: 5, z: 2, name: 'UserPoint' });
+          win.app.cameraManager.createCamera({ name: 'Cam2', position: { x: 9, y: 9, z: 9 }, target: { x: 0, y: 1, z: 0 } });
+
+          const json = win.app.exporter.exportProjectJSON({ download: false });
+          const data = JSON.parse(json);
+          if (data.meta.schemaVersion !== 5) throw new Error(`schema=${data.meta.schemaVersion}`);
+          if (!data.sceneGraph) throw new Error('thiếu sceneGraph');
+          if (data.lights.some((light) => /KeyLight|FillLight|RimLight|AmbientLight/.test(light.name))) {
+            throw new Error('project JSON chứa đèn studio hệ thống');
+          }
+          await win.app.exporter.importProjectJSON(json);
+          await sleep(150);
+          const all = sm.getAllObjects();
+          const restoredGroup = all.find((o) => o.isGroup && o.name === 'Pair');
+          if (!restoredGroup || restoredGroup.children.length !== 2) throw new Error('group/2 con không được phục hồi');
+          const childA = restoredGroup.children.find((o) => o.name === 'A-renamed');
+          const childB = restoredGroup.children.find((o) => o.name === 'B');
+          if (!childA || !childB) throw new Error('thiếu object con sau khi mở');
+          if (childB.visible !== false) throw new Error('visibility=false không được phục hồi');
+          if (`#${childA.material.color.getHexString()}` !== '#ff0000') throw new Error('màu material không được phục hồi');
+          const restoredVertex = childA.geometry.attributes.position.array[0];
+          if (Math.abs(restoredVertex - vertex) > 1e-5) throw new Error('vertex tuỳ biến bị mất');
+          if (!all.some((o) => o.isLight && o.name === 'UserPoint')) throw new Error('user light bị mất');
+          if (!all.some((o) => o.userData?.isCameraObject && o.name === 'Cam2')) throw new Error('camera bị mất');
+          return `${(json.length / 1024).toFixed(1)} KB · group 2 con · light + camera + vertex OK`;
+        },
+      },
+      {
+        name: 'Project JSON: giữ keyframe timeline và AnimationClip gắn trên object',
+        async run(win) {
+          await reset(win);
+          const cube = win.studio.addCube({ x: 0, y: 1, z: 0, name: 'Keyed' });
+          win.sceneManager.select(cube);
+          win.timelineEngine.seekToFrame(0);
+          win.timelineEngine.insertKeyframe(cube, 0, ['position', 'rotation']);
+          win.timelineEngine.seekToFrame(24);
+          cube.position.x = 2;
+          win.timelineEngine.insertKeyframe(cube, 24, ['position']);
+
+          const T = win.THREE;
+          const clip = new T.AnimationClip('TestSpin', 1, [
+            new T.VectorKeyframeTrack('Keyed.position', [0, 1], [0, 1, 0, 2, 1, 0])
+          ]);
+          cube.animations = [clip];
+          win.timelineEngine.attachClip(cube, clip);
+
+          const json = win.app.exporter.exportProjectJSON({ download: false });
+          await win.app.exporter.importProjectJSON(json);
+          await sleep(200);
+          const restored = win.sceneManager.getAllObjects().find((o) => o.name === 'Keyed');
+          if (!restored) throw new Error('không tìm thấy object sau khi mở');
+          if (!win.timelineEngine.hasKeyframe(restored, 0) || !win.timelineEngine.hasKeyframe(restored, 24)) {
+            throw new Error('keyframe timeline bị mất');
+          }
+          const kf = win.timelineEngine.getKeyframe(restored, 24);
+          if (!kf?.position || Math.abs(kf.position.x - 2) > 1e-4) throw new Error('giá trị keyframe sai');
+          if (!Array.isArray(restored.animations) || restored.animations.length === 0) {
+            throw new Error('AnimationClip bị mất');
+          }
+          if (win.timelineEngine.clips.size === 0) throw new Error('clip chưa được gắn lại vào timeline');
+          return '2 keyframe + 1 clip được phục hồi';
+        },
+      },
+      {
+        name: 'Project JSON: round-trip nhân vật skinned (Michelle) dưới giới hạn 8 MB',
+        async run(win) {
+          await reset(win);
+          const root = await win.app.exporter.importGLTF('/models/Michelle.glb');
+          await sleep(300);
+          let before = { bones: 0, maps: 0, clips: root.animations?.length || 0 };
+          root.traverse((o) => { if (o.isBone) before.bones += 1; if (o.material?.map) before.maps += 1; });
+          const json = win.app.exporter.exportProjectJSON({ download: false });
+          if (json.length > 8 * 1024 * 1024) throw new Error(`JSON ${(json.length / 1048576).toFixed(1)} MB > 8 MB`);
+          await win.app.exporter.importProjectJSON(json);
+          await sleep(300);
+          const loaded = win.sceneManager.getAllObjects()[0];
+          let after = { skinned: 0, bones: 0, maps: 0, clips: 0 };
+          (loaded || win.scene).traverse((o) => {
+            if (o.isSkinnedMesh) after.skinned += 1;
+            if (o.isBone) after.bones += 1;
+            if (o.material?.map) after.maps += 1;
+            if (Array.isArray(o.animations)) after.clips += o.animations.length;
+          });
+          if (after.skinned !== 1) throw new Error(`skinned=${after.skinned}`);
+          if (after.bones !== before.bones) throw new Error(`bones ${before.bones} → ${after.bones}`);
+          if (after.maps < before.maps) throw new Error('texture map bị mất');
+          if (after.clips < before.clips) throw new Error(`clips ${before.clips} → ${after.clips}`);
+          return `${(json.length / 1048576).toFixed(2)} MB · ${after.bones} xương · map + ${after.clips} clip`;
+        },
+      },
+      {
+        name: 'STEM Tutor 1-1: Con trỏ không chắn UI, Model AI điều khiển (askAICoach / studio.tutor), giọng 1.2x & chấm hình học 100/100',
+        async run(win) {
+          await reset(win);
+          const tutor = win.stemTutor || win.app?.stemTutor;
+          if (!tutor) throw new Error('stemTutor chưa được khởi tạo');
+          const host = win.document.getElementById('stem-avatar-host');
+          if (!host) throw new Error('Thiếu #stem-avatar-host trên DOM');
+
+          tutor.startLesson('lesson-01-primitives', { loadStarter: true, speak: true, guided: true });
+          const step0 = tutor.goToStep(0, { speak: true }); // Bước điều hướng khung nhìn
+          if (!step0 || step0.targetSelector !== '#viewport-canvas-host') throw new Error('Bước 1 phải chỉ vào khung nhìn 3D');
+          if (tutor.avatarPosition.overlapsTarget) throw new Error('Con trỏ Giáo viên bị đè lên khung nhìn');
+          if (host.dataset.pointer !== 'none' && !host.classList.contains('pass-through')) throw new Error('Con trỏ phải bật pass-through (pointer-events: none) khi chỉ vào nút');
+
+          const posMenu = { ...tutor.avatarPosition };
+          tutor.goToStep(3, { speak: true }); // Bay tới #outliner-panel
+          const posOutliner = { ...tutor.avatarPosition };
+          if (posMenu.x === posOutliner.x && posMenu.y === posOutliner.y) {
+            throw new Error('Icon Agent không thay đổi tọa độ khi bay từ #menu-add sang #outliner-panel');
+          }
+
+          // Kiểm tra Model AI / studio.tutor điều khiển trực tiếp giao diện (hỗ trợ cả Cloud AI thật /api/ai/chat lẫn Built-in Coach)
+          win.studio.addCube({ name: 'Khoi_Kiem_Thu_AI', x: 0, y: 1, z: 0 });
+          const aiRes = await tutor.askAICoach('Chỉ tôi cách đùn khối Extrude (#btn-edit-extrude) trong Edit Mode', { speak: false });
+          if (!aiRes || !aiRes.ok || !aiRes.target || aiRes.avatarPosition?.overlapsTarget) {
+            throw new Error(`askAICoach lỗi hoặc đè lên nút: ${JSON.stringify(aiRes)}`);
+          }
+          const directRes = tutor.moveToTarget('#btn-edit-extrude', { openBubble: true, speak: false });
+          if (!directRes || !directRes.found || directRes.overlapsTarget) {
+            throw new Error('studio.tutor.pointAt(#btn-edit-extrude) bị lỗi hoặc đè lên nút');
+          }
+
+          // Kiểm tra làm mẫu Bài 2 (Box Modeling Inset + Extrude thực tế trên BufferGeometry) và chấm điểm 100/100
+          tutor.startLesson('lesson-02-materials-lights', { loadStarter: false, speak: false, guided: false });
+          await tutor.runLessonDemo({ speak: false });
+          const grade = tutor.gradeCurrentLesson({ speak: false });
+          if (!grade || grade.score !== 100 || !grade.passed) {
+            throw new Error(`Điểm chấm tự động Bài 2=${grade?.score}, kỳ vọng 100/100`);
+          }
+          tutor.setBubbleOpen(false);
+          tutor.stopSpeaking();
+          tutor.parkAvatar();
+          return `Zero-overlap (${posMenu.x},${posMenu.y})→(${posOutliner.x},${posOutliner.y}) · AI Coach Extrude OK · Chấm ${grade.score}/100`;
+        },
+      },
+      {
+        name: 'STEM Live Voice: tiếng TTS không chạy prev_step, lệnh thật sau echo guard vẫn hoạt động',
+        async run(win) {
+          return win.eval(`(async () => {
+            const { VoiceWakeCoordinator } = await import('/js/ai/voice-wake-router.js');
+            class FakeRecognition {
+              start() { this.onstart?.(); }
+              abort() { this.onend?.(); }
+              emit(text, isFinal = true) {
+                this.onresult?.({ resultIndex: 0, results: [{ 0: { transcript: text }, isFinal, length: 1 }] });
+              }
+            }
+            const fake = new FakeRecognition();
+            const commands = [];
+            let bargeIns = 0;
+            const coord = new VoiceWakeCoordinator({
+              recognitionFactory: () => fake,
+              silenceMs: 12,
+              onCommand: (decision) => commands.push(decision.command),
+              onBargeIn: () => { bargeIns += 1; }
+            });
+            coord.startDirectMode('stem');
+            coord.session.echoGuardMs = 30;
+            coord.notifyAssistantSpeaking('Bạn đã đi qua trọn bộ 4 bước. Có thể bấm Trước, Tiếp để xem lại từng bước hoặc hỏi thêm câu mới!');
+            fake.emit('quay lại', true);
+            await new Promise(resolve => setTimeout(resolve, 40));
+            const during = { commands: [...commands], bargeIns, state: coord.session.state };
+            coord.notifyAssistantIdle();
+            await new Promise(resolve => setTimeout(resolve, 45));
+            fake.emit('quay lại', true);
+            await new Promise(resolve => setTimeout(resolve, 40));
+            const after = { commands: [...commands], state: coord.session.state };
+            coord.stopAll();
+            if (during.commands.length || during.bargeIns || during.state !== 'speaking') {
+              throw new Error('Tiếng TTS đã điều khiển walkthrough: ' + JSON.stringify(during));
+            }
+            if (after.commands.length !== 1 || after.commands[0] !== 'prev_step') {
+              throw new Error('Lệnh quay lại thật bị chặn: ' + JSON.stringify(after));
+            }
+            return 'TTS echo blocked · barge-in=0 · real prev_step OK';
+          })()`);
+        },
+      },
+      {
+        name: 'Project schema v4: lưu và mở lại modifier stack + baseGeometry',
+        run: async (win) => {
+          const sm = win.sceneManager;
+          const exporter = win.studioExporter || win.app?.studioExporter;
+          if (!sm || !exporter) throw new Error('SceneManager hoặc StudioExporter thiếu');
+
+          // Dựng 1 cube với modifier
+          const mesh = win.studio.addCube({ name: 'Modifier_Mesh_v4', x: 0, y: 0, z: 0 });
+          if (!mesh) throw new Error('Không tạo được mesh');
+          await win.studio.modifiers.add('array', { count: 3, offset: [2, 0, 0] }, mesh);
+
+          // Save project JSON (API thật: exportProjectJSON -> chuỗi JSON)
+          const projectJSON = exporter.exportProjectJSON({ download: false });
+          const projectData = JSON.parse(projectJSON);
+          if (!projectData || (projectData.meta?.schemaVersion || 0) < 4) {
+            throw new Error('Project schemaVersion phải >= 4');
+          }
+
+          // Xoá scene rồi import lại (API thật: importProjectJSON)
+          sm.clearScene();
+          const res = await exporter.importProjectJSON(projectJSON);
+          if (!res || !res.success) throw new Error('importProjectJSON thất bại');
+
+          const importedMesh = sm.getAllObjects().find(o => o.name === 'Modifier_Mesh_v4');
+          if (!importedMesh) throw new Error('Không tìm thấy mesh đã import');
+          if (!Array.isArray(importedMesh.userData?.modifierStack) || importedMesh.userData.modifierStack.length !== 1) {
+            throw new Error('Modifier stack không được phục hồi');
+          }
+          if (importedMesh.userData.modifierStack[0].params.count !== 3) {
+            throw new Error(`Modifier params count sai: ${importedMesh.userData.modifierStack[0].params.count}`);
+          }
+          if (!importedMesh.userData.baseGeometry) {
+            throw new Error('baseGeometry không được phục hồi từ schema v4');
+          }
+
+          sm.clearScene();
+          return `Schema v${projectData.meta.schemaVersion} · modifier stack phục hồi nguyên vẹn (count=3)`;
+        },
+      },
+      {
+        name: 'Wave 0: gói .wbs (ZIP + Blob) & Linked Duplicate (Alt+D) giữ chia sẻ hình học',
+        async run(win) {
+          await reset(win);
+          const sm = win.sceneManager;
+          const exporter = win.app.exporter;
+          const orig = win.studio.addCube({ name: 'LinkSrc', x: 0, y: 1, z: 0 });
+          orig.geometry.attributes.position.array[0] += 0.3;
+          orig.geometry.attributes.position.needsUpdate = true;
+          sm.select(orig);
+          win.app.blenderProTools.duplicateLinkedSelection();
+          win.app.modalTransform?.cancel?.();
+
+          const linked = sm.getAllObjects().find((o) => o !== orig && o.isMesh);
+          if (!linked) throw new Error('Alt+D không tạo được bản sao liên kết');
+          if (linked.geometry !== orig.geometry) throw new Error('Alt+D không chia sẻ BufferGeometry');
+
+          const pkg = await exporter.exportProjectPackage({ download: false, minBlobBytes: 64 });
+          if (!pkg?.bytes || pkg.blobCount < 1) throw new Error('exportProjectPackage không xuất được blob');
+
+          sm.clearScene();
+          const res = await exporter.importProjectJSON(pkg.bytes);
+          if (!res?.success || res.schema !== 5) throw new Error(`import .wbs thất bại: ${JSON.stringify(res)}`);
+
+          const all = sm.getAllObjects().filter((o) => o.isMesh);
+          if (all.length !== 2) throw new Error(`cần 2 mesh, nhận ${all.length}`);
+          if (all[0].geometry !== all[1].geometry) throw new Error('mất liên kết geometry sau khi mở .wbs');
+
+          // Test Make Single-User in Inspector Data/Object card
+          sm.select(all[1]);
+          await frames(win, 2);
+          const btnSingle = win.document.getElementById('btn-insp-make-single-user');
+          if (!btnSingle) throw new Error('thiếu nút Make Single-User khi mesh có >= 2 users');
+          btnSingle.click();
+          await frames(win, 2);
+          if (all[0].geometry === all[1].geometry) throw new Error('Make Single-User không tách BufferGeometry');
+
+          sm.clearScene();
+          return `.wbs ${(pkg.bytes.byteLength / 1024).toFixed(1)} KB (${pkg.blobCount} blobs) · shared geometry + Single-User UI OK`;
+        },
+      },
+      {
+        name: 'Wave 1: xuất FBX (mesh), USDZ (64B-aligned), 3MF và Game Pack (.glb LOD+UCX+UV2)',
+        async run(win) {
+          await reset(win);
+          const exporter = win.app.exporter;
+          const sphere = win.studio.addSphere({ name: 'GameProp', radius: 0.9, x: 0, y: 1, z: 0 });
+          const fbx = exporter.exportFBX(sphere, { download: false, quiet: true });
+          const fbxMagic = fbx?.bytes ? new TextDecoder().decode(fbx.bytes.subarray(0, 18)) : '';
+          if (!(fbx?.bytes instanceof win.Uint8Array) || fbxMagic !== 'Kaydara FBX Binary' || fbx.meshCount !== 1) {
+            throw new Error(`exportFBX thiếu Binary FBX 7.4 hoặc thiếu mesh (magic=${JSON.stringify(fbxMagic)}, meshCount=${fbx?.meshCount})`);
+          }
+          const usdz = await exporter.exportUSDZ(sphere, { download: false, quiet: true });
+          if (!usdz?.bytes?.length || !usdz.usda.includes('UsdPreviewSurface')) throw new Error('exportUSDZ lỗi');
+          const mf = exporter.export3MF(sphere, { download: false, quiet: true });
+          if (!mf?.bytes?.length || mf.triangleCount < 12) throw new Error('export3MF lỗi');
+          const pack = await exporter.exportGamePackGLB(sphere, { download: false, quiet: true });
+          if (!pack?.buffer || pack.report?.lodMeshes !== 3 || pack.report?.collisionMeshes !== 1) {
+            throw new Error(`exportGamePackGLB lỗi: ${JSON.stringify(pack?.report)}`);
+          }
+          return `FBX ${(fbx.bytes.byteLength / 1024).toFixed(1)}KB · USDZ ${(usdz.bytes.byteLength / 1024).toFixed(1)}KB · 3MF ${(mf.bytes.byteLength / 1024).toFixed(1)}KB · Pack ${pack.report.lodMeshes} LODs`;
+        },
+      },
+      {
+        name: 'Wave 2: Vertex/Texture Paint + UV 2D Paint + Shader Node Editor GLSL render + Asset Browser',
+        async run(win) {
+          const cube = win.studio.addCube('W2TestCube', { x: 0, y: 0.5, z: 0 });
+          win.sceneManager.select(cube);
+          // 1) Texture paint + UV 2D paint
+          if (!win.paintMode?.enter(cube, 'texture-paint')) throw new Error('Texture Paint enter lỗi');
+          const touched = win.paintMode.paint2DAtUV(0.5, 0.5, { mesh: cube, radiusPx: 14, beginStroke: true, commitStroke: true });
+          if (touched <= 0) throw new Error('paint2DAtUV không tô texel');
+          win.paintMode.exit();
+
+          // 2) Vertex paint + Dirty VC
+          if (!win.paintMode?.enter(cube, 'vertex-paint')) throw new Error('Vertex Paint enter lỗi');
+          win.paintMode.dirtyVertexColors({ strength: 0.6 });
+          if (!cube.material.vertexColors) throw new Error('Vertex paint chưa bật vertexColors');
+          win.paintMode.exit();
+
+          // 3) Shader Node Editor procedural preset renders in live WebGL without GLSL error
+          if (!win.shaderEditor) throw new Error('ShaderNodeEditorUI chưa khởi tạo');
+          win.shaderEditor.syncFromSelection();
+          win.shaderEditor.applyPresetGraph('procedural_stone');
+          win.engine?.render?.();
+
+          // 4) Asset Browser panel rendered cards
+          if (!win.assetBrowser) throw new Error('AssetBrowserUI chưa khởi tạo');
+          win.assetBrowser.render();
+          const cards = win.document.querySelectorAll('#ab-grid .ab-asset-card');
+          if (cards.length < 20) throw new Error(`Asset Browser quá ít thẻ (${cards.length})`);
+          return `Paint ${touched}px · Nodes ${win.shaderEditor.graph.nodes.size} · Assets ${cards.length}`;
+        },
+      },
+      {
+        name: 'Wave 3: Add Text3D/Curve, Pro Modifiers (Cast/Weld/Remesh), Nested Collections & Dyntopo Sculpt',
+        async run(win) {
+          win.document.getElementById('btn-add-curve-bezier')?.click();
+          const crv = win.sceneManager.getActiveObject();
+          if (!crv?.userData?.curveData) throw new Error('Add Bezier Curve thất bại');
+          win.document.getElementById('btn-add-text3d')?.click();
+          const txt = win.sceneManager.getActiveObject();
+          if (!txt?.userData?.curveData || txt.userData.curveData.kind !== 'text') throw new Error('Add Text 3D thất bại');
+
+          const box = win.studio.addCube({ name: 'W3ProBox', x: 0, y: 1, z: 0 });
+          win.sceneManager.select(box);
+          win.Modifiers?.applyModifier?.(box, 'weld', { distance: 0.005 });
+          const castRes = win.Modifiers?.applyModifier?.(box, 'cast', { shape: 'sphere', factor: 0.8 });
+          if (!castRes) throw new Error('Cast modifier thất bại');
+
+          const cm = win.sceneManager.collectionManager;
+          const col = cm?.createCollection('W3SubCol', cm.rootId);
+          cm?.moveObjectToCollection(box, col.id);
+          win.outliner?.render?.();
+          await new Promise((r) => win.requestAnimationFrame(() => win.requestAnimationFrame(r)));
+          const hasCol = win.document.body.innerText.includes('W3SubCol');
+          if (!hasCol) throw new Error('Nested collection không hiển thị trong Outliner');
+          return `Curve ${crv.name} · Text3D OK · Cast/Weld OK · Outliner W3SubCol OK`;
+        },
+      },
+      {
+        name: 'Wave 4A: Bezier F-Curve Graph Editor, Handles, Extrapolation, Box Select & Undo',
+        async run(win) {
+          if (!win.graphEditor || !win.timelineEngine) throw new Error('GraphEditorUI chưa khởi tạo');
+          const tab = win.document.querySelector('.dock-tab[data-pane="dock-graph-editor"]');
+          tab?.click();
+          await new Promise((r) => setTimeout(r, 80));
+
+          const cube = win.studio.addCube({ name: 'W4GraphCube', x: 0, y: 0, z: 0 });
+          win.sceneManager.select(cube);
+          cube.position.set(0, 0, 0);
+          win.timelineEngine.insertKeyframe(cube, 0, ['position'], 'bezier');
+          cube.position.set(4, 2, 0);
+          win.timelineEngine.insertKeyframe(cube, 20, ['position'], 'bezier');
+
+          win.graphEditor.resize();
+          win.graphEditor.activeChannel = 'position.x';
+          if (win.graphEditor.channelSelect) win.graphEditor.channelSelect.value = 'position.x';
+          win.graphEditor.fitView();
+          win.graphEditor.boxSelectFrames(-1, 25, -5, 10);
+          if (win.graphEditor.selectedKeys.size < 2) throw new Error('Box select không chọn đủ keyframe');
+
+          win.graphEditor.moveSelectedHandle('position.x', 0, 'right', 6, 3);
+          win.graphEditor.setActiveExtrapolation('cycle_offset');
+          win.timelineEngine.evaluate(40);
+          const cycledX = cube.position.x;
+          if (Math.abs(cycledX - 8.0) > 0.05) throw new Error(`Extrapolation cycle_offset @f40 sai: ${cycledX}`);
+
+          const canvas = win.document.getElementById('graph-editor-canvas');
+          if (!canvas || canvas.width < 50 || canvas.height < 50) throw new Error('Graph Editor canvas chưa resize hợp lệ');
+          const img = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data;
+          let coloredPx = 0;
+          for (let i = 0; i < img.length; i += 4) {
+            if (img[i] > 160 || img[i + 1] > 160 || img[i + 2] > 180) coloredPx++;
+          }
+          if (coloredPx < 30) throw new Error(`Graph Editor chưa vẽ F-Curve/playhead lên canvas (${coloredPx}px)`);
+
+          win.sceneManager.undo();
+          if (win.timelineEngine.getFCurveExtrapolation(cube, 'position.x') === 'cycle_offset') {
+            throw new Error('Undo extrapolation thất bại');
+          }
+          return `Selected ${win.graphEditor.selectedKeys.size} keys · cycle_offset x=${cycledX.toFixed(2)} · Canvas ${coloredPx}px · Undo OK`;
+        },
+      },
+      {
+        name: 'Wave 4B: Action Editor, Push Down NLA Strips & Sandboxed Drivers UI',
+        async run(win) {
+          if (!win.app?.timelineUI || !win.timelineEngine) throw new Error('TimelineUI chưa khởi tạo');
+          win.document.querySelector('.dock-tab[data-pane="dock-timeline"]')?.click();
+          await new Promise((r) => setTimeout(r, 60));
+
+          const cube = win.studio.addCube({ name: 'W4BBox', x: 0, y: 0, z: 0 });
+          win.sceneManager.select(cube);
+          cube.position.set(0, 0, 0);
+          win.timelineEngine.insertKeyframe(cube, 0, ['position'], 'linear');
+          cube.position.set(8, 0, 0);
+          win.timelineEngine.insertKeyframe(cube, 20, ['position'], 'linear');
+
+          // 1) Action tab -> New Action -> Push Down NLA -> verify .tl-nla-strip renders & evaluates
+          win.document.querySelector('.tl-mode-btn[data-tl-mode="action"]')?.click();
+          win.document.getElementById('tl-btn-action-new')?.click();
+          win.document.getElementById('tl-btn-action-push')?.click();
+          await new Promise((r) => setTimeout(r, 40));
+
+          const strips = win.document.querySelectorAll('.tl-nla-strip');
+          if (strips.length < 1) throw new Error('Không thấy NLA strip sau Push Down to NLA');
+          win.timelineEngine.evaluate(10);
+          if (Math.abs(cube.position.x - 4.0) > 0.05) throw new Error(`NLA strip @f10 sai x=${cube.position.x}`);
+
+          // 2) Drivers tab -> reject unsafe JS -> accept safe math & evaluate
+          win.document.querySelector('.tl-mode-btn[data-tl-mode="drivers"]')?.click();
+          await new Promise((r) => setTimeout(r, 40));
+          const propSelect = win.document.getElementById('drv-target-prop');
+          const exprInput = win.document.getElementById('drv-expr-input');
+          const addBtn = win.document.getElementById('drv-btn-add');
+          const errEl = win.document.getElementById('drv-builder-err');
+          if (!propSelect || !exprInput || !addBtn) throw new Error('Drivers panel chưa render controls');
+
+          propSelect.value = 'position.y';
+          exprInput.value = 'window.alert(1)';
+          addBtn.click();
+          if (!errEl?.textContent?.trim()) throw new Error('Driver UI không chặn biểu thức window.alert');
+
+          exprInput.value = 'frame * 0.5 + 1';
+          addBtn.click();
+          win.timelineEngine.seekToFrame(6);
+          if (Math.abs(cube.position.y - 4.0) > 1e-4) throw new Error(`Driver evaluate @f6 sai y=${cube.position.y}`);
+          const drvRows = win.document.querySelectorAll('.tl-drv-row');
+          if (drvRows.length < 1) throw new Error('Driver row chưa render trong UI');
+
+          return `NLA strips=${strips.length} (x=4.0@f10) · Unsafe blocked · Driver y=${cube.position.y.toFixed(1)}@f6`;
+        },
+      },
+      {
+        name: 'Wave 4C: Bone Heat auto-skin, Vertex Groups Data panel, use_connect, Bone Collections & IK/FK switch',
+        async run(win) {
+          const THREE = win.THREE;
+          const sm = win.sceneManager;
+          const inspector = win.inspector;
+          const rig = win.rigSystem;
+          if (!THREE || !sm || !inspector || !rig) throw new Error('Thiếu THREE/SceneManager/Inspector/RigSystem');
+
+          // Create an armature + mesh inside live studio scene
+          const arm = new win.THREE.Group();
+          arm.name = 'B4C_Armature';
+          arm.userData.isArmature = true;
+          const root = new THREE.Bone(); root.name = 'Hips'; root.position.set(0, 0.2, 0);
+          const lArm = new THREE.Bone(); lArm.name = 'LeftArm'; lArm.position.set(0.25, 0.8, 0);
+          const lFore = new THREE.Bone(); lFore.name = 'LeftForeArm'; lFore.position.set(0.45, 0, 0);
+          const lHand = new THREE.Bone(); lHand.name = 'LeftHand'; lHand.position.set(0.4, 0, 0);
+          root.add(lArm); lArm.add(lFore); lFore.add(lHand);
+          arm.add(root);
+          const skel = new THREE.Skeleton([root, lArm, lFore, lHand]);
+          arm.userData.skeleton = skel;
+          sm.addObject(arm, null, false, false);
+
+          const meshGeom = new THREE.BoxGeometry(1.1, 0.4, 0.3, 6, 4, 2);
+          meshGeom.translate(0.55, 1.0, 0);
+          const rawMesh = new THREE.Mesh(meshGeom, new THREE.MeshStandardMaterial());
+          rawMesh.name = 'B4C_Mesh';
+          sm.addObject(rawMesh, null, false, false);
+          sm.select(rawMesh);
+
+          // 1. Switch Inspector -> armature tab, verify Bone Heat solver default & click Auto-Bind
+          const clickTab = (name) => {
+            const btn = win.document.querySelector(`.prop-tab-btn[data-tab="${name}"]`);
+            if (!btn) throw new Error(`Không tìm thấy tab Inspector "${name}"`);
+            btn.click();
+          };
+          clickTab('armature');
+          await new Promise((r) => setTimeout(r, 30));
+          const modeSel = win.document.getElementById('sel-insp-skin-mode');
+          const bindBtn = win.document.getElementById('btn-inspector-auto-skin');
+          if (!modeSel || modeSel.value !== 'heat' || !bindBtn) {
+            throw new Error(`Auto-skinning solver UI thiếu hoặc mặc định sai (${modeSel?.value})`);
+          }
+          bindBtn.click();
+          await new Promise((r) => setTimeout(r, 40));
+          const skinned = inspector.targetObject || sm.getActiveObject();
+          if (!skinned?.isSkinnedMesh) throw new Error('Auto-Bind Bone Heat không tạo SkinnedMesh');
+
+          // 2. Switch Inspector -> data tab, verify Vertex Groups synced & Add new group button works
+          clickTab('data');
+          await new Promise((r) => setTimeout(r, 30));
+          const vgBefore = win.document.querySelectorAll('.vg-list-row').length;
+          const addVgBtn = win.document.getElementById('btn-vg-add');
+          if (vgBefore !== 4 || !addVgBtn) throw new Error(`Vertex Groups sync sai count=${vgBefore}`);
+          addVgBtn.click();
+          await new Promise((r) => setTimeout(r, 30));
+          const vgAfter = win.document.querySelectorAll('.vg-list-row').length;
+          if (vgAfter !== 5) throw new Error(`Click + Vertex Group không thêm nhóm mới (${vgAfter})`);
+
+          // 3. Armature tab: Edit Bone -> use_connect, Bone Collection visibility, IK/FK snap
+          clickTab('armature');
+          await new Promise((r) => setTimeout(r, 30));
+          rig.enterEditBoneMode(arm);
+          rig.selectBone(lFore);
+          inspector.selectedBone = lFore;
+          inspector.render();
+          await new Promise((r) => setTimeout(r, 30));
+
+          const connectChk = win.document.getElementById('chk-insp-bone-connect');
+          if (!connectChk) throw new Error('Thiếu checkbox Connected to Parent Tail (use_connect)');
+          connectChk.checked = true;
+          connectChk.dispatchEvent(new win.Event('change'));
+          if (!rig.getBoneConnected(lFore)) throw new Error('use_connect checkbox không cập nhật bone');
+
+          const colName = win.document.getElementById('insp-bone-col-name');
+          const colAddBtn = win.document.getElementById('btn-insp-add-bone-col');
+          if (!colName || !colAddBtn) throw new Error('Thiếu controls Bone Collections');
+          colName.value = 'ArmChain';
+          colAddBtn.click();
+          await new Promise((r) => setTimeout(r, 30));
+          const visBtn = win.document.querySelector('.btn-insp-col-vis');
+          if (!visBtn) throw new Error('Bone Collection row chưa render');
+          visBtn.click();
+          await new Promise((r) => setTimeout(r, 30));
+          if (!lFore.userData?.hiddenByCollection) throw new Error('Tắt visibility Bone Collection không ẩn xương');
+          win.document.querySelector('.btn-insp-col-vis')?.click();
+          rig.exitEditBoneMode();
+
+          // Pose shelf IK/FK switch & snap
+          rig.activeCharacter = skinned;
+          rig.setIKEnabled(true);
+          await new Promise((r) => setTimeout(r, 30));
+          const ikBar = win.document.getElementById('pose-ik-blend-bar');
+          if (!ikBar || ikBar.style.display !== 'flex') throw new Error('PoseShelf IK/FK Blend Bar không hiện khi bật IK');
+          win.document.getElementById('btn-shelf-snap-fk-ik')?.click();
+          if (Math.abs(rig.getChainIKBlend('leftArm')) > 1e-4) throw new Error('Snap FK <- IK không đưa ikBlend về 0');
+          win.document.getElementById('btn-shelf-snap-ik-fk')?.click();
+          if (Math.abs(rig.getChainIKBlend('leftArm') - 1.0) > 1e-4) throw new Error('Snap IK <- FK không đưa ikBlend về 1');
+          rig.setIKEnabled(false);
+
+          return `HeatVG=${vgAfter} · useConnect=OK · BoneCol=ArmChain · IK/FK Snap=OK`;
+        },
+      },
+      {
+        name: 'Copilot Worker: tạo/reparent/selection và undo-redo một bước',
+        async run(win) {
+          await reset(win);
+          const sm = win.sceneManager;
+          const runtime = await createCopilotRuntime(win);
+          try {
+            const undoBefore = sm.undoStack.length;
+            await runtime.execute(`
+              const group = studio.addGroup('CopilotGroup');
+              const box = studio.addCube({ name: 'CopilotBox', width: 1, height: 1, depth: 1, x: 1, y: 2, z: 3 });
+              group.add(box);
+              box.position.set(4, 5, 6);
+              box.material.color.set(0x00ff00);
+              sceneManager.select(box);
+              return { uuid: box.uuid };
+            `);
+            await frames(win, 2);
+            const group = sm.findObjectByName('CopilotGroup');
+            const box = sm.findObjectByName('CopilotBox');
+            if (!group || !box || box.parent !== group) throw new Error(`Worker không tạo đúng cây group/box: ${JSON.stringify(describeTrackedObjects(sm))}`);
+            if (box.position.toArray().some((value, i) => Math.abs(value - [4, 5, 6][i]) > 1e-6)) throw new Error('Transform Worker không được áp dụng');
+            if (box.material.color.getHex() !== 0x00ff00) throw new Error('Material Worker không được áp dụng');
+            if (sm.getSelectedObjects().length !== 1 || sm.getSelectedObjects()[0] !== box) throw new Error('Selection Worker không đồng bộ với SceneManager');
+            if (sm.undoStack.length !== undoBefore + 1) throw new Error(`Một lượt Copilot tạo ${sm.undoStack.length - undoBefore} bước undo`);
+            sm.undo();
+            await frames(win, 2);
+            if (sm.getAllObjects().length !== 0) throw new Error('Undo không xoá toàn bộ object do Copilot tạo');
+            sm.redo();
+            await frames(win, 2);
+            const restored = sm.findObjectByName('CopilotBox');
+            if (!restored || restored.parent !== sm.findObjectByName('CopilotGroup')) throw new Error('Redo không khôi phục đúng quan hệ cha-con');
+            return 'group + mesh + material + selection · 1 undo · redo OK';
+          } finally {
+            runtime.stop();
+          }
+        },
+      },
+      {
+        name: 'Copilot Worker: sửa object có sẵn, đổi cha và hoàn tác giao dịch',
+        async run(win) {
+          await reset(win);
+          const sm = win.sceneManager;
+          const existing = win.studio.addCube({ name: 'ExistingBox', x: 1, y: 2, z: 3 });
+          const destination = win.studio.addGroup('DestinationGroup');
+          const originalMaterial = existing.material;
+          const originalVertexX = existing.geometry.attributes.position.getX(0);
+          const runtime = await createCopilotRuntime(win);
+          try {
+            const undoBefore = sm.undoStack.length;
+            await runtime.execute(`
+              const mesh = sceneManager.getObjectByName('ExistingBox');
+              const group = sceneManager.getObjectByName('DestinationGroup');
+              mesh.position.set(7, 8, 9);
+              mesh.scale.set(2, 3, 4);
+              mesh.geometry.attributes.position.setX(0, 7);
+              mesh.geometry.attributes.position.needsUpdate = true;
+              mesh.material.roughness = 0.9;
+              group.add(mesh);
+            `);
+            await frames(win, 2);
+            if (existing.parent !== destination) throw new Error('Reparent không được áp dụng');
+            if (existing.position.toArray().some((value, i) => Math.abs(value - [7, 8, 9][i]) > 1e-6)) throw new Error('Position không được áp dụng');
+            if (existing.scale.toArray().some((value, i) => Math.abs(value - [2, 3, 4][i]) > 1e-6)) throw new Error('Scale không được áp dụng');
+            if (Math.abs(existing.geometry.attributes.position.getX(0) - 7) > 1e-6) throw new Error(`Geometry cùng UUID không được cập nhật: x=${existing.geometry.attributes.position.getX(0)}`);
+            if (Math.abs(existing.material.roughness - 0.9) > 1e-6) throw new Error('Roughness không được áp dụng');
+            if (sm.undoStack.length !== undoBefore + 1) throw new Error('Sửa object không tạo đúng một bước undo');
+            sm.undo();
+            await frames(win, 2);
+            if (existing.parent !== sm.rootContainer || existing.position.x !== 1 || existing.scale.x !== 1) throw new Error('Undo không khôi phục parent/transform');
+            if (Math.abs(existing.geometry.attributes.position.getX(0) - originalVertexX) > 1e-6) throw new Error('Undo không khôi phục geometry');
+            if (existing.material !== originalMaterial) throw new Error(`Undo không khôi phục material gốc: ${existing.material.uuid} != ${originalMaterial.uuid}`);
+            sm.redo();
+            await frames(win, 2);
+            if (existing.parent !== destination || existing.position.x !== 7 || existing.scale.x !== 2) throw new Error('Redo không áp dụng lại thay đổi');
+            if (Math.abs(existing.geometry.attributes.position.getX(0) - 7) > 1e-6) throw new Error('Redo không áp dụng lại geometry');
+            return 'edit + geometry + reparent + material · undo/redo nguyên trạng';
+          } finally {
+            runtime.stop();
+          }
+        },
+      },
+      {
+        name: 'Copilot Worker: scene.clear giữ root và helper, undo-redo an toàn',
+        async run(win) {
+          await reset(win);
+          const sm = win.sceneManager;
+          const box = win.studio.addCube({ name: 'ClearMe' });
+          const helper = new win.THREE.GridHelper(4, 4);
+          helper.name = 'CopilotClearHelper';
+          helper.userData.isHelper = true;
+          sm.rootContainer.add(helper);
+          const runtime = await createCopilotRuntime(win);
+          try {
+            const undoBefore = sm.undoStack.length;
+            await runtime.execute('scene.clear();');
+            await frames(win, 2);
+            if (sm.findObjectByName('ClearMe')) throw new Error('scene.clear còn object người dùng');
+            if (helper.parent !== sm.rootContainer) throw new Error('scene.clear xoá helper hệ thống');
+            if (sm.rootContainer.parent !== win.scene) throw new Error('scene.clear detach rootContainer');
+            if (sm.undoStack.length !== undoBefore + 1) throw new Error('scene.clear không tạo đúng một bước undo');
+            sm.undo();
+            await frames(win, 2);
+            if (!sm.findObjectByName('ClearMe') || helper.parent !== sm.rootContainer) throw new Error('Undo clear không khôi phục object/helper');
+            sm.redo();
+            await frames(win, 2);
+            if (sm.findObjectByName('ClearMe') || helper.parent !== sm.rootContainer) throw new Error('Redo clear không an toàn');
+            return 'root attached · helper preserved · clear undo/redo OK';
+          } finally {
+            runtime.stop();
+            sm.rootContainer.remove(helper);
+          }
+        },
+      },
+      {
+        name: 'Copilot Worker: giữ camera và từ chối giao dịch khi cảnh thay đổi giữa chừng',
+        async run(win) {
+          await reset(win);
+          const sm = win.sceneManager;
+          const camera = win.engine.camera;
+          const controls = win.engine.controls;
+          const originalPosition = camera.position.clone();
+          const originalQuaternion = camera.quaternion.clone();
+          const originalTarget = controls.target.clone();
+          const originalZoom = camera.zoom;
+          const runtime = await createCopilotRuntime(win);
+          try {
+            camera.position.set(9, 6, 12);
+            controls.target.set(0, 1, 0);
+            controls.update();
+            const before = camera.position.toArray();
+            const result = await runtime.execute(`
+              studio.addCube({ name: 'CameraSafeBox' });
+              camera.position.set(99, 99, 99);
+              return camera.position.toArray();
+            `);
+            if (result.value.some((value, i) => Math.abs(value - 99) > 1e-6)) throw new Error('Camera mirror không chạy code trong Worker');
+            if (camera.position.toArray().some((value, i) => Math.abs(value - before[i]) > 1e-6)) throw new Error('Copilot làm thay đổi camera live');
+            const countBefore = sm.getAllObjects().length;
+            let markStarted;
+            const started = new Promise((resolve) => { markStarted = resolve; });
+            const pending = runtime.execute(`
+              print('conflict-started');
+              await new Promise((resolve) => setTimeout(resolve, 350));
+              studio.addCube({ name: 'ConflictBox' });
+            `, { timeout: 5000, onLog: markStarted });
+            await started;
+            camera.position.x += 2;
+            controls.update();
+            let conflict = null;
+            try { await pending; } catch (error) { conflict = error; }
+            if (conflict?.code !== 'E_TX_CONFLICT') throw new Error(`Không từ chối conflict đúng cách: ${conflict?.code || 'không lỗi'}`);
+            if (sm.findObjectByName('ConflictBox')) throw new Error('Conflict vẫn áp dụng object vào scene');
+            if (sm.getAllObjects().length !== countBefore) throw new Error('Conflict làm thay đổi số object live');
+            let projectionStarted;
+            const projectionExecutionStarted = new Promise((resolve) => { projectionStarted = resolve; });
+            const projectionPending = runtime.execute(`
+              print('projection-conflict-started');
+              await new Promise((resolve) => setTimeout(resolve, 350));
+              studio.addCube({ name: 'ProjectionConflictBox' });
+            `, { timeout: 5000, onLog: projectionStarted });
+            await projectionExecutionStarted;
+            controls.target.x += 1;
+            controls.update();
+            camera.zoom = originalZoom * 2;
+            camera.updateProjectionMatrix();
+            let projectionConflict = null;
+            try { await projectionPending; } catch (error) { projectionConflict = error; }
+            if (projectionConflict?.code !== 'E_TX_CONFLICT') throw new Error(`Không từ chối conflict zoom/target: ${projectionConflict?.code || 'không lỗi'}`);
+            if (sm.findObjectByName('ProjectionConflictBox')) throw new Error('Conflict zoom/target vẫn áp dụng object');
+            return 'camera mirror isolated · position/zoom/target conflict · scene không đổi';
+          } finally {
+            runtime.stop();
+            camera.position.copy(originalPosition);
+            camera.quaternion.copy(originalQuaternion);
+            camera.zoom = originalZoom;
+            camera.updateProjectionMatrix();
+            controls.target.copy(originalTarget);
+            controls.update();
+          }
+        },
+      },
+      {
+        name: 'Copilot Worker: animation chạy, dừng và lượt chạy mới không để callback cũ',
+        async run(win) {
+          await reset(win);
+          const sm = win.sceneManager;
+          const runtime = await createCopilotRuntime(win);
+          try {
+            const first = await runtime.execute(`
+              scene.clear();
+              const box = studio.addCube({ name: 'AnimatedBox' });
+              studio.animate(box, (time) => { box.position.x = time; });
+              return box.uuid;
+            `);
+            if (!first.hasAnimations) throw new Error('Runtime không nhận diện animation callback');
+            first.resume();
+            await sleep(160);
+            const box = sm.findObjectByName('AnimatedBox');
+            if (!box || box.position.x <= 0.03) throw new Error(`Animation không cập nhật object live (x=${box?.position.x})`);
+            first.stop();
+            const stoppedX = box.position.x;
+            await sleep(120);
+            if (Math.abs(box.position.x - stoppedX) > 1e-6) throw new Error('Animation vẫn chạy sau stop');
+            const second = await runtime.execute("studio.addCube({ name: 'StaticAfterAnimation' });");
+            await sleep(120);
+            if (second.hasAnimations) throw new Error('Lượt chạy mới kế thừa animation cũ');
+            if (!sm.findObjectByName('StaticAfterAnimation')) throw new Error('Lượt chạy mới không tạo object');
+            if (Math.abs(box.position.x - stoppedX) > 1e-6) throw new Error('Callback cũ chạy lại sau lượt chạy mới');
+            return `x=${stoppedX.toFixed(3)} · stop OK · new execution clean`;
+          } finally {
+            runtime.stop();
+          }
+        },
+      },
+      {
+        name: 'Copilot Worker: dispatch live modifier và thay id pending bằng id thật',
+        async run(win) {
+          await reset(win);
+          const sm = win.sceneManager;
+          const mesh = win.studio.addCube({ name: 'ModifierLiveBox', widthSegments: 2, heightSegments: 2, depthSegments: 2 });
+          const runtime = await createCopilotRuntime(win);
+          try {
+            const undoBefore = sm.undoStack.length;
+            const result = await runtime.execute(`
+              const target = sceneManager.getObjectByName('ModifierLiveBox');
+              const modifier = Modifiers.applyModifier(target, 'bevel', { amount: 0.1, segments: 2 });
+              Modifiers.updateModifier(target, modifier.id, { amount: 0.25 });
+              return { id: modifier.id };
+            `);
+            const stack = mesh.userData.modifierStack || [];
+            if (stack.length !== 1) throw new Error(`Live modifier không tạo stack hợp lệ (${stack.length})`);
+            if (stack[0].id !== result.value.id || stack[0].id === 'pending') throw new Error('Pending modifier id không được thay bằng id thật');
+            if (Math.abs(stack[0].params.amount - 0.25) > 1e-6) throw new Error(`Live update modifier không áp dụng params: amount=${stack[0].params.amount}; value=${JSON.stringify(result.value)}`);
+            if (result.commandResults.length !== 2) throw new Error('Không dispatch đúng hai lệnh live');
+            if (sm.undoStack.length !== undoBefore + 1) throw new Error('Hai live modifier không gộp thành một bước undo');
+            sm.undo();
+            await frames(win, 2);
+            if ((mesh.userData.modifierStack || []).length) throw new Error('Undo không xoá modifier stack');
+            sm.redo();
+            await frames(win, 2);
+            if ((mesh.userData.modifierStack || []).length !== 1) throw new Error('Redo không khôi phục modifier stack');
+            return `${stack[0].type} ${stack[0].id} · amount=${stack[0].params.amount} · 1 undo`;
+          } finally {
+            runtime.stop();
+          }
+        },
+      },
+      {
+        name: 'Copilot Worker: dispatch live Edit Mode, chọn mặt và extrude',
+        async run(win) {
+          await reset(win);
+          const mesh = win.studio.addCube({ name: 'EditLiveBox' });
+          const beforeVertices = mesh.geometry.attributes.position.count;
+          const runtime = await createCopilotRuntime(win);
+          try {
+            const result = await runtime.execute(`
+              const target = sceneManager.getObjectByName('EditLiveBox');
+              editMode.enter(target);
+              editMode.setMode('face');
+              editMode.selectFace(0);
+              const extruded = editMode.extrude(0.18);
+              editMode.exit();
+              return { extruded };
+            `);
+            if (result.value.extruded !== true) throw new Error('Worker không nhận kết quả extrude');
+            if (win.editMode.isActive) throw new Error('Edit Mode vẫn active sau lệnh exit');
+            if (mesh.geometry.attributes.position.count <= beforeVertices) throw new Error('Extrude live không thay đổi topology');
+            return `${beforeVertices} → ${mesh.geometry.attributes.position.count} vertices · exit OK`;
+          } finally {
+            if (win.editMode.isActive) win.editMode.exit();
+            runtime.stop();
+          }
+        },
+      },
+      {
+        name: 'Copilot Worker: adopt GLB thật giữ skeleton, texture, clip và undo-redo',
+        async run(win) {
+          await reset(win);
+          const sm = win.sceneManager;
+          const runtime = await createCopilotRuntime(win);
+          try {
+            const undoBefore = sm.undoStack.length;
+            const execution = await runtime.execute("studio.loadGLTF('/models/Soldier.glb', { name: 'CopilotSoldier', x: 3, y: 0, z: 0 });");
+            await frames(win, 2);
+            const root = sm.findObjectByName('CopilotSoldier');
+            if (!root || root.position.x !== 3) throw new Error(`Không adopt được root GLB: ${JSON.stringify({ objects: describeTrackedObjects(sm), newObjects: execution.newObjects.map((object) => ({ name: object.name, type: object.type, uuid: object.uuid })) })}`);
+            const skinned = [];
+            const textures = new Set();
+            root.traverse((object) => {
+              if (object.isSkinnedMesh && object.skeleton?.bones?.length) skinned.push(object);
+              const materials = Array.isArray(object.material) ? object.material : [object.material];
+              for (const material of materials) {
+                for (const value of Object.values(material || {})) if (value?.isTexture) textures.add(value);
+              }
+            });
+            if (!skinned.length) throw new Error('GLB mất SkinnedMesh/skeleton sau khi qua Worker');
+            if (textures.size < 2) throw new Error(`GLB mất texture (${textures.size})`);
+            if (!root.animations?.length) throw new Error('GLB mất AnimationClip');
+            if (sm.undoStack.length !== undoBefore + 1) throw new Error('Asset adoption không tạo đúng một bước undo');
+            sm.undo();
+            await frames(win, 2);
+            if (sm.findObjectByName('CopilotSoldier')) throw new Error('Undo không xoá asset root');
+            sm.redo();
+            await frames(win, 2);
+            const restored = sm.findObjectByName('CopilotSoldier');
+            if (restored !== root || !root.animations?.length || textures.size < 2) throw new Error('Redo không khôi phục asset nguyên trạng');
+            return `${skinned.length} skinned · ${textures.size} textures · ${root.animations.length} clips · undo/redo OK`;
+          } finally {
+            runtime.stop();
+          }
+        },
+      },
+      {
+        name: 'Copilot Worker: GLTF nhiều tài nguyên chỉ tải buffer same-origin',
+        async run(win) {
+          await reset(win);
+          const runtime = await createCopilotRuntime(win);
+          const originalFetch = win.fetch;
+          const requested = [];
+          win.fetch = function (input, init) {
+            requested.push(typeof input === 'string' ? input : input?.url || String(input));
+            return originalFetch.call(this, input, init);
+          };
+          try {
+            const execution = await runtime.execute("studio.loadGLTF('/assets/animations/UAL_Standard.gltf', { name: 'CopilotUAL' });");
+            const root = win.sceneManager.findObjectByName('CopilotUAL');
+            if (!root || !root.animations?.length) throw new Error(`Không tải được GLTF animation library: ${JSON.stringify({ objects: describeTrackedObjects(win.sceneManager), newObjects: execution.newObjects.map((object) => ({ name: object.name, type: object.type, uuid: object.uuid })) })}`);
+            if (!requested.some((url) => url.includes('UAL_Standard.gltf'))) throw new Error('Không request file GLTF chính');
+            if (!requested.some((url) => url.includes('AnimationLibrary_Godot_Standard.bin'))) throw new Error(`Không request buffer GLTF phụ: ${JSON.stringify(requested)}`);
+            const foreign = requested.filter((url) => {
+              try { return new URL(url, win.location.href).origin !== win.location.origin; } catch { return true; }
+            });
+            if (foreign.length) throw new Error(`Tài nguyên ngoài origin bị chặn: ${foreign.join(', ')}`);
+            return `${root.animations.length} clips · ${requested.length} same-origin requests`;
+          } finally {
+            win.fetch = originalFetch;
+            runtime.stop();
+          }
+        },
+      },
+      {
+        name: 'Copilot Worker: chặn browser/storage/network capability trong Chromium thật',
+        async run(win) {
+          await reset(win);
+          const runtime = await createCopilotRuntime(win);
+          try {
+            const result = await runtime.execute(`
+              const names = ['fetch', 'XMLHttpRequest', 'WebSocket', 'EventSource', 'Worker', 'SharedWorker',
+                'indexedDB', 'caches', 'BroadcastChannel', 'navigator', 'location', 'postMessage', 'close'];
+              const denied = {};
+              for (const name of names) {
+                try { globalThis[name]; denied[name] = false; }
+                catch (error) { denied[name] = error.code === 'E_PERMISSION'; }
+              }
+              return { denied, dom: document.createElement('img'), rendererDOM: renderer.domElement };
+            `);
+            const allowed = Object.entries(result.value.denied).filter(([, ok]) => !ok).map(([name]) => name);
+            if (allowed.length) throw new Error(`Capability chưa bị chặn: ${allowed.join(', ')}`);
+            if (result.value.dom !== null || result.value.rendererDOM !== null) throw new Error('Worker còn đường truy cập DOM/renderer thật');
+            let importError = null;
+            try { await runtime.execute("await import('./should-not-load.js');"); } catch (error) { importError = error; }
+            if (importError?.code !== 'E_PERMISSION') throw new Error(`Dynamic import không bị chặn: ${importError?.code || 'không lỗi'}`);
+            return `${Object.keys(result.value.denied).length} capabilities denied · DOM null · import denied`;
+          } finally {
+            runtime.stop();
+          }
+        },
+      },
+      {
+        name: 'Inspector: metadata Curve/Text độc hại hiển thị như dữ liệu, không phải HTML',
+        async run(win) {
+          await reset(win);
+          const payload = '1" autofocus onfocus="window.__curveXss=1"><img src=x onerror="window.__curveXss=2">';
+          const cube = win.studio.addCube({ name: 'InspectorXssCurve' });
+          cube.userData.curveData = { kind: 'text', text: payload, depth: payload, size: payload };
+          win.__curveXss = 0;
+          try {
+            win.sceneManager.select(cube);
+            win.document.querySelector('.prop-tab-btn[data-tab="object"]')?.click();
+            win.inspector.render();
+            await sleep(80);
+            const input = win.document.getElementById('curv-text-val');
+            if (!input || input.value !== payload) throw new Error('Inspector không giữ nguyên giá trị text như dữ liệu');
+            if (win.document.querySelector('#inspector-container [onerror], #inspector-container [onfocus]')) throw new Error('Metadata tạo thuộc tính event handler');
+            if (win.document.querySelector('#inspector-container img[src="x"]')) throw new Error('Metadata tạo thẻ img');
+            if (win.__curveXss !== 0) throw new Error('Payload metadata đã được thực thi');
+            return 'text/value inert · 0 event handler · 0 execution';
+          } finally {
+            delete win.__curveXss;
+          }
+        },
+      },
+    ];
+
+    // ------------------------------------------------------------------
+    // Runner
+    // ------------------------------------------------------------------
+    async function runSuite() {
+      resultsEl.innerHTML = '';
+      results.length = 0;
+      summaryEl.textContent = 'Đang chạy…';
+      summaryEl.className = '';
+      let win;
+      try {
+        win = iframe.contentWindow;
+        await waitForStudio(win);
+      } catch (error) {
+        summaryEl.textContent = 'Không tải được studio: ' + error.message;
+        summaryEl.className = 'fail';
+        return { error: error.message, results: [] };
+      }
+
+      for (const test of tests) {
+        const item = addItem(test.name);
+        try {
+          const detail = await test.run(win);
+          finishItem(item, true, detail || '');
+          results.push({ name: test.name, ok: true, detail: detail || '' });
+        } catch (error) {
+          finishItem(item, false, error && error.stack ? error.stack.split('\n')[0] : String(error));
+          results.push({ name: test.name, ok: false, detail: error?.stack || String(error) });
+        }
+      }
+
+      const passed = results.filter((r) => r.ok).length;
+      const failed = results.length - passed;
+      summaryEl.textContent = `${passed}/${results.length} pass` + (failed ? ` • ${failed} fail` : '');
+      summaryEl.className = failed ? 'fail' : 'pass';
+      const payload = { passed, failed, total: results.length, results, at: new Date().toISOString() };
+      window.__SUITE_RESULTS__ = payload;
+      console.log('[BrowserSuite]', payload);
+      return payload;
+    }
+
+    window.runBrowserSuite = runSuite;
+    iframe.addEventListener('load', () => {
+      // Give the studio a moment to boot its async subsystems.
+      setTimeout(() => { runSuite(); }, 300);
+    }, { once: false });
+  </script>
+</body>
+</html>

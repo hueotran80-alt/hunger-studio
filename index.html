@@ -1,0 +1,1264 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
+  <title>Hunger — 3D Studio & AI CAD Environment</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2320232a'/%3E%3Ccircle cx='16' cy='16' r='8' fill='none' stroke='%23e87d0d' stroke-width='3'/%3E%3Ccircle cx='16' cy='16' r='3' fill='%234772b3'/%3E%3C/svg%3E">
+
+  <!-- Lightweight viewer hand-off: index.html?view=embed[&glb=...] -->
+  <script>
+    (() => {
+      try {
+        const params = new URLSearchParams(location.search);
+        const view = (params.get('view') || '').toLowerCase();
+        if (view !== 'embed' && view !== 'viewer') return;
+        params.delete('view');
+        params.delete('token');
+        const qs = params.toString();
+        location.replace('embed.html' + (qs ? `?${qs}` : '') + location.hash);
+      } catch (_) {}
+    })();
+  </script>
+
+  <!-- LAN mode bootstrap: keep the shared studio token out of the address bar. -->
+  <script>
+    (() => {
+      try {
+        const token = new URLSearchParams(location.search).get('token');
+        if (!token) return;
+        document.cookie = 'studio_token=' + encodeURIComponent(token) + '; Path=/; SameSite=Strict';
+        sessionStorage.setItem('studio_token', token);
+        history.replaceState({}, '', location.pathname + location.hash);
+      } catch (_) {}
+    })();
+  </script>
+  
+  <!-- Blender 4.x Dark Theme Stylesheet -->
+  <link rel="stylesheet" href="css/blender-theme.css?v=20261031_0200">
+
+  <!-- Three.js Import Map -->
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "./vendor/three/three.module.js",
+      "three/addons/": "./vendor/three/addons/",
+      "three-mesh-bvh": "./vendor/three-mesh-bvh/index.module.js",
+      "three-bvh-csg": "./vendor/three-bvh-csg/index.module.js",
+      "three-gpu-pathtracer": "./vendor/three-gpu-pathtracer/index.module.js",
+      "three/examples/jsm/": "./vendor/three/addons/",
+      "rapier": "./vendor/rapier/rapier.mjs",
+      "mp4-muxer": "./vendor/mp4-muxer/mp4-muxer.mjs"
+    }
+  }
+  </script>
+</head>
+<body>
+  <div id="blender-app" class="blender-app">
+    <!-- Top Header Bar -->
+    <header class="blender-header">
+      <div class="blender-header-left">
+        <div class="blender-logo" title="Hunger 3D Studio">
+          <svg class="blender-logo-icon" viewBox="0 0 24 24">
+            <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 14.5v-9l6 4.5-6 4.5z"/>
+          </svg>
+          <span class="blender-logo-text">Hunger</span>
+        </div>
+
+        <nav class="blender-menu-bar">
+          <!-- File Menu -->
+          <div class="menu-item" id="menu-file">
+            <button class="menu-btn">File</button>
+            <div class="menu-dropdown">
+              <div class="dropdown-item" id="btn-file-new">
+                <span>New Project</span>
+                <span class="shortcut">Ctrl+N</span>
+              </div>
+              <div class="dropdown-divider"></div>
+              <div class="dropdown-item" id="btn-file-open">
+                <span>Open Project (.blend.json / .wbs)</span>
+                <span class="shortcut">Ctrl+O</span>
+              </div>
+              <div class="dropdown-item" id="btn-file-save">
+                <span>Save Project (.blend.json)</span>
+                <span class="shortcut">Ctrl+S</span>
+              </div>
+              <div class="dropdown-item" id="btn-file-save-wbs">
+                <span>Save Package (.wbs)</span>
+                <span class="shortcut">ZIP + Blobs</span>
+              </div>
+              <div class="dropdown-item" id="btn-file-share">
+                <span>Share / Embed 3D…</span>
+                <span class="shortcut">Web viewer</span>
+              </div>
+              <div class="dropdown-item" id="btn-file-cloud">
+                <span>Cloud / Account…</span>
+                <span class="shortcut">Supabase · Projects</span>
+              </div>
+              <div class="dropdown-item" id="btn-file-publish">
+                <span>Publish to Hunger Community…</span>
+                <span class="shortcut">Community</span>
+              </div>
+              <div class="dropdown-divider"></div>
+
+              <!-- Blender Standard Import Submenu -->
+              <div class="dropdown-submenu" id="menu-file-import">
+                <div class="dropdown-item">
+                  <span>Import</span>
+                </div>
+                <div class="submenu-flyout">
+                  <div class="dropdown-item" id="btn-import-bundle">
+                    <span>📦 Asset Pack / ZIP / Folder (.zip, .obj+.mtl+tex)</span>
+                    <span class="shortcut">Auto PBR</span>
+                  </div>
+                  <div class="dropdown-divider"></div>
+                  <div class="dropdown-item" id="btn-import-gltf">
+                    <span>glTF 2.0 / VRM (.glb, .gltf, .vrm)</span>
+                  </div>
+                  <div class="dropdown-item" id="btn-import-fbx">
+                    <span>Autodesk FBX (.fbx + textures)</span>
+                  </div>
+                  <div class="dropdown-item" id="btn-import-obj">
+                    <span>Wavefront / ZBrush (.obj + .mtl)</span>
+                    <span class="shortcut">Rust WASM</span>
+                  </div>
+                  <div class="dropdown-item" id="btn-import-3ds">
+                    <span>Autodesk 3ds Max (.3ds)</span>
+                    <span class="shortcut">Rust WASM</span>
+                  </div>
+                  <div class="dropdown-item" id="btn-import-usd">
+                    <span>Pixar / Apple USD (.usda, .usdz)</span>
+                    <span class="shortcut">Rust WASM</span>
+                  </div>
+                  <div class="dropdown-item" id="btn-import-vox">
+                    <span>MagicaVoxel (.vox)</span>
+                    <span class="shortcut">Rust WASM</span>
+                  </div>
+                  <div class="dropdown-item" id="btn-import-dae">
+                    <span>Collada / Maya / C4D (.dae)</span>
+                    <span class="shortcut">Rust WASM</span>
+                  </div>
+                  <div class="dropdown-item" id="btn-import-cad">
+                    <span>CAD / Rhino / 3MF (.dxf, .3mf, .off)</span>
+                    <span class="shortcut">Rust WASM</span>
+                  </div>
+                  <div class="dropdown-item" id="btn-import-stl">
+                    <span>STL (.stl)</span>
+                  </div>
+                  <div class="dropdown-item" id="btn-import-ply">
+                    <span>Stanford (.ply)</span>
+                  </div>
+                  <div class="dropdown-item" id="btn-import-blend">
+                    <span>Blender (.blend)</span>
+                    <span class="shortcut">Headless</span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Blender Standard Export Submenu -->
+              <div class="dropdown-submenu" id="menu-file-export">
+                <div class="dropdown-item">
+                  <span>Export</span>
+                </div>
+                <div class="submenu-flyout">
+                  <div class="dropdown-item" id="btn-export-glb">
+                    <span>glTF 2.0 Binary (.glb)</span>
+                    <span class="shortcut">UE5/Unity/Game</span>
+                  </div>
+                  <div class="dropdown-item" id="btn-export-glb-options">
+                    <span>glTF / GLB Options…</span>
+                    <span class="shortcut">Optimize + Budget</span>
+                  </div>
+                  <div class="dropdown-item" id="btn-export-gltf">
+                    <span>glTF 2.0 Text (.gltf)</span>
+                  </div>
+                  <div class="dropdown-item" id="btn-export-fbx">
+                    <span>Autodesk FBX (.fbx)</span>
+                    <span class="shortcut">Mesh+Skin+Morph</span>
+                  </div>
+                  <div class="dropdown-item" id="btn-export-usdz">
+                    <span>Apple AR (.usdz)</span>
+                  </div>
+                  <div class="dropdown-item" id="btn-export-3mf">
+                    <span>3D Print (.3mf)</span>
+                  </div>
+                  <div class="dropdown-item" id="btn-export-gamepack">
+                    <span>Game Pack (.glb)</span>
+                    <span class="shortcut">LOD+UCX+UV2</span>
+                  </div>
+                  <div class="dropdown-item" id="btn-export-obj">
+                    <span>Wavefront (.obj)</span>
+                  </div>
+                  <div class="dropdown-item" id="btn-export-stl">
+                    <span>3D Print (.stl)</span>
+                  </div>
+                  <div class="dropdown-item" id="btn-export-ply">
+                    <span>Stanford (.ply)</span>
+                  </div>
+                </div>
+              </div>
+
+              <div class="dropdown-divider"></div>
+              <div class="dropdown-item" id="btn-render-png">
+                <span>Render Image (.png)</span>
+                <span class="shortcut">Shift+F12</span>
+              </div>
+              <div class="dropdown-item" id="btn-render-transparent">
+                <span>Render Transparent (.png)</span>
+              </div>
+              <div class="dropdown-item" id="btn-file-render-animation">
+                <span>Render Animation (Video)…</span>
+                <span class="shortcut">Ctrl+F12</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Edit Menu -->
+          <div class="menu-item" id="menu-edit">
+            <button class="menu-btn">Edit</button>
+            <div class="menu-dropdown">
+              <div class="dropdown-item" id="btn-edit-undo">
+                <span>Undo</span>
+                <span class="shortcut">Ctrl+Z</span>
+              </div>
+              <div class="dropdown-item" id="btn-edit-redo">
+                <span>Redo</span>
+                <span class="shortcut">Ctrl+Y</span>
+              </div>
+              <div class="dropdown-divider"></div>
+              <div class="dropdown-item" id="btn-edit-duplicate">
+                <span>Duplicate Object</span>
+                <span class="shortcut">Shift+D</span>
+              </div>
+              <div class="dropdown-item" id="btn-edit-duplicate-linked">
+                <span>Duplicate Linked (0 Extra RAM)</span>
+                <span class="shortcut">⌥D / Alt+D</span>
+              </div>
+              <div class="dropdown-item" id="btn-edit-batch-gpu">
+                <span>Batch Selected to GPU Instances</span>
+                <span class="shortcut">⌥⇧D</span>
+              </div>
+              <div class="dropdown-item" id="btn-edit-delete">
+                <span>Delete Selected</span>
+                <span class="shortcut">X / Del</span>
+              </div>
+              <div class="dropdown-divider"></div>
+              <div class="dropdown-item" id="btn-edit-group">
+                <span>Group Objects</span>
+                <span class="shortcut">Ctrl+G</span>
+              </div>
+              <div class="dropdown-item" id="btn-edit-ungroup">
+                <span>Ungroup</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Add Menu (Canonical Blender 4.x Hierarchy) -->
+          <div class="menu-item" id="menu-add">
+            <button class="menu-btn">Add</button>
+            <div class="menu-dropdown" data-canonical-dom="1">
+              <div class="dropdown-submenu">
+                <div class="dropdown-item">
+                  <span>Mesh</span>
+                </div>
+                <div class="submenu-flyout">
+                  <div class="dropdown-item" data-spawn-prim="plane"><span>Plane</span></div>
+                  <div class="dropdown-item" data-spawn-prim="cube"><span>Cube</span><span class="shortcut">Shift+A</span></div>
+                  <div class="dropdown-item" data-spawn-prim="circle"><span>Circle</span></div>
+                  <div class="dropdown-item" data-spawn-prim="uv_sphere"><span>UV Sphere</span></div>
+                  <div class="dropdown-item" data-spawn-prim="ico_sphere"><span>Ico Sphere</span></div>
+                  <div class="dropdown-item" data-spawn-prim="cylinder"><span>Cylinder</span></div>
+                  <div class="dropdown-item" data-spawn-prim="cone"><span>Cone</span></div>
+                  <div class="dropdown-item" data-spawn-prim="torus"><span>Torus</span></div>
+                  <div class="dropdown-divider"></div>
+                  <div class="dropdown-item" data-spawn-prim="grid"><span>Grid</span></div>
+                  <div class="dropdown-item" data-spawn-prim="capsule"><span>Capsule</span></div>
+                  <div class="dropdown-item" data-spawn-prim="pipe"><span>Pipe / Tube</span></div>
+                  <div class="dropdown-item" data-spawn-prim="monkey"><span>Monkey (Suzanne)</span></div>
+                </div>
+              </div>
+
+              <div class="dropdown-submenu">
+                <div class="dropdown-item">
+                  <span>Curve</span>
+                </div>
+                <div class="submenu-flyout">
+                  <div class="dropdown-item" id="btn-add-curve-bezier"><span>Bezier Curve</span></div>
+                  <div class="dropdown-item" id="btn-add-curve-circle"><span>Bezier Circle</span></div>
+                  <div class="dropdown-item" id="btn-add-curve-path"><span>NURBS Path</span></div>
+                </div>
+              </div>
+
+              <div class="dropdown-item" id="btn-add-text3d">
+                <span>Text (3D)</span>
+              </div>
+
+              <div class="dropdown-submenu">
+                <div class="dropdown-item">
+                  <span>Light</span>
+                </div>
+                <div class="submenu-flyout">
+                  <div class="dropdown-item" id="btn-add-point-light"><span>Point Light</span></div>
+                  <div class="dropdown-item" id="btn-add-dir-light"><span>Sun Light</span></div>
+                  <div class="dropdown-item" id="btn-add-spot-light"><span>Spot Light</span></div>
+                  <div class="dropdown-item" id="btn-add-area-light"><span>Area Light</span></div>
+                </div>
+              </div>
+
+              <div class="dropdown-item" id="btn-add-camera">
+                <span>Camera</span>
+                <span class="shortcut">0 / Numpad 0</span>
+              </div>
+
+              <div class="dropdown-submenu">
+                <div class="dropdown-item">
+                  <span>Image</span>
+                </div>
+                <div class="submenu-flyout">
+                  <div class="dropdown-item" id="btn-add-image-reference"><span>Reference</span></div>
+                  <div class="dropdown-item" id="btn-add-image-background"><span>Background</span></div>
+                  <div class="dropdown-item" id="btn-add-image-plane"><span>Mesh Plane</span></div>
+                </div>
+              </div>
+
+              <div class="dropdown-divider"></div>
+
+              <div class="dropdown-submenu">
+                <div class="dropdown-item">
+                  <span>Character & Armature</span>
+                </div>
+                <div class="submenu-flyout">
+                  <div class="dropdown-item" id="btn-add-head-bust"><span>Human Head Bust</span></div>
+                  <div class="dropdown-item" id="btn-add-michelle"><span>Mannequin Character (CC0)</span></div>
+                  <div class="dropdown-item" id="btn-add-soldier"><span>Bot Character (CC0)</span></div>
+                  <div class="dropdown-item" id="btn-add-mannequin"><span>Articulated Mannequin</span></div>
+                  <div class="dropdown-divider"></div>
+                  <div class="dropdown-item" id="btn-add-armature"><span>Humanoid Armature</span></div>
+                  <div class="dropdown-item" id="btn-bind-armature"><span>Bind Armature to Mesh</span></div>
+                </div>
+              </div>
+
+              <div class="dropdown-divider"></div>
+              <div class="dropdown-item" id="btn-add-foliage-scatter">
+                <span>🌿 Foliage / GPU Scatter…</span>
+                <span class="shortcut">Rust LOD</span>
+              </div>
+              <div class="dropdown-item" id="btn-add-hunyuan3d"><span>🖼️ Image to 3D (Bảo trì / Blueprint)...</span></div>
+            </div>
+          </div>
+
+          <!-- Render Menu -->
+          <div class="menu-item" id="menu-render">
+            <button class="menu-btn">Render</button>
+            <div class="menu-dropdown">
+              <div class="dropdown-item" id="btn-render-viewport"><span>Viewport Render Image</span><span class="shortcut">Shift+F12</span></div>
+              <div class="dropdown-item" id="btn-render-transparent-menu"><span>Render with Transparent BG</span></div>
+              <div class="dropdown-item" id="btn-render-animation"><span>Render Animation (Video)…</span><span class="shortcut">Ctrl+F12</span></div>
+              <div class="dropdown-divider"></div>
+              <div class="dropdown-item" id="btn-render-pathtrace"><span>Path Tracing (Cycles-Style)…</span></div>
+            </div>
+          </div>
+
+          <!-- Help Menu -->
+          <div class="menu-item" id="menu-help">
+            <button class="menu-btn">Help</button>
+            <div class="menu-dropdown">
+              <div class="dropdown-item" id="btn-help-shortcuts"><span>Keyboard Shortcuts</span></div>
+              <div class="dropdown-item" id="btn-help-stem-tutor"><span>🎓 STEM Curriculum & 1-on-1 Tutor</span></div>
+              <div class="dropdown-item" id="btn-help-ai"><span>Open AI 3D Copilot</span></div>
+              <div class="dropdown-item" id="btn-help-ai-settings"><span>AI Copilot Model Settings</span></div>
+              <div class="dropdown-divider"></div>
+              <div class="dropdown-item" id="btn-help-about"><span>About Hunger</span></div>
+            </div>
+          </div>
+        </nav>
+
+        <!-- Workspaces -->
+        <div class="workspace-tabs" id="workspace-tabs">
+          <div class="workspace-tab" data-workspace="motion" title="Hunger Motion — Clean Video-to-3D Mocap Workspace (Unity / VRM / TikTok)">🎬 Motion</div>
+          <div class="workspace-tab active" data-workspace="layout">Layout</div>
+          <div class="workspace-tab" data-workspace="viewport" title="Second Screen: Full Viewport without Bottom Dock (Alt+Space / Ctrl+\)">Viewport (Full)</div>
+          <div class="workspace-tab" data-workspace="advanced" id="tab-workspace-advanced" title="Toggle Advanced 3D DCC Tools (Modeling, Sculpt, UV, Shader Nodes, Scripting, AI)">⚙ Advanced</div>
+          <div class="workspace-advanced-group" id="workspace-advanced-group">
+            <div class="workspace-tab" data-workspace="modeling">Modeling</div>
+            <div class="workspace-tab" data-workspace="scripting">Scripting (DSL)</div>
+            <div class="workspace-tab" data-workspace="ai">AI 3D Studio</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Right Header Stats -->
+      <div class="blender-header-right">
+        <div class="header-stat">Objects: <span class="header-stat-val" id="stat-objects">0</span></div>
+        <div class="header-stat">Verts: <span class="header-stat-val" id="stat-verts">0</span></div>
+        <div class="header-stat">Faces: <span class="header-stat-val" id="stat-faces">0</span></div>
+        <div class="header-stat" title="Số khung hình/giây: càng CAO càng MƯỢT (60 FPS là mức mượt tối đa; khi đứng yên hệ thống tự nghỉ 0% GPU)">FPS: <span class="header-stat-val" id="stat-fps">60</span></div>
+        <div class="header-stat" title="Độ tải dựng 1 khung hình: càng THẤP càng NHẸ (< 16.6ms là mượt 60 FPS)">Frame: <span class="header-stat-val" id="stat-ms">1.0ms</span></div>
+      </div>
+    </header>
+
+    <!-- Main Workspace Container -->
+    <div class="blender-main-layout">
+      <!-- Left Toolbar (Canonical Blender 4.x Tools) -->
+      <aside class="blender-toolbar" data-canonical-dom="1">
+        <div class="tool-group">
+          <button class="tool-btn active" id="tool-select" data-tooltip="Select Box (W)">
+            <svg viewBox="0 0 24 24"><path d="M7 2l12 11.2-5.8.5 3.3 7.3-2.2 1-3.2-7.4L7 18.5V2z"/></svg>
+          </button>
+          <button class="tool-btn" id="tool-cursor" data-tooltip="3D Cursor (Click to place • Shift+C reset to Origin)">
+            <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="2" stroke-dasharray="3 2"/><circle cx="12" cy="12" r="2"/><path d="M12 1v4M12 19v4M1 12h4M19 12h4" stroke="currentColor" stroke-width="1.8"/></svg>
+          </button>
+        </div>
+
+        <div class="tool-group-divider"></div>
+
+        <div class="tool-group">
+          <button class="tool-btn" id="tool-move" data-tooltip="Move (G)">
+            <svg viewBox="0 0 24 24"><path d="M12 2l4 4h-3v5h5V8l4 4-4 4v-3h-5v5h3l-4 4-4-4h3v-5H6v3l-4-4 4-4v3h5V6H8l4-4z"/></svg>
+          </button>
+          <button class="tool-btn" id="tool-rotate" data-tooltip="Rotate (R)">
+            <svg viewBox="0 0 24 24"><path d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46C19.54 15.03 20 13.57 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74C4.46 8.97 4 10.43 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"/></svg>
+          </button>
+          <button class="tool-btn" id="tool-scale" data-tooltip="Scale (S)">
+            <svg viewBox="0 0 24 24"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H5V5h14v14zM7 7h4v4H7zm6 6h4v4h-4z"/></svg>
+          </button>
+          <button class="tool-btn" id="tool-measure" data-tooltip="Measure (Drag to measure distance in meters)">
+            <svg viewBox="0 0 24 24"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1.003 1.003 0 0 0 0-1.42l-2.34-2.34a1.003 1.003 0 0 0-1.42 0l-1.83 1.83 3.75 3.75 1.84-1.82z"/></svg>
+          </button>
+        </div>
+
+        <!-- EDIT MODE TOOLS: Shown only when in Edit Mode -->
+        <div class="tool-group" id="toolbar-group-edit" style="display: none;">
+          <div class="tool-group-divider"></div>
+          <button class="tool-btn" id="tb-edit-extrude" data-tooltip="Extrude Region (E)">
+            <svg viewBox="0 0 24 24"><path d="M12 2l5 5h-3v6h-4V7H7l5-5zm-7 13h14v6H5v-6z"/></svg>
+          </button>
+          <button class="tool-btn" id="tb-edit-inset" data-tooltip="Inset Faces (I)">
+            <svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8"/><rect x="7" y="7" width="10" height="10" fill="currentColor" opacity="0.7"/></svg>
+          </button>
+          <button class="tool-btn" id="tb-edit-bevel" data-tooltip="Bevel (Ctrl+B)">
+            <svg viewBox="0 0 24 24"><polygon points="8 3 16 3 21 8 21 16 16 21 8 21 3 16 3 8" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>
+          </button>
+          <button class="tool-btn" id="tb-edit-loopcut" data-tooltip="Loop Cut (Ctrl+R)">
+            <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" fill="none" stroke="currentColor" stroke-width="1.6"/><line x1="12" y1="2" x2="12" y2="22" stroke="currentColor" stroke-width="2.2"/></svg>
+          </button>
+          <button class="tool-btn" id="tb-edit-subdivide" data-tooltip="Subdivide">
+            <svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8"/><line x1="12" y1="3" x2="12" y2="21" stroke="currentColor" stroke-width="1.5"/><line x1="3" y1="12" x2="21" y2="12" stroke="currentColor" stroke-width="1.5"/></svg>
+          </button>
+          <button class="tool-btn" id="tb-edit-spin" data-tooltip="Spin / Lathe 360°">
+            <svg viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 9 9h-2a7 7 0 1 1-7-7V3z"/></svg>
+          </button>
+          <button class="tool-btn" id="tb-edit-smooth" data-tooltip="Smooth Vertices">
+            <svg viewBox="0 0 24 24"><path d="M3 17c4-8 14-8 18 0" fill="none" stroke="currentColor" stroke-width="2.2"/></svg>
+          </button>
+          <button class="tool-btn" id="tb-edit-merge" data-tooltip="Merge at Center (M)">
+            <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M4 4l5 5M20 4l-5 5M4 20l5-5M20 20l-5-5" stroke="currentColor" stroke-width="1.8"/></svg>
+          </button>
+          <button class="tool-btn" id="tb-edit-delete" data-tooltip="Delete Geometry (X)">
+            <svg viewBox="0 0 24 24"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
+          </button>
+        </div>
+
+        <div class="tool-group" style="margin-top: auto;">
+          <button class="tool-btn" id="tool-npanel-toggle" data-tooltip="Toggle Sidebar (N)">
+            <span style="font-weight: 700; font-size: 11px;">N</span>
+          </button>
+          <button class="tool-btn" id="tool-ai-fab" data-tooltip="AI Copilot 3D (Ctrl+Space)" style="color: #bc8cff;">
+            <svg viewBox="0 0 24 24"><path d="M12 2a10 10 0 1010 10A10 10 0 0012 2zm1 14.5h-2v-2h2zm0-4h-2V7h2z"/></svg>
+          </button>
+        </div>
+      </aside>
+
+      <!-- Center Area (Viewport + Bottom Dock) -->
+      <section class="blender-center-area">
+        <!-- 3D Viewport -->
+        <div class="blender-viewport-container">
+          <!-- Viewport Sub-Header -->
+          <div class="viewport-header">
+            <div class="viewport-header-left">
+              <select class="viewport-mode-select" id="viewport-mode" title="Switch Mode (Tab)">
+                <option value="object">Object Mode</option>
+                <option value="edit">Edit Mode</option>
+                <option value="sculpt">Sculpt Mode</option>
+                <option value="vertex-paint">Vertex Paint</option>
+                <option value="texture-paint">Texture Paint</option>
+                <option value="weight-paint" hidden>Weight Paint</option>
+                <option value="edit-bone" hidden>Edit Bone</option>
+                <option value="pose" hidden>Pose Mode</option>
+              </select>
+
+              <!-- Blender Edit Mode Component Selection Pills & Actions -->
+              <div class="edit-mode-selector-group" id="edit-mode-selector-group" style="display: none; align-items: center; gap: 3px; margin-left: 4px;">
+                <div class="shading-pill-group">
+                  <button class="shading-pill-btn active" id="btn-mode-vertex" data-mode="vertex" title="Vertex Select (1)">
+                    <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor">
+                      <rect x="3" y="3" width="18" height="18" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/>
+                      <circle cx="4" cy="4" r="3.2" fill="#ff9900"/>
+                      <circle cx="20" cy="4" r="2.2"/>
+                      <circle cx="20" cy="20" r="2.2"/>
+                      <circle cx="4" cy="20" r="2.2"/>
+                    </svg>
+                  </button>
+                  <button class="shading-pill-btn" id="btn-mode-edge" data-mode="edge" title="Edge Select (2)">
+                    <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor">
+                      <rect x="3" y="3" width="18" height="18" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/>
+                      <line x1="3" y1="3" x2="21" y2="3" stroke="#ff9900" stroke-width="3.5"/>
+                    </svg>
+                  </button>
+                  <button class="shading-pill-btn" id="btn-mode-face" data-mode="face" title="Face Select (3)">
+                    <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor">
+                      <rect x="3" y="3" width="18" height="18" rx="2" fill="rgba(255,153,0,0.55)" stroke="#ff9900" stroke-width="2"/>
+                    </svg>
+                  </button>
+                </div>
+
+                <div style="width: 1px; height: 16px; background: var(--b-border-base); margin: 0 3px;"></div>
+
+                <button class="edit-action-btn" id="btn-edit-extrude" title="Extrude Vertex / Edge / Face (E)">
+                  <span>Extrude (E)</span>
+                </button>
+                <button class="edit-action-btn" id="btn-edit-inset" title="Inset Face towards Centroid (I)">
+                  <span>Inset (I)</span>
+                </button>
+                <button class="edit-action-btn" id="btn-edit-subdivide" title="Subdivide Selected Faces">
+                  <span>Subdivide</span>
+                </button>
+                <button class="edit-action-btn" id="btn-edit-bevel" title="Selection Bevel (Ctrl+B)">
+                  <span>Bevel (Ctrl+B)</span>
+                </button>
+                <button class="edit-action-btn" id="btn-edit-fill" title="Make Edge / Face (F / J)">
+                  <span>Fill (F)</span>
+                </button>
+                <button class="edit-action-btn" id="btn-edit-knife" title="Interactive Knife Cut (K)">
+                  <span>Knife (K)</span>
+                </button>
+                <button class="edit-action-btn" id="btn-edit-bridge" title="Bridge 2 Edge Loops">
+                  <span>Bridge</span>
+                </button>
+                <button class="edit-action-btn" id="btn-edit-dissolve" title="Dissolve Edges/Verts/Faces (Ctrl+X)">
+                  <span>Dissolve</span>
+                </button>
+                <button class="edit-action-btn" id="btn-edit-separate" title="Separate Selection to Object (P)">
+                  <span>Separate (P)</span>
+                </button>
+                <button class="edit-action-btn" id="btn-edit-poke" title="Poke Faces (Alt+P)">
+                  <span>Poke (Alt+P)</span>
+                </button>
+                <button class="edit-action-btn" id="btn-edit-linked" title="Select Linked geometry (Ctrl+L)">
+                  <span>Linked</span>
+                </button>
+                <button class="edit-action-btn" id="btn-edit-delete-geometry" title="Delete Menu (X) / Quick Delete (Del)" style="color: #e74c3c;">
+                  <span>Delete (X)</span>
+                </button>
+              </div>
+
+              <!-- Blender Sculpt Mode Brushes & Symmetry Bar -->
+              <div class="sculpt-mode-selector-group" id="sculpt-mode-selector-group" style="display: none; align-items: center; gap: 4px; margin-left: 4px;">
+                <div class="shading-pill-group">
+                  <button class="shading-pill-btn sculpt-brush-btn active" id="btn-sculpt-draw" data-brush="draw" title="Draw / Clay Brush">
+                    <span style="font-size: 11px;">Draw</span>
+                  </button>
+                  <button class="shading-pill-btn sculpt-brush-btn" id="btn-sculpt-grab" data-brush="grab" title="Grab / Move Brush">
+                    <span style="font-size: 11px;">Grab</span>
+                  </button>
+                  <button class="shading-pill-btn sculpt-brush-btn" id="btn-sculpt-inflate" data-brush="inflate" title="Inflate Brush">
+                    <span style="font-size: 11px;">Inflate</span>
+                  </button>
+                  <button class="shading-pill-btn sculpt-brush-btn" id="btn-sculpt-smooth" data-brush="smooth" title="Smooth Brush (Hold Shift)">
+                    <span style="font-size: 11px;">Smooth</span>
+                  </button>
+                  <button class="shading-pill-btn sculpt-brush-btn" id="btn-sculpt-flatten" data-brush="flatten" title="Flatten Brush">
+                    <span style="font-size: 11px;">Flatten</span>
+                  </button>
+                  <button class="shading-pill-btn sculpt-brush-btn" id="btn-sculpt-clay" data-brush="clay" title="Clay Strips Brush">
+                    <span style="font-size: 11px;">Clay</span>
+                  </button>
+                  <button class="shading-pill-btn sculpt-brush-btn" id="btn-sculpt-pinch" data-brush="pinch" title="Pinch Brush">
+                    <span style="font-size: 11px;">Pinch</span>
+                  </button>
+                  <button class="shading-pill-btn sculpt-brush-btn" id="btn-sculpt-crease" data-brush="crease" title="Crease Brush (Shift+C / 8)">
+                    <span style="font-size: 11px;">Crease</span>
+                  </button>
+                  <button class="shading-pill-btn sculpt-brush-btn" id="btn-sculpt-snake-hook" data-brush="snake_hook" title="Snake Hook Brush (K / 9)">
+                    <span style="font-size: 11px;">Snake Hook</span>
+                  </button>
+                  <button class="shading-pill-btn sculpt-brush-btn" id="btn-sculpt-mask" data-brush="mask" title="Mask Brush (M / 0)">
+                    <span style="font-size: 11px;">Mask</span>
+                  </button>
+                </div>
+
+                <div style="width: 1px; height: 16px; background: var(--b-border-base); margin: 0 3px;"></div>
+
+                <button class="edit-action-btn active" id="btn-sculpt-symmetry" title="Toggle X-Symmetry">
+                  <span>X-Symmetry (ON)</span>
+                </button>
+
+                <button class="edit-action-btn" id="btn-sculpt-mask-invert" title="Invert Sculpt Mask (Ctrl+I)">
+                  <span>Invert Mask</span>
+                </button>
+                <button class="edit-action-btn" id="btn-sculpt-mask-clear" title="Clear Sculpt Mask (Alt+M)">
+                  <span>Clear Mask</span>
+                </button>
+
+                <div style="display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--b-text-secondary); margin-left: 2px;">
+                  <span>Radius:</span>
+                  <input type="range" id="slider-sculpt-radius" min="0.1" max="2.0" step="0.05" value="0.4" style="width: 55px; height: 4px;">
+                  <span id="val-sculpt-radius" style="color: var(--b-text-primary); min-width: 24px;">0.4</span>
+                </div>
+
+                <div style="display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--b-text-secondary); margin-left: 2px;">
+                  <span>Strength:</span>
+                  <input type="range" id="slider-sculpt-strength" min="0.1" max="1.0" step="0.05" value="0.5" style="width: 55px; height: 4px;">
+                  <span id="val-sculpt-strength" style="color: var(--b-text-primary); min-width: 24px;">0.5</span>
+                </div>
+
+                <div style="width: 1px; height: 16px; background: var(--b-border-base); margin: 0 3px;"></div>
+
+                <div style="display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--b-text-secondary);">
+                  <span>Voxel:</span>
+                  <input type="number" id="input-sculpt-voxel-size" min="0.002" max="50.0" step="0.01" value="0.10" title="Target Voxel Size" style="width: 52px; height: 20px; background: var(--b-bg-input); color: var(--b-text-primary); border: 1px solid var(--b-border-base); border-radius: 3px; padding: 0 4px; font-size: 11px;">
+                  <button class="edit-action-btn" id="btn-sculpt-remesh" title="Voxel Remesh (Ctrl+R)">
+                    <span>Remesh</span>
+                  </button>
+                  <button class="edit-action-btn" id="btn-sculpt-dyntopo" title="Toggle Dynamic Topology Subdivision (Dyntopo)">
+                    <span>Dyntopo</span>
+                  </button>
+                  <input type="number" id="input-sculpt-dyntopo-detail" min="0.004" max="2.0" step="0.01" value="0.08" title="Dyntopo Detail Size" style="width: 48px; height: 20px; background: var(--b-bg-input); color: var(--b-text-primary); border: 1px solid var(--b-border-base); border-radius: 3px; padding: 0 4px; font-size: 11px;">
+                </div>
+              </div>
+
+              <!-- Wave 2A: Vertex Paint / Texture Paint Toolbar -->
+              <div class="paint-mode-selector-group" id="paint-mode-selector-group" style="display: none; align-items: center; gap: 4px; margin-left: 4px;">
+                <div class="shading-pill-group">
+                  <button class="shading-pill-btn paint-brush-btn active" id="btn-paint-draw" data-paint-brush="draw" title="Draw / Mix Brush">Mix</button>
+                  <button class="shading-pill-btn paint-brush-btn" id="btn-paint-soften" data-paint-brush="soften" title="Blur / Soften Brush">Blur</button>
+                  <button class="shading-pill-btn paint-brush-btn" id="btn-paint-smear" data-paint-brush="smear" title="Smear Brush">Smear</button>
+                  <button class="shading-pill-btn paint-brush-btn" id="btn-paint-erase" data-paint-brush="erase" title="Erase / Subtract">Erase</button>
+                </div>
+                <input type="color" id="input-paint-color" value="#ff6b35" title="Brush Color" style="width: 24px; height: 20px; padding: 0; border: 1px solid var(--b-border-base); background: transparent; cursor: pointer;">
+                <label id="paint-slot-wrap" style="display: inline-flex; align-items: center; gap: 3px; font-size: 11px; color: var(--b-text-secondary);">
+                  <span>Slot:</span>
+                  <select id="select-paint-slot" class="viewport-mode-select" style="height: 20px; font-size: 11px;">
+                    <option value="baseColor">Base Color</option>
+                    <option value="roughness">Roughness</option>
+                    <option value="metalness">Metallic</option>
+                    <option value="bump">Bump</option>
+                    <option value="ao">AO</option>
+                  </select>
+                </label>
+                <div style="display: flex; align-items: center; gap: 3px; font-size: 11px; color: var(--b-text-secondary);">
+                  <span>R:</span>
+                  <input type="range" id="slider-paint-radius" min="0.05" max="2.5" step="0.05" value="0.35" style="width: 50px; height: 4px;">
+                  <span id="val-paint-radius" style="min-width: 24px;">0.35</span>
+                </div>
+                <div style="display: flex; align-items: center; gap: 3px; font-size: 11px; color: var(--b-text-secondary);">
+                  <span>Str:</span>
+                  <input type="range" id="slider-paint-strength" min="0.05" max="1.0" step="0.05" value="0.8" style="width: 50px; height: 4px;">
+                  <span id="val-paint-strength" style="min-width: 22px;">0.8</span>
+                </div>
+                <button class="edit-action-btn" id="btn-paint-symx" title="Toggle X Symmetry">Sym X</button>
+                <button class="edit-action-btn" id="btn-paint-fill" title="Fill Color (Shift+K)">Fill</button>
+                <button class="edit-action-btn" id="btn-paint-dirty-vc" title="Compute Crevice AO (Dirty Vertex Colors)" style="display:none;">Dirty VC</button>
+              </div>
+
+              <button class="viewport-nav-btn" id="btn-vp-view">View</button>
+              <button class="viewport-nav-btn" id="btn-vp-select">Select</button>
+              <button class="viewport-nav-btn" id="btn-vp-add">Add</button>
+              <button class="viewport-nav-btn" id="btn-vp-object">Object</button>
+              <button class="viewport-nav-btn" id="btn-vp-pose" title="Pose Mode">Pose Edit</button>
+            </div>
+
+            <div class="viewport-header-right">
+              <!-- Shading Mode Pills -->
+              <div class="shading-pill-group">
+                <button class="shading-pill-btn" id="shading-wire" data-mode="wireframe" title="Wireframe (Z+4)">
+                  <svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"/></svg>
+                </button>
+                <button class="shading-pill-btn active" id="shading-solid" data-mode="solid" title="Solid (Z+6)">
+                  <svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/></svg>
+                </button>
+                <button class="shading-pill-btn" id="shading-material" data-mode="material" title="Material Preview (Z+2)">
+                  <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/></svg>
+                </button>
+                <button class="shading-pill-btn" id="shading-rendered" data-mode="rendered" title="Rendered PBR (Z+8)">
+                  <svg viewBox="0 0 24 24"><path d="M12 2l2.4 7.4H22l-6.2 4.5 2.4 7.4-6.2-4.5-6.2 4.5 2.4-7.4L2 9.4h7.6z"/></svg>
+                </button>
+                <!-- Blender Viewport Shading Popover Trigger -->
+                <button class="shading-popover-trigger" id="btn-shading-popover" title="Viewport Shading & Environment Options (MatCap, Studio, Fog, Sky)">
+                  <svg viewBox="0 0 24 24"><path d="M7 10l5 5 5-5z"/></svg>
+                </button>
+              </div>
+
+              <!-- Viewport Shading Popover Panel (Blender 4.x Style) -->
+              <div class="blender-shading-popover" id="viewport-shading-popover">
+                <div class="popover-header">
+                  <span>Viewport Shading</span>
+                  <button class="popover-close-btn" id="btn-popover-close">✕</button>
+                </div>
+
+                <!-- Lighting Mode Selector: Studio | MatCap | Flat -->
+                <div class="popover-section">
+                  <div class="popover-label">Lighting</div>
+                  <div class="popover-btn-group" id="shading-lighting-type">
+                    <button class="popover-btn active" data-type="studio">Studio</button>
+                    <button class="popover-btn" data-type="matcap">MatCap</button>
+                    <button class="popover-btn" data-type="flat">Flat</button>
+                  </div>
+                </div>
+
+                <!-- Look-Dev Render Quality: Fast | Studio | Cinematic -->
+                <div class="popover-section">
+                  <div class="popover-label">Render Quality (Look-Dev)</div>
+                  <div class="popover-btn-group" id="shading-raster-preset">
+                    <button class="popover-btn active" data-preset="fast" title="High FPS, No Post-Processing">Fast</button>
+                    <button class="popover-btn" data-preset="studio" title="Studio: Contact Shadows (AO) + Subtle Glow + AgX">Studio</button>
+                    <button class="popover-btn" data-preset="cinematic" title="Cinematic: AO + Bloom + Depth of Field (Bokeh) + AgX">Cinematic</button>
+                  </div>
+                  <div class="popover-toggle-row" style="margin-top: 8px; justify-content: space-between;" title="Automatically drops Retina DPR and lowers LOD bias while orbiting/zooming, restoring full crispness 160ms after mouse stops">
+                    <span style="font-size: 11px; color: var(--b-text-primary);">⚡ Fast Orbit (Dynamic LOD / DPR)</span>
+                    <label class="b-switch">
+                      <input type="checkbox" id="check-fast-orbit" checked>
+                      <span class="b-slider"></span>
+                    </label>
+                  </div>
+                </div>
+
+                <!-- MatCap Palette Grid -->
+                <div class="popover-section" id="section-matcap-palette">
+                  <div class="popover-label-row">
+                    <span class="popover-label">MatCap Style</span>
+                    <span class="popover-active-name" id="matcap-active-name">Blender Solid Gray</span>
+                  </div>
+                  <div class="matcap-grid" id="matcap-grid">
+                    <!-- Populated dynamically with live generated sphere swatches -->
+                  </div>
+                </div>
+
+                <div class="popover-divider"></div>
+
+                <!-- HDRI Image-Based Lighting (IBL) Section -->
+                <div class="popover-section" id="section-hdri-environment">
+                  <div class="popover-toggle-row">
+                    <span class="popover-label">HDRI Environment (IBL)</span>
+                    <label class="b-switch">
+                      <input type="checkbox" id="check-hdri-environment" checked>
+                      <span class="b-slider"></span>
+                    </label>
+                  </div>
+                  <div class="popover-options-sub" id="hdri-options">
+                    <div class="popover-row-select">
+                      <select class="popover-select" id="select-hdri-preset">
+                        <option value="studio-softbox">💡 Studio Softbox 3-Point</option>
+                        <option value="golden-sunset">🌅 Golden Sunset Sky</option>
+                        <option value="cyberpunk-neon">🏙️ Cyberpunk Neon City</option>
+                        <option value="industrial-warehouse">🏭 Industrial Warehouse</option>
+                      </select>
+                    </div>
+
+                    <!-- Preset Pills for quick visual selection -->
+                    <div class="preset-pill-row" id="hdri-preset-pills" style="margin-top: 6px;">
+                      <button class="preset-pill active" data-hdri="studio-softbox" title="Studio Softbox 3-Point">Studio</button>
+                      <button class="preset-pill" data-hdri="golden-sunset" title="Golden Sunset Sky">Sunset</button>
+                      <button class="preset-pill" data-hdri="cyberpunk-neon" title="Cyberpunk Neon City">Cyber</button>
+                      <button class="preset-pill" data-hdri="industrial-warehouse" title="Industrial Warehouse">Warehouse</button>
+                    </div>
+
+                    <!-- Show as Viewport Background Toggle -->
+                    <div class="popover-toggle-row" style="margin-top: 6px; justify-content: space-between;">
+                      <span style="font-size: 11px; color: var(--b-text-secondary);">HDRI as Viewport Background</span>
+                      <input type="checkbox" id="check-hdri-as-bg" style="cursor: pointer;">
+                    </div>
+
+                    <!-- Environment Intensity Slider -->
+                    <div class="popover-slider-row">
+                      <span>Intensity:</span>
+                      <input type="range" id="slider-hdri-intensity" min="0" max="3.0" step="0.1" value="1.0">
+                      <span class="slider-val" id="val-hdri-intensity">1.0</span>
+                    </div>
+
+                    <!-- Background Blur Slider -->
+                    <div class="popover-slider-row">
+                      <span>Bg Blur:</span>
+                      <input type="range" id="slider-hdri-blur" min="0" max="1.0" step="0.05" value="0.15">
+                      <span class="slider-val" id="val-hdri-blur">0.15</span>
+                    </div>
+
+                    <!-- HDRI Rotation Slider -->
+                    <div class="popover-slider-row">
+                      <span>Rotation:</span>
+                      <input type="range" id="slider-hdri-rotation" min="0" max="360" step="5" value="0">
+                      <span class="slider-val" id="val-hdri-rotation">0°</span>
+                    </div>
+
+                    <!-- Custom HDRI Load Button (Task 4.1) -->
+                    <div style="margin-top: 8px;">
+                      <button id="btn-load-hdri" class="popover-btn" style="width: 100%; justify-content: center; gap: 6px; padding: 5px 8px; font-size: 11px; background: #3a3a3a; border: 1px solid #555; color: #fff; border-radius: 4px; cursor: pointer;">
+                        📂 Load HDRI… (.hdr / .exr)
+                      </button>
+                      <input type="file" id="input-load-hdri" accept=".hdr,.exr" style="display: none;">
+                    </div>
+                  </div>
+                </div>
+
+                <div class="popover-divider"></div>
+
+                <!-- Studio Backdrop Section -->
+                <div class="popover-section">
+                  <div class="popover-toggle-row">
+                    <span class="popover-label">Studio Cyclorama</span>
+                    <label class="b-switch">
+                      <input type="checkbox" id="check-studio-backdrop">
+                      <span class="b-slider"></span>
+                    </label>
+                  </div>
+                  <div class="popover-toggle-row" style="margin-top: 6px;">
+                    <span class="popover-label" style="font-size: 11px; color: var(--b-text-secondary);">Shadow Catcher Floor</span>
+                    <label class="b-switch">
+                      <input type="checkbox" id="check-shadow-catcher">
+                      <span class="b-slider"></span>
+                    </label>
+                  </div>
+                  <div class="popover-options-sub" id="backdrop-options" style="display: none;">
+                    <div class="preset-pill-row" id="backdrop-preset-row">
+                      <button class="preset-pill active" data-color="#2b2d30" title="Blender Dark">Dark</button>
+                      <button class="preset-pill" data-color="#f0f2f5" title="Pure White Studio">White</button>
+                      <button class="preset-pill" data-color="#e8ded2" title="Warm Cream">Cream</button>
+                      <button class="preset-pill" data-color="#0d1017" title="Cyber Minimalist">Cyber</button>
+                      <button class="preset-pill" data-color="#00af3f" title="Chroma Green">Chroma</button>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="popover-divider"></div>
+
+                <!-- Atmospheric Fog Section -->
+                <div class="popover-section">
+                  <div class="popover-toggle-row">
+                    <span class="popover-label">Atmospheric Fog</span>
+                    <label class="b-switch">
+                      <input type="checkbox" id="check-atmospheric-fog">
+                      <span class="b-slider"></span>
+                    </label>
+                  </div>
+                  <div class="popover-options-sub" id="fog-options" style="display: none;">
+                    <div class="popover-row-select">
+                      <select class="popover-select" id="select-fog-preset">
+                        <option value="studio">Neutral Studio Fog</option>
+                        <option value="day">Daytime Blue Haze</option>
+                        <option value="sunset">Sunset Golden Hour</option>
+                        <option value="cyberpunk">Cyberpunk Neon Night</option>
+                        <option value="dense-mist">Dense Ethereal Mist</option>
+                      </select>
+                    </div>
+                    <div class="popover-slider-row">
+                      <span>Distance:</span>
+                      <input type="range" id="slider-fog-distance" min="30" max="350" value="190">
+                      <span class="slider-val" id="val-fog-distance">190</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="popover-divider"></div>
+
+                <!-- Dynamic Sky Dome & Sun Section -->
+                <div class="popover-section">
+                  <div class="popover-toggle-row">
+                    <span class="popover-label">Dynamic Sky & Sun</span>
+                    <label class="b-switch">
+                      <input type="checkbox" id="check-sky-dome">
+                      <span class="b-slider"></span>
+                    </label>
+                  </div>
+                  <div class="popover-options-sub" id="sky-options" style="display: none;">
+                    <div class="popover-slider-row">
+                      <span>Elevation:</span>
+                      <input type="range" id="slider-sun-elevation" min="0" max="90" value="35">
+                      <span class="slider-val" id="val-sun-elevation">35°</span>
+                    </div>
+                    <div class="popover-slider-row">
+                      <span>Azimuth:</span>
+                      <input type="range" id="slider-sun-azimuth" min="0" max="360" value="180">
+                      <span class="slider-val" id="val-sun-azimuth">180°</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <button class="viewport-nav-btn" id="btn-toggle-grid" title="Toggle Grid Overlay">Grid</button>
+              <button class="viewport-nav-btn" id="btn-toggle-camera-view" title="Look Through Active Camera (0 / Numpad 0)">Camera</button>
+              <button class="viewport-nav-btn" id="btn-focus-object" title="Frame Selected (Numpad . / F)">Focus</button>
+              <button class="viewport-nav-btn active" id="btn-keymap-preset" title="Keymap: Blender Pro (MMB/Alt+LMB Orbit · LMB Box Select) — Click to switch to Web Orbit">⌨ Pro</button>
+              <button class="viewport-nav-btn" id="btn-split-viewport" title="Split / Restore single screen (or drag any of the 4 corners)">⧉ Split</button>
+              <button class="viewport-nav-btn" id="btn-quad-view" title="Toggle 4-View Quad View (Ctrl+Alt+Q)">⊞ Quad</button>
+              <button class="viewport-nav-btn" id="btn-toggle-bottom-dock" title="Second Screen: Toggle Bottom Dock (Alt+Space / Ctrl+\)">⤢ No Dock</button>
+              <button class="viewport-nav-btn" id="btn-fullscreen-viewport" title="Pure Fullscreen Viewport (Ctrl+Alt+Space)">⛶</button>
+            </div>
+          </div>
+
+          <!-- 3D Canvas Host Container -->
+          <div class="viewport-canvas-host" id="viewport-canvas-host">
+            <div class="viewport-info-tag">
+              <div><strong>Camera:</strong> <span id="vp-camera-name">User Perspective</span> <span id="viewport-local-view-badge" style="display:none; background:#e67e22; color:#fff; padding:1px 5px; border-radius:3px; font-size:10px; font-weight:700; margin-left:4px;">LOCAL VIEW (/)</span></div>
+              <div id="vp-selection-info">No Selection</div>
+            </div>
+            <button type="button" id="viewport-fullscreen-restore" class="viewport-fullscreen-restore-btn" title="Exit Pure Fullscreen (Ctrl+Alt+Space)">⤡ Exit Fullscreen (Ctrl+Alt+Space)</button>
+          </div>
+        </div>
+
+        <!-- Horizontal Resizer (Between Viewport and Bottom Dock) -->
+        <div class="resizer-horizontal" id="resizer-bottom-dock"></div>
+
+        <!-- Bottom Dock (Timeline / Scripting Console / Logs) -->
+        <div class="blender-bottom-dock" id="bottom-dock">
+          <div class="bottom-dock-header">
+            <div class="dock-tabs">
+              <div class="dock-tab active" data-pane="dock-scripting">
+                <span>Scripting Console (DSL)</span>
+                <span class="dock-tab-badge">Rapid 3D</span>
+              </div>
+              <div class="dock-tab" data-pane="dock-materials">
+                <span>PBR Materials</span>
+                <span class="dock-tab-badge" style="background:#27ae60;">24 Mats</span>
+              </div>
+              <div class="dock-tab" data-pane="dock-pose">
+                <span>Pose & Rigging</span>
+                <span class="dock-tab-badge" style="background:#e67e22;">Rig</span>
+              </div>
+              <div class="dock-tab" data-pane="dock-timeline">
+                <span>Timeline</span>
+              </div>
+              <div class="dock-tab" data-pane="dock-physics">
+                <span>Physics</span>
+                <span class="dock-tab-badge" style="background:#16a085;">Rapier</span>
+              </div>
+              <div class="dock-tab" data-pane="dock-graph-editor">
+                <span>Graph Editor</span>
+                <span class="dock-tab-badge" style="background:#8e44ad;">F-Curve</span>
+              </div>
+              <div class="dock-tab" data-pane="dock-uv-editor">
+                <span>UV Editor</span>
+                <span class="dock-tab-badge" style="background:#2980b9;">UV</span>
+              </div>
+              <div class="dock-tab" data-pane="dock-mocap">
+                <span>Video Mocap (AI)</span>
+                <span class="dock-tab-badge" style="background:#e67e22;">Motion</span>
+              </div>
+              <div class="dock-tab" data-pane="dock-hunyuan3d">
+                <span>Image to 3D</span>
+                <span class="dock-tab-badge" style="background:#d35400;">Bảo trì</span>
+              </div>
+              <div class="dock-tab" data-pane="dock-stem" id="dock-tab-stem">
+                <span>STEM Curriculum (1-1)</span>
+                <span class="dock-tab-badge" style="background:#00b894;">AI Tutor</span>
+              </div>
+              <div class="dock-tab" data-pane="dock-shader-editor">
+                <span>Shader Nodes</span>
+                <span class="dock-tab-badge" style="background:#9b59b6;">Nodes</span>
+              </div>
+              <div class="dock-tab" data-pane="dock-asset-browser">
+                <span>Asset Browser</span>
+                <span class="dock-tab-badge" style="background:#2980b9;">Assets</span>
+              </div>
+            </div>
+
+            <div class="dock-tabs-nav" id="dock-tabs-nav">
+              <button type="button" class="dock-nav-btn" id="btn-dock-tabs-prev" title="Scroll Tabs Left">‹</button>
+              <button type="button" class="dock-nav-btn" id="btn-dock-tabs-next" title="Scroll Tabs Right">›</button>
+              <button type="button" class="dock-nav-btn dock-nav-all" id="btn-dock-tabs-menu" title="Show All Dock Panels" aria-haspopup="true" aria-expanded="false">Panels ▾</button>
+            </div>
+
+            <div class="timeline-controls" id="timeline-controls-bar">
+              <button class="timeline-btn" id="btn-timeline-play">▶ Play (Space)</button>
+              <button class="timeline-btn" id="btn-timeline-rewind">⏮ Rewind</button>
+              <div class="timeline-frame-scrub">
+                <span>Frame:</span>
+                <b id="timeline-current-frame" style="color: var(--b-accent-blue);">0</b>
+              </div>
+              <button class="timeline-btn" id="btn-collapse-bottom-dock" title="Switch to Second Screen: Hide bottom dock (Alt+Space / Ctrl+\)">▾ Hide Dock</button>
+            </div>
+          </div>
+
+          <div class="dock-body">
+            <!-- Pane 1: Rapid 3D Scripting Code Editor -->
+            <div class="dock-pane active" id="dock-scripting"></div>
+
+            <!-- Pane 2: PBR Materials Shelf -->
+            <div class="dock-pane" id="dock-materials"></div>
+
+            <!-- Pane 3: Pose & Rigging Shelf -->
+            <div class="dock-pane" id="dock-pose"></div>
+
+            <!-- Pane 4: Timeline -->
+            <div class="dock-pane" id="dock-timeline">
+              <div class="timeline-track-view" style="display:flex; align-items:center; justify-content:center; color:#666;">
+                Timeline & Keyframe Track (Animation Driver Active)
+              </div>
+            </div>
+
+            <!-- Pane 4b: Rigid-body Physics -->
+            <div class="dock-pane" id="dock-physics"></div>
+
+            <!-- Pane 5: Graph Editor (Bezier F-Curve Graph Editor) -->
+            <div class="dock-pane" id="dock-graph-editor">
+              <div id="graph-editor" class="graph-editor-container" tabindex="0" style="display: flex; flex-direction: column; width: 100%; height: 100%; min-height: 0; background: #1c1c1c; color: #ddd; position: relative; outline: none;">
+                <div class="graph-editor-toolbar" style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; background: #262626; border-bottom: 1px solid #3d3d3d; font-size: 11px; flex-wrap: wrap; flex-shrink: 0;">
+                  <span style="font-weight: 600; color: var(--b-accent-blue, #4772b3);">Bone:</span>
+                  <select id="graph-bone-select" class="popover-select" style="width: auto; padding: 2px 5px; font-size: 11px; background: #333; color: #fff; border: 1px solid #444; border-radius: 3px;">
+                    <option value="auto">Active Bone / Object</option>
+                  </select>
+                  <span style="font-weight: 600; color: var(--b-accent-blue, #4772b3);">Ch:</span>
+                  <select id="graph-channel-select" class="popover-select" style="width: auto; padding: 2px 5px; font-size: 11px; background: #333; color: #fff; border: 1px solid #444; border-radius: 3px;">
+                    <option value="rotation.x">Rot X</option>
+                    <option value="rotation.y" selected>Rot Y</option>
+                    <option value="rotation.z">Rot Z</option>
+                    <option value="position.x">Loc X</option>
+                    <option value="position.y">Loc Y</option>
+                    <option value="position.z">Loc Z</option>
+                    <option value="scale.x">Scale X</option>
+                    <option value="scale.y">Scale Y</option>
+                    <option value="scale.z">Scale Z</option>
+                  </select>
+                  <select id="graph-channel-filter" class="popover-select" title="Channel Filter" style="width: auto; padding: 2px 5px; font-size: 11px; background: #333; color: #ddd; border: 1px solid #444; border-radius: 3px;">
+                    <option value="all" selected>Filter: All</option>
+                    <option value="active">Active Only</option>
+                    <option value="position">Location XYZ</option>
+                    <option value="rotation">Rotation XYZ</option>
+                    <option value="scale">Scale XYZ</option>
+                  </select>
+                  <select id="graph-keyframe-select" class="popover-select" style="width: auto; padding: 2px 5px; font-size: 11px; background: #333; color: #fff; border: 1px solid #444; border-radius: 3px;">
+                    <option value="selected">Selected</option>
+                    <option value="all">All Keys</option>
+                    <option value="current">Current</option>
+                  </select>
+                  <select id="graph-interp-select" class="popover-select" title="Interpolation Mode" style="width: auto; padding: 2px 5px; font-size: 11px; background: #333; color: #fff; border: 1px solid #444; border-radius: 3px;">
+                    <option value="bezier">Bezier</option>
+                    <option value="smooth">Auto Bezier</option>
+                    <option value="linear">Linear</option>
+                    <option value="constant">Constant</option>
+                    <option value="easeInOut">Ease In-Out</option>
+                  </select>
+                  <button id="btn-graph-apply-interp" class="b-btn" style="padding: 2px 6px; font-size: 11px; background: #444; border: 1px solid #555; color: #fff; border-radius: 3px; cursor: pointer;">Set</button>
+                  <span style="color:#666;">|</span>
+                  <span style="font-weight: 600; color: #aaa;">Handle:</span>
+                  <select id="graph-handle-select" class="popover-select" title="Bezier Handle Type (V)" style="width: auto; padding: 2px 5px; font-size: 11px; background: #333; color: #ffd166; border: 1px solid #444; border-radius: 3px;">
+                    <option value="auto_clamped">Auto Clamped</option>
+                    <option value="aligned">Aligned</option>
+                    <option value="free">Free</option>
+                    <option value="vector">Vector</option>
+                  </select>
+                  <span style="font-weight: 600; color: #aaa;">Extrap:</span>
+                  <select id="graph-extrap-select" class="popover-select" title="Curve Extrapolation (Shift+E)" style="width: auto; padding: 2px 5px; font-size: 11px; background: #333; color: #90e0ef; border: 1px solid #444; border-radius: 3px;">
+                    <option value="constant">Constant</option>
+                    <option value="linear">Linear</option>
+                    <option value="cycle">Cycle</option>
+                    <option value="cycle_offset">Cycle+Offset</option>
+                  </select>
+                  <button id="btn-graph-snap" class="b-btn" title="Snap Keyframe Frame & Value" aria-pressed="false" style="padding: 2px 6px; font-size: 11px; background: #333; border: 1px solid #555; color: #ccc; border-radius: 3px; cursor: pointer;">Snap</button>
+                  <button id="btn-graph-frame-all" class="b-btn" title="Frame All Curves (Home)" style="padding: 2px 6px; font-size: 11px; background: #333; border: 1px solid #555; color: #eee; border-radius: 3px; cursor: pointer;">Fit</button>
+                  <button id="btn-graph-insert-key" class="b-btn" title="Insert Keyframe on Active Channel (I)" style="padding: 2px 6px; font-size: 11px; background: #2f5d3a; border: 1px solid #3f7d4d; color: #fff; border-radius: 3px; cursor: pointer;">+Key</button>
+                  <button id="btn-graph-delete-key" class="b-btn" title="Delete Selected Keyframes (X / Del)" style="padding: 2px 6px; font-size: 11px; background: #6b2d2d; border: 1px solid #8c3b3b; color: #fff; border-radius: 3px; cursor: pointer;">Del</button>
+                  <span id="graph-status" style="color: #888; white-space: nowrap; margin-left: auto;">F-Curve Editor</span>
+                </div>
+                <div style="flex: 1; min-height: 0; position: relative; overflow: hidden; width: 100%;">
+                  <canvas id="graph-editor-canvas" style="width: 100%; height: 100%; display: block; cursor: crosshair;"></canvas>
+                </div>
+              </div>
+            </div>
+
+            <!-- Pane 6: Blender-Standard UV Editor (LSCM, Smart UV, Seams, Pins, Stretch & Interactive Modals) -->
+            <div class="dock-pane" id="dock-uv-editor">
+              <div id="uv-editor" class="uv-editor-container" tabindex="0">
+                <!-- Header Row 1: Selection Mode, Sync, Texture Slot, Stretch & View Controls -->
+                <div class="uv-editor-toolbar">
+                  <div class="uv-toolbar-group">
+                    <span class="uv-editor-title">UV Editor</span>
+                    <span id="uv-mesh-name" class="uv-mesh-pill">No Mesh Selected</span>
+                    <div class="uv-sep"></div>
+                    <button type="button" id="btn-uv-sync" class="uv-btn" title="UV Sync Selection with 3D Viewport Edit Mode">⇄ Sync</button>
+                    <div class="uv-mode-group" role="group" aria-label="UV Selection Mode">
+                      <button type="button" class="uv-btn uv-mode-btn active" data-uv-mode="vertex" title="Vertex Select (1)">• Vert</button>
+                      <button type="button" class="uv-btn uv-mode-btn" data-uv-mode="edge" title="Edge Select (2)">⟋ Edge</button>
+                      <button type="button" class="uv-btn uv-mode-btn" data-uv-mode="face" title="Face Select (3)">▫ Face</button>
+                      <button type="button" class="uv-btn uv-mode-btn" data-uv-mode="island" title="Island Select (4)">◫ Island</button>
+                    </div>
+                  </div>
+                  <div class="uv-toolbar-group">
+                    <span id="uv-vertex-count" class="uv-stat-text">UVs: 0</span>
+                    <span id="uv-island-count" class="uv-stat-text">Islands: 0</span>
+                    <div class="uv-sep"></div>
+                    <label class="uv-field-label">
+                      <span>Image:</span>
+                      <select id="uv-tex-slot-select" class="uv-select" title="UV Background Image / Checker Grid">
+                        <option value="diffuse">Base Color Map</option>
+                        <option value="roughness">Roughness Map</option>
+                        <option value="metalness">Metallic Map</option>
+                        <option value="bump">Bump Map</option>
+                        <option value="ao">AO Map</option>
+                        <option value="normal">Normal Map</option>
+                        <option value="color_grid">UV Color Grid</option>
+                        <option value="uv_grid">Checkerboard Grid</option>
+                        <option value="alpha">Alpha Mask</option>
+                        <option value="none">Blank Grid</option>
+                      </select>
+                    </label>
+                    <button type="button" id="btn-uv-checker-3d" class="uv-btn" title="Preview UV Color Grid directly on 3D Mesh in Viewport">Checker 3D</button>
+                    <button type="button" id="btn-uv-paint-mode" class="uv-btn" title="2D Texture Paint directly on UV Canvas">Paint 2D</button>
+                    <label class="uv-field-label">
+                      <span>Stretch:</span>
+                      <select id="uv-stretch-mode" class="uv-select" title="Display UV Distortion Heatmap (Blue = 0%, Red = High)">
+                        <option value="off">Off</option>
+                        <option value="angle">Angle</option>
+                        <option value="area">Area</option>
+                      </select>
+                    </label>
+                    <button type="button" id="btn-uv-live-unwrap" class="uv-btn" title="Live Unwrap (Re-solve pinned LSCM islands continuously during UV transform)">Live</button>
+                    <button type="button" id="btn-uv-home" class="uv-btn" title="Frame All / Reset UV Canvas Zoom & Pan (Home)">Frame</button>
+                    <button type="button" id="btn-uv-export-png" class="uv-btn" title="Export UV Wireframe Layout (.png)">Export Layout</button>
+                    <button type="button" id="btn-refresh-uv" class="uv-btn" title="Refresh UV View">Refresh</button>
+                  </div>
+                </div>
+
+                <!-- Header Row 2: Unwrap, Seams, Pack, Pins & Transforms -->
+                <div class="uv-editor-controls">
+                  <label class="uv-field-label">
+                    <span class="uv-group-label">UV:</span>
+                    <select id="uv-unwrap-mode" class="uv-select" title="Select UV Unwrap / Projection Method">
+                      <option value="lscm">Unwrap (LSCM Conformal)</option>
+                      <option value="smart">Smart UV Project (66°)</option>
+                      <option value="cube">Cube Projection</option>
+                      <option value="cylinder">Cylinder Projection</option>
+                      <option value="sphere">Sphere Projection</option>
+                      <option value="planar">Planar Projection</option>
+                    </select>
+                  </label>
+                  <button type="button" id="btn-uv-unwrap" class="uv-btn uv-btn-primary" title="Execute selected UV Unwrap / Projection method">Unwrap</button>
+                  <button type="button" id="btn-uv-project-view" class="uv-btn" title="Project UVs from Active 3D Camera View">Project View</button>
+                  <button type="button" id="btn-uv-align-project" class="uv-btn uv-btn-accent" title="Align Front View and Project UVs onto Mesh">Align &amp; Project</button>
+
+                  <div class="uv-sep"></div>
+                  <button type="button" id="btn-uv-mark-seam" class="uv-btn uv-btn-seam" title="Mark UV Seam on selected 3D edges">Mark Seam</button>
+                  <button type="button" id="btn-uv-clear-seam" class="uv-btn" title="Clear UV Seam on selected 3D edges">Clear Seam</button>
+
+                  <div class="uv-sep"></div>
+                  <button type="button" id="btn-uv-pack" class="uv-btn" title="Pack UV Islands into [0,1] square">Pack Islands</button>
+                  <label class="uv-field-label" title="Pack Island Margin">
+                    <span>Margin</span>
+                    <input type="number" id="uv-pack-margin" class="uv-num-input" min="0" max="0.2" step="0.005" value="0.02">
+                  </label>
+                  <button type="button" id="btn-uv-average-scale" class="uv-btn" title="Equalize texel density across all UV islands">Average Scale</button>
+
+                  <div class="uv-sep"></div>
+                  <button type="button" id="btn-uv-pin" class="uv-btn" title="Pin selected UVs for LSCM unwrap (P)">Pin (P)</button>
+                  <button type="button" id="btn-uv-unpin" class="uv-btn" title="Unpin selected UVs (Alt+P)">Unpin</button>
+                  <button type="button" id="btn-uv-fit" class="uv-btn" title="Fit UVs into [0,1] tile (preserve aspect)">Fit 0-1</button>
+                  <button type="button" id="btn-uv-flip-u" class="uv-btn" title="Mirror Horizontally (Flip U)">Flip U</button>
+                  <button type="button" id="btn-uv-flip-v" class="uv-btn" title="Mirror Vertically (Flip V)">Flip V</button>
+                  <button type="button" id="btn-uv-reset" class="uv-btn uv-btn-danger" title="Reset each polygon to fill full [0,1] quad">Reset</button>
+                </div>
+
+                <!-- Interactive HiDPI Canvas Stage (Auto-fits both Bottom Dock & Split Area) -->
+                <div class="uv-canvas-stage" id="uv-canvas-stage">
+                  <canvas id="uv-editor-canvas" width="380" height="380"></canvas>
+                  <div class="uv-hud-banner" id="uv-hud-banner">
+                    LMB: Select · B: Box · L: Island · P/Alt+P: Pin · G/R/S (+X/Y): Transform · Wheel: Zoom · MMB/Alt+Drag: Pan
+                  </div>
+                  <div class="uv-stretch-legend" id="uv-stretch-legend" hidden>
+                    <span>Stretch:</span>
+                    <span class="uv-stretch-bar"></span>
+                    <span>Low → High</span>
+                  </div>
+                  <div id="uv-no-map-msg" class="uv-empty-msg">No UV map found on selected mesh</div>
+                </div>
+              </div>
+            </div>
+            <!-- Pane 7: Video Mocap & AI Motion Tracking -->
+            <div class="dock-pane" id="dock-mocap"></div>
+            <!-- Pane 8: Tencent Hunyuan3D-2.1 Image-to-3D Synthesis -->
+            <div class="dock-pane" id="dock-hunyuan3d"></div>
+            <!-- Pane 9: STEM Curriculum & 1-on-1 AI Voice/Avatar Tutor (Stage 4.1) -->
+            <div class="dock-pane" id="dock-stem"></div>
+            <!-- Pane 10: Shader Node Editor (Wave 2C) -->
+            <div class="dock-pane" id="dock-shader-editor"></div>
+            <!-- Pane 11: Unified Asset Browser (Wave 2D) -->
+            <div class="dock-pane" id="dock-asset-browser"></div>
+
+          </div>
+        </div>
+      </section>
+
+      <!-- Vertical Resizer (Between Viewport and Sidebar) -->
+      <div class="resizer-vertical" id="resizer-sidebar"></div>
+
+      <!-- Right Sidebar (Outliner & Inspector) -->
+      <aside class="blender-sidebar-right" id="sidebar-right">
+        <!-- Outliner Panel -->
+        <div class="blender-outliner-panel" id="outliner-panel">
+          <div class="panel-header">
+            <div class="panel-header-title">
+              <svg viewBox="0 0 24 24"><path d="M3 13h2v-2H3v2zm0 4h2v-2H3v2zm0-8h2V7H3v2zm4 4h14v-2H7v2zm0 4h14v-2H7v2zM7 7v2h14V7H7z"/></svg>
+              <span>Outliner</span>
+            </div>
+            <div class="panel-header-actions">
+              <select id="select-outliner-viewlayer" title="Active View Layer" style="height:18px;font-size:10px;background:#1c1e24;color:#ccc;border:1px solid #3c404d;border-radius:3px;max-width:74px;">
+                <option value="vl_main">ViewLayer</option>
+              </select>
+              <button class="icon-btn" id="btn-outliner-new-col" title="New Nested Collection (+)" style="font-weight:700;font-size:12px;">+</button>
+              <button class="icon-btn" id="btn-outliner-refresh" title="Refresh Tree">
+                <svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor"><path d="M13.65 2.35A7.95 7.95 0 0 0 8 0a8 8 0 1 0 8 8h-2a6 6 0 1 1-1.76-4.24l-2.24 2.24H16V0l-2.35 2.35z"/></svg>
+              </button>
+              <button class="icon-btn" id="btn-outliner-filter" title="Filter View">
+                <svg viewBox="0 0 24 24"><path d="M10 18h4v-2h-4v2zM3 6v2h18V6H3zm3 7h12v-2H6v2z"/></svg>
+              </button>
+            </div>
+          </div>
+
+          <!-- Outliner Tree Mount Target -->
+          <div class="outliner-content" id="outliner-container"></div>
+        </div>
+
+        <!-- Horizontal Resizer (Between Outliner and Inspector) -->
+        <div class="resizer-horizontal" id="resizer-inspector"></div>
+
+        <!-- Properties / Inspector Panel -->
+        <div class="blender-properties-panel" id="inspector-panel" style="flex: 1; display:flex; flex-direction:column; overflow:hidden;">
+          <div class="panel-header">
+            <div class="panel-header-title">
+              <svg viewBox="0 0 24 24"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>
+              <span>Properties</span>
+            </div>
+          </div>
+
+          <!-- Inspector Mount Target -->
+          <div id="inspector-container" style="flex:1; overflow-y:auto; overflow-x:hidden;"></div>
+        </div>
+      </aside>
+    </div>
+
+    <!-- Hidden File Inputs for Universal Blender & Rust WASM DCC Import -->
+    <input type="file" id="file-input-project" accept=".json,.web3d,.wbs" style="display: none;">
+    <input type="file" id="file-input-bundle" accept=".zip,.glb,.gltf,.vrm,.fbx,.obj,.mtl,.bin,.3ds,.vox,.usda,.usd,.usdz,.dae,.dxf,.3mf,.stl,.ply,.off,.png,.jpg,.jpeg,.webp,.bmp" multiple style="display: none;">
+    <input type="file" id="file-input-gltf" accept=".glb,.gltf,.vrm,.bin,.zip,.png,.jpg,.jpeg,.webp" multiple style="display: none;">
+    <input type="file" id="file-input-fbx" accept=".fbx,.zip,.png,.jpg,.jpeg,.webp" multiple style="display: none;">
+    <input type="file" id="file-input-obj" accept=".obj,.mtl,.zip,.png,.jpg,.jpeg,.webp" multiple style="display: none;">
+    <input type="file" id="file-input-3ds" accept=".3ds,.zip,.png,.jpg,.jpeg,.webp" multiple style="display: none;">
+    <input type="file" id="file-input-usd" accept=".usda,.usd,.usdz,.zip,.png,.jpg,.jpeg,.webp" multiple style="display: none;">
+    <input type="file" id="file-input-vox" accept=".vox,.zip" multiple style="display: none;">
+    <input type="file" id="file-input-cad" accept=".dxf,.3mf,.off,.coff,.zip" multiple style="display: none;">
+    <input type="file" id="file-input-stl" accept=".stl" style="display: none;">
+    <input type="file" id="file-input-ply" accept=".ply" style="display: none;">
+    <input type="file" id="file-input-dae" accept=".dae,.zip,.png,.jpg,.jpeg,.webp" multiple style="display: none;">
+    <input type="file" id="file-input-blend" accept=".blend" style="display: none;">
+    <input type="file" id="file-input-universal" accept=".zip,.glb,.gltf,.vrm,.fbx,.obj,.mtl,.3ds,.vox,.usda,.usd,.usdz,.dxf,.3mf,.off,.stl,.ply,.dae,.blend,.wbs,.json,.blend.json,.png,.jpg,.jpeg,.webp" multiple style="display: none;">
+  </div>
+
+  <!-- Main Application Script (ES Module) -->
+  <script type="module" src="js/app.js?v=20261125_0356"></script>
+</body>
+</html>
+
+
+
+

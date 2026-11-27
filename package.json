@@ -1,0 +1,24 @@
+{
+  "name": "web-blender-studio",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Additive production build (Vite) for the static ES-module studio. Dev flow stays: python server.py on :8080.",
+  "scripts": {
+    "build": "vite build",
+    "build:cdn": "STUDIO_R2_CDN=1 vite build",
+    "preview": "vite preview",
+    "r2:upload": "node scripts/upload_assets_to_r2.mjs --bucket hunger-assets",
+    "deploy:staging": "STUDIO_R2_CDN=1 HUNGER_ENV=staging cf deploy -m staging",
+    "deploy:prod": "STUDIO_R2_CDN=1 HUNGER_ENV=production cf deploy -m production",
+    "test": "bash tests/run_all.sh",
+    "test:fast": "bash tests/run_all.sh --fast",
+    "test:browser": "node tests/run_browser_suites.mjs",
+    "test:dist": "node tests/test_dist_production.mjs --build"
+  },
+  "devDependencies": {
+    "@cloudflare/vite-plugin": "^2.0.0-rc.5",
+    "cf": "^1.0.0-rc.6",
+    "vite": "^7.3.8"
+  }
+}

@@ -1,0 +1,577 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <title>Web Blender Studio — Phase 1 Mocap Browser Suite</title>
+  <style>
+    :root { color-scheme: dark; }
+    body { margin: 0; background: #141414; color: #e6e6e6; font: 13px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    header { padding: 16px 20px; border-bottom: 1px solid #2f2f2f; display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+    h1 { font-size: 15px; margin: 0; font-weight: 600; }
+    #summary { padding: 3px 10px; border-radius: 999px; background: #2a2a2a; border: 1px solid #3d3d3d; font-variant-numeric: tabular-nums; }
+    #summary.pass { background: #12351f; border-color: #2ecc71; color: #8ef0b0; }
+    #summary.fail { background: #3a1414; border-color: #e74c3c; color: #ff9b90; }
+    main { display: grid; grid-template-columns: minmax(460px, 1fr) 640px; gap: 16px; padding: 16px 20px; align-items: start; }
+    ol { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 8px; }
+    li { border: 1px solid #2f2f2f; border-radius: 6px; padding: 9px 11px; background: #1b1b1b; }
+    li.pass { border-color: #245c39; }
+    li.fail { border-color: #7a2e2a; background: #221515; }
+    li.running { border-color: #4a4a2a; }
+    .name { font-weight: 600; }
+    .detail { color: #9aa0a6; margin-top: 2px; white-space: pre-wrap; word-break: break-word; }
+    .badge { float: right; font-size: 11px; padding: 1px 7px; border-radius: 999px; background: #2a2a2a; }
+    li.pass .badge { background: #1d4d30; color: #8ef0b0; }
+    li.fail .badge { background: #5a1f1c; color: #ffb4ab; }
+    iframe { width: 640px; height: 480px; border: 1px solid #2f2f2f; border-radius: 6px; background: #000; }
+    code { color: #8ab4f8; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Giai đoạn 1 — Client-side Mocap Suite</h1>
+    <span id="summary">Đang chạy…</span>
+    <span class="detail">Kết quả cũng nằm trong <code>window.__MOCAP_SUITE_RESULTS__</code>.</span>
+  </header>
+
+  <main>
+    <ol id="results"></ol>
+    <iframe id="studio" src="/index.html" title="Web Blender Studio under test"></iframe>
+  </main>
+
+  <script type="module">
+    import {
+      SKELETON_JOINTS, buildMocapFrames, applyFootLock, detectFootContacts,
+    } from '../js/animation/mocap-filters.js';
+    import { BrowserMocapEngine, POSE_LANDMARK_INDEX } from '../js/animation/browser-mocap.js';
+    import { verifyAnimatedGLB, describeReport } from './glb-inspect.mjs';
+
+    const resultsEl = document.getElementById('results');
+    const summaryEl = document.getElementById('summary');
+    const iframe = document.getElementById('studio');
+    const results = [];
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+    function addItem(name) {
+      const li = document.createElement('li');
+      li.className = 'running';
+      li.innerHTML = '<span class="badge">…</span><div class="name"></div><div class="detail"></div>';
+      li.querySelector('.name').textContent = name;
+      resultsEl.appendChild(li);
+      return li;
+    }
+
+    function finishItem(li, ok, detail) {
+      li.className = ok ? 'pass' : 'fail';
+      li.querySelector('.badge').textContent = ok ? 'PASS' : 'FAIL';
+      li.querySelector('.detail').textContent = detail || '';
+    }
+
+    const FRAME_KEYS = [
+      'time', 'midHip', 'spine', 'neck', 'nose',
+      'leftShoulder', 'leftElbow', 'leftWrist', 'leftHandIndex',
+      'rightShoulder', 'rightElbow', 'rightWrist', 'rightHandIndex',
+      'leftHip', 'leftKnee', 'leftAnkle', 'leftFoot',
+      'rightHip', 'rightKnee', 'rightAnkle', 'rightFoot',
+    ].sort();
+
+    /** MediaPipe-style body, +Y down, planted left foot that slides on the floor. */
+    function bodySample(t, { slide = 0.25 } = {}) {
+      const map = {
+        nose: [0, -0.55], leftShoulder: [-0.18, -0.45], rightShoulder: [0.18, -0.45],
+        leftElbow: [-0.3, -0.2], rightElbow: [0.3, -0.2],
+        leftWrist: [-0.35, 0.02], rightWrist: [0.35, 0.02],
+        leftHandIndex: [-0.37, 0.08], rightHandIndex: [0.37, 0.08],
+        leftHip: [-0.1, 0], rightHip: [0.1, 0],
+        leftKnee: [-0.1, 0.4], rightKnee: [0.1, 0.4],
+        leftAnkle: [slide * t, 0.8], rightAnkle: [0.1 * t, 0.45 + 0.1 * Math.sin(t * Math.PI)],
+        leftFoot: [slide * t + 0.12, 0.85], rightFoot: [0.1 * t + 0.12, 0.5],
+      };
+      const landmarks = new Array(33).fill(null).map(() => ({ x: 0.5, y: 0.5, z: 0, visibility: 0.9 }));
+      for (const [joint, index] of Object.entries(POSE_LANDMARK_INDEX)) {
+        const [x, y] = map[joint];
+        landmarks[index] = { x, y, z: 0, visibility: 0.9 };
+      }
+      const normalized = new Array(33).fill(null).map(() => ({ x: 0.5, y: 0.5, z: 0, visibility: 0.9 }));
+      return { worldLandmarks: landmarks, landmarks: normalized };
+    }
+
+    function slidingFrames(count = 40) {
+      const raw = [];
+      for (let i = 0; i < count; i++) raw.push(bodySample(i / (count - 1)));
+      const joints = raw.map((s) => {
+        const out = {};
+        for (const joint of SKELETON_JOINTS) out[joint] = [s.worldLandmarks[POSE_LANDMARK_INDEX[joint]].x, s.worldLandmarks[POSE_LANDMARK_INDEX[joint]].y, 0];
+        return out;
+      });
+      return buildMocapFrames(joints, { fps: 30 });
+    }
+
+    async function waitForStudio(win, timeoutMs = 30000) {
+      const started = Date.now();
+      while (Date.now() - started < timeoutMs) {
+        if (win.app && win.mocapUI && win.engine && win.sceneManager) return;
+        await sleep(120);
+      }
+      throw new Error('Studio không khởi tạo trong 30s');
+    }
+
+    const tests = [
+      {
+        name: 'Trình duyệt hỗ trợ WebAssembly/Canvas cho mocap client-side',
+        async run() {
+          if (!BrowserMocapEngine.isSupported()) throw new Error('isSupported() = false');
+          return 'WebAssembly + Canvas OK';
+        },
+      },
+      {
+        name: 'processFrames (sampler giả) sinh frame đúng schema server',
+        async run() {
+          const engine = new BrowserMocapEngine();
+          const out = await engine.processFrames({
+            fps: 30,
+            totalFrames: 24,
+            frameStep: 2,
+            sampler: (i) => bodySample(i / 24),
+          });
+          const keys = Object.keys(out.mocapFrames[0]).sort();
+          if (JSON.stringify(keys) !== JSON.stringify(FRAME_KEYS)) throw new Error(`schema lệch: ${keys.length} khoá`);
+          if (out.numFrames !== 12) throw new Error(`numFrames ${out.numFrames} != 12`);
+          if (out.engine !== 'browser-wasm') throw new Error('thiếu cờ engine');
+          return `${out.numFrames} frames · ${keys.length} khoá`;
+        },
+      },
+      {
+        name: 'Foot-Lock khoá bàn chân trượt (drift < 2cm)',
+        async run() {
+          const frames = slidingFrames(40);
+          const before = frames.map((f) => f.leftAnkle[0]);
+          const contacts = detectFootContacts(frames, { fps: 30 });
+          const { frames: locked, locked: counts } = applyFootLock(frames, { fps: 30 });
+          const after = locked.map((f) => f.leftAnkle[0]);
+          const drift = Math.max(...after) - Math.min(...after);
+          const driftBefore = Math.max(...before) - Math.min(...before);
+          if (driftBefore < 0.2) throw new Error(`dữ liệu chưa trượt: ${driftBefore.toFixed(3)}`);
+          if (drift >= 0.02) throw new Error(`drift sau khoá ${drift.toFixed(4)} m`);
+          if (counts.left < 30) throw new Error(`chỉ khoá ${counts.left} frames`);
+          if (contacts.right.filter(Boolean).length) throw new Error('chân nhấc bị nhận nhầm');
+          return `trượt ${driftBefore.toFixed(2)}m → ${drift.toFixed(4)}m · khoá ${counts.left}f`;
+        },
+      },
+      {
+        name: 'Huỷ giữa chừng ném AbortError (không treo UI)',
+        async run() {
+          const engine = new BrowserMocapEngine();
+          const controller = new AbortController();
+          let calls = 0;
+          try {
+            await engine.processFrames({
+              fps: 30,
+              totalFrames: 60,
+              signal: controller.signal,
+              sampler: (i) => {
+                if (++calls === 2) controller.abort();
+                return bodySample(i / 60);
+              },
+            });
+          } catch (err) {
+            if (err.name !== 'AbortError') throw new Error(`sai loại lỗi: ${err.name}`);
+            return 'AbortError sau 2 frame';
+          }
+          throw new Error('không ném lỗi khi huỷ');
+        },
+      },
+      {
+        name: 'processVideo báo lỗi rõ khi video chưa có duration',
+        async run() {
+          const engine = new BrowserMocapEngine();
+          try {
+            await engine.processVideo({ duration: NaN, currentTime: 0, paused: true });
+          } catch (err) {
+            if (!/duration|ready/i.test(err.message)) throw new Error(`thông báo lạ: ${err.message}`);
+            return err.message;
+          }
+          throw new Error('không báo lỗi');
+        },
+      },
+      {
+        name: 'Model MediaPipe thật (vendored WASM) chạy trên video mẫu',
+        async run(win) {
+          const engine = new BrowserMocapEngine();
+          const video = win.document.getElementById('mocap-video');
+          if (!video) throw new Error('không thấy thẻ video của Studio');
+          const videoPath = 'models/sample_human_motion.webm';
+          await new Promise((resolve, reject) => {
+            let settled = false;
+            const ok = () => { if (!settled) { settled = true; resolve(); } };
+            const fail = () => {
+              if (!settled) {
+                settled = true;
+                reject(new Error(`video không tải được (MediaError ${video.error ? video.error.code : '?'})`));
+              }
+            };
+            video.addEventListener('loadeddata', ok, { once: true });
+            video.addEventListener('error', fail, { once: true });
+            video.src = videoPath;
+            video.load();
+            const poll = setInterval(() => {
+              if (video.readyState >= 2) { clearInterval(poll); ok(); }
+            }, 200);
+            setTimeout(() => { clearInterval(poll); if (!settled) fail(); }, 20000);
+          });
+          await sleep(300);
+          const out = await engine.processVideo(video, { maxFrames: 8, frameStep: 12, footLock: true });
+          engine.dispose();
+          if (!out.numFrames) throw new Error('không có frame nào');
+          if (out.detectionRate < 0.5) throw new Error(`chỉ nhận dạng ${(out.detectionRate * 100).toFixed(0)}% frame`);
+          const bad = out.mocapFrames.find((f) => !Number.isFinite(f.leftAnkle[0]) || !Number.isFinite(f.midHip[1]));
+          if (bad) throw new Error('có frame NaN');
+          return `${out.numFrames} frames · nhận dạng ${(out.detectionRate * 100).toFixed(0)}% · ${out.engine}`;
+        },
+      },
+      {
+        name: 'MocapUI có bộ chọn engine + ô Foot-Lock và truyền đúng option',
+        async run(win) {
+          const modeEl = win.document.getElementById('mocap-engine-mode');
+          const lockEl = win.document.getElementById('mocap-foot-lock');
+          if (!modeEl) throw new Error('thiếu #mocap-engine-mode');
+          if (!lockEl) throw new Error('thiếu #mocap-foot-lock');
+          if (modeEl.value !== 'browser') throw new Error(`engine mặc định là ${modeEl.value}`);
+          if (!lockEl.checked) throw new Error('foot-lock mặc định tắt');
+          const opts = win.mocapUI._getRetargetOptionsFromUI();
+          if (opts.footLock !== true) throw new Error('retarget không nhận footLock');
+          return `engine=${modeEl.value} · footLock=${opts.footLock}`;
+        },
+      },
+      {
+        name: 'Retarget nhân vật thật (Michelle.glb) có áp Foot-Lock',
+        async run(win) {
+          const ui = win.mocapUI;
+          const character = await ui._loadPresetCharacter('models/Michelle.glb', 'Michelle');
+          const frames = slidingFrames(36);
+          const data = { fps: 30, duration: (frames.length - 1) / 30, mocapFrames: frames };
+          const withLock = ui.retargeter.retarget(character, data, { footLock: true, smoothing: 0.1 });
+          if (!withLock.success) throw new Error(`retarget lỗi: ${withLock.error}`);
+          if (!withLock.footLock || !(withLock.footLock.left > 0)) throw new Error('không có frame foot-lock');
+          const withoutLock = ui.retargeter.retarget(character, data, { footLock: false });
+          if (!withoutLock.success) throw new Error('retarget footLock:false hỏng');
+          if (withoutLock.footLock) throw new Error('footLock:false vẫn bị khoá');
+          return `${withLock.numFrames} frames · ${withLock.tracksCount} tracks · khoá ${withLock.footLock.left}f`;
+        },
+      },
+      {
+        name: 'Retarget tư thế đứng: đầu trên hông, bàn chân dưới hông',
+        async run(win) {
+          const ui = win.mocapUI;
+          const character = await ui._loadPresetCharacter('models/Michelle.glb', 'Michelle');
+          const standing = {
+            nose: [0, -0.55, 0], leftShoulder: [-0.18, -0.45, 0], rightShoulder: [0.18, -0.45, 0],
+            leftElbow: [-0.3, -0.2, 0], rightElbow: [0.3, -0.2, 0],
+            leftWrist: [-0.35, 0.02, 0], rightWrist: [0.35, 0.02, 0],
+            leftHandIndex: [-0.37, 0.08, 0], rightHandIndex: [0.37, 0.08, 0],
+            leftHip: [-0.1, 0, 0], rightHip: [0.1, 0, 0],
+            leftKnee: [-0.1, 0.4, 0], rightKnee: [0.1, 0.4, 0],
+            leftAnkle: [-0.1, 0.8, 0], rightAnkle: [0.1, 0.8, 0],
+            leftFoot: [-0.1, 0.85, 0.12], rightFoot: [0.1, 0.85, 0.12],
+          };
+          const joints = Array.from({ length: 10 }, () => ({ ...standing }));
+          const frames = buildMocapFrames(joints, { fps: 30 });
+          const result = ui.retargeter.retarget(character, { fps: 30, mocapFrames: frames }, { footLock: true, smoothing: 0.2, autoAlign: false });
+          if (!result.success) throw new Error(`retarget lỗi: ${result.error}`);
+          const y = {};
+          const KEY = { hips: 'Hips', head: 'Head', leftfoot: 'LeftFoot', rightfoot: 'RightFoot' };
+          // Repeated GLB loads get a `_003` suffix from three.js, hence the optional tail.
+          character.traverse((o) => {
+            const m = o.isBone && o.name.match(/(hips|head|leftfoot|rightfoot)(_\d+)?$/i);
+            if (m) y[KEY[m[1].toLowerCase()]] = +o.getWorldPosition(new win.THREE.Vector3()).y.toFixed(3);
+          });
+          win.sceneManager.removeObject(character, false);
+          if (!(y.Head > y.Hips)) throw new Error(`đầu (${y.Head}) không cao hơn hông (${y.Hips})`);
+          if (!(y.LeftFoot < y.Hips && y.RightFoot < y.Hips)) throw new Error(`chân không ở dưới hông: ${JSON.stringify(y)}`);
+          if (Math.abs(y.LeftFoot - y.RightFoot) > 0.05) throw new Error(`hai chân lệch nhau: ${y.LeftFoot} vs ${y.RightFoot}`);
+          return `hông ${y.Hips} · đầu ${y.Head} · chân ${y.LeftFoot}/${y.RightFoot}`;
+        },
+      },
+      {
+        name: 'Xuất GLB kèm hoạt cảnh từ nhân vật thật (Michelle.glb)',
+        async run(win) {
+          const ui = win.mocapUI;
+          const button = win.document.getElementById('btn-mocap-export-glb');
+          if (!button) throw new Error('thiếu nút #btn-mocap-export-glb trong panel Mocap');
+
+          const character = await ui._loadPresetCharacter('models/Michelle.glb', 'Michelle');
+          const frames = slidingFrames(36);
+          const data = { fps: 30, duration: (frames.length - 1) / 30, mocapFrames: frames };
+          const applied = ui.retargeter.retarget(character, data, { footLock: true, smoothing: 0.1 });
+          if (!applied.success) throw new Error(`retarget lỗi: ${applied.error}`);
+          ui._lastAppliedTarget = character;
+          ui.mocapData = data;
+
+          const res = await ui.exportAnimatedGLB({ download: false });
+          if (!res || !res.buffer) throw new Error('exportAnimatedGLB không trả ArrayBuffer');
+          if (!res.filename.endsWith('_mocap.glb')) throw new Error(`tên file lạ: ${res.filename}`);
+
+          const clip = ui.retargeter.currentClip;
+          // Tên xương có thể bị three.js thêm hậu tố (_001/_002) khi nạp lại
+          // Michelle nhiều lần trong cùng một trang — lấy tên thật từ boneMap.
+          const boneName = (key) => ui.retargeter.boneMap.get(key)?.name;
+          const expectedBones = ['hips', 'head', 'leftFoot', 'rightHand'].map(boneName).filter(Boolean);
+          if (expectedBones.length !== 4) throw new Error('boneMap thiếu xương lõi của Michelle');
+          const report = verifyAnimatedGLB(res.buffer, {
+            clipName: clip.name,
+            duration: clip.duration,
+            minChannels: clip.tracks.length,
+            bones: expectedBones,
+            tolerance: 5e-3,
+          });
+          win.sceneManager.removeObject(character, false);
+          if (!report.ok) throw new Error(`GLB xuất ra không hợp lệ:\n  - ${report.problems.join('\n  - ')}`);
+          return `${describeReport(report)} · ${clip.tracks.length} track nguồn`;
+        },
+      },
+      {
+        name: 'GLB vừa xuất mở lại được (GLTFLoader): đủ xương, action chạy, khớp dữ liệu',
+        async run(win) {
+          const ui = win.mocapUI;
+          const character = await ui._loadPresetCharacter('models/Michelle.glb', 'Michelle');
+          const frames = slidingFrames(30);
+          const data = { fps: 30, duration: (frames.length - 1) / 30, mocapFrames: frames };
+          const applied = ui.retargeter.retarget(character, data, { footLock: true, smoothing: 0.1 });
+          if (!applied.success) throw new Error(`retarget lỗi: ${applied.error}`);
+          ui._lastAppliedTarget = character;
+
+          const res = await ui.exportAnimatedGLB({ download: false });
+          win.sceneManager.removeObject(character, false);
+          if (!res) throw new Error('không xuất được GLB');
+
+          // _loadAddon chạy trong realm của iframe nên bare specifier `three`
+          // được import map của Studio giải quyết.
+          const { GLTFLoader } = await win.exporter._loadAddon('loaders/GLTFLoader.js');
+          const gltf = await new Promise((resolve, reject) => {
+            new GLTFLoader().parse(res.buffer.slice(0), '', resolve, reject);
+          });
+          if (gltf.animations.length !== 1) throw new Error(`import lại thấy ${gltf.animations.length} animation`);
+          const clip = gltf.animations[0];
+          if (Math.abs(clip.duration - ui.retargeter.currentClip.duration) > 5e-3) {
+            throw new Error(`duration lệch: ${clip.duration} vs ${ui.retargeter.currentClip.duration}`);
+          }
+
+          let skinned = null;
+          const bones = [];
+          gltf.scene.traverse((o) => {
+            if (o.isBone) bones.push(o.name);
+            if (o.isSkinnedMesh) skinned = o;
+          });
+          if (!skinned) throw new Error('không có SkinnedMesh sau khi import');
+          if (bones.length < 20) throw new Error(`chỉ có ${bones.length} xương sau khi import`);
+
+          const unresolved = clip.tracks.filter((track) => {
+            const parsed = win.THREE.PropertyBinding.parseTrackName(track.name);
+            return !win.THREE.PropertyBinding.findNode(gltf.scene, parsed.nodeName);
+          });
+          if (unresolved.length) throw new Error(`track không có node: ${unresolved.map((t) => t.name).join(', ')}`);
+
+          const mixer = new win.THREE.AnimationMixer(gltf.scene);
+          const action = mixer.clipAction(clip).play();
+          mixer.update(clip.duration / 2);
+          if (!action.isRunning()) throw new Error('action không chạy sau khi import');
+          return `${bones.length} xương · ${clip.tracks.length} track · ${clip.duration.toFixed(2)}s · mixer OK`;
+        },
+      },
+      {
+        name: 'Orthographic: mocap framing và UV front-fit không đổi projection',
+        async run(win) {
+          const engine = win.engine;
+          const ui = win.mocapUI;
+          const previous = win.exporter.exportProjectJSON({ download: false });
+          const previousTarget = ui._lastAppliedTarget;
+          const cube = win.studio.addCube({ x: 3, y: 2, z: 0, width: 2, height: 4, depth: 1 });
+          try {
+            if (!engine.camera.isOrthographicCamera) engine.toggleProjection();
+            ui._lastAppliedTarget = cube;
+            const fit = ui.frameCameraToVideo({ silent: true });
+            if (!fit || !engine.camera.isOrthographicCamera) throw new Error('framing đổi hoặc mất camera');
+            const camera = engine.camera;
+            const actualHeight = 4 / ((camera.top - camera.bottom) / camera.zoom);
+            if (Math.abs(actualHeight - fit.subjectH) > 1e-6) throw new Error('chiều cao chủ thể không đúng tỷ lệ video');
+            win.sceneManager.select(cube);
+            win.uvEditor.alignFrontAndProject(cube);
+            if (!camera.projectionMatrix.elements.every(Number.isFinite)) throw new Error('UV fit tạo NaN');
+            const box = new win.THREE.Box3().setFromObject(cube);
+            for (const x of [box.min.x, box.max.x]) {
+              for (const y of [box.min.y, box.max.y]) {
+                const point = new win.THREE.Vector3(x, y, 0).project(camera);
+                if (Math.abs(point.x) > 1 || Math.abs(point.y) > 1) throw new Error('UV front-fit nằm ngoài khung');
+              }
+            }
+            return 'mocap subject-height đúng · UV fit nằm trong frustum · camera ortho hữu hạn';
+          } finally {
+            ui._lastAppliedTarget = previousTarget;
+            await win.exporter.importProjectJSON(previous);
+          }
+        },
+      },
+      {
+        name: 'Orthographic: Director WebM thật giữ tỷ lệ dọc và khôi phục cả khi lỗi',
+        async run(win) {
+          const engine = win.engine;
+          const previous = win.exporter.exportProjectJSON({ download: false });
+          const fetch = win.fetch;
+          let recordedData = null;
+          let checks = 0;
+          try {
+            if (!engine.camera.isOrthographicCamera) engine.toggleProjection();
+            const camera = engine.camera;
+            const before = [camera.left, camera.right, camera.zoom, engine.renderer.getPixelRatio(), engine.controls.enabled];
+            win.fetch = async (url, options) => {
+              if (url === '/api/agent/upload') {
+                recordedData = JSON.parse(options.body).fileData;
+                return new win.Response(JSON.stringify({ ok: true }), { status: 200 });
+              }
+              return fetch.call(win, url, options);
+            };
+            const onFrame = () => {
+              checks += 1;
+              if (Math.abs((camera.right - camera.left) / (camera.top - camera.bottom) - 0.75) > 1e-6) throw new Error('sai tỷ lệ render dọc');
+              if (engine.toggleProjection() !== camera) throw new Error('đổi projection khi đang ghi');
+            };
+            const result = await win.studio.recordDirectorWebM({ duration: 0.5, width: 240, height: 320, fps: 12, onFrame });
+            if (!checks || !recordedData || result.size < 1000) throw new Error(`không có WebM thực: frames=${checks}, bytes=${result.size}, base64=${recordedData?.length || 0}`);
+            const video = win.document.createElement('video');
+            await new Promise((resolve, reject) => {
+              video.onloadedmetadata = resolve;
+              video.onerror = () => reject(new Error('WebM không giải mã được'));
+              video.src = `data:video/webm;base64,${recordedData}`;
+            });
+            if (video.videoWidth !== 240 || video.videoHeight !== 320) throw new Error('metadata WebM sai kích thước');
+            video.removeAttribute('src');
+            video.load();
+            try {
+              await win.studio.recordDirectorWebM({ duration: 0.1, width: 240, height: 320, onFrame() { throw new Error('frame failure'); } });
+              throw new Error('không truyền lỗi callback');
+            } catch (error) {
+              if (error.message !== 'frame failure') throw error;
+            }
+            const after = [camera.left, camera.right, camera.zoom, engine.renderer.getPixelRatio(), engine.controls.enabled];
+            if (JSON.stringify(before) !== JSON.stringify(after)) throw new Error('không khôi phục viewport sau ghi/lỗi');
+            return `${result.size} bytes WebM · 240×320 metadata · ${checks} frame checks · failure cleanup`;
+          } finally {
+            win.fetch = fetch;
+            await win.exporter.importProjectJSON(previous);
+          }
+        },
+      },
+      {
+        name: 'Orthographic: Render mocap WebM thật và trả lại viewport',
+        async run(win) {
+          const ui = win.mocapUI;
+          const engine = win.engine;
+          const previous = win.exporter.exportProjectJSON({ download: false });
+          const click = win.HTMLAnchorElement.prototype.click;
+          const format = win.document.getElementById('mocap-render-format');
+          const resolution = win.document.getElementById('mocap-render-res');
+          const formatBefore = format.value;
+          const resolutionBefore = resolution.value;
+          try {
+            const character = await ui._loadPresetCharacter('models/Michelle.glb', 'Michelle');
+            const frames = slidingFrames(60);
+            const applied = ui.retargeter.retarget(character, { fps: 30, duration: 59 / 30, mocapFrames: frames }, { footLock: true });
+            if (!applied.success) throw new Error(applied.error);
+            ui._lastAppliedTarget = character;
+            if (!engine.camera.isOrthographicCamera) engine.toggleProjection();
+            const camera = engine.camera;
+            const bounds = [camera.left, camera.right];
+            format.value = 'webm-vp9';
+            resolution.value = '1280x720';
+            win.HTMLAnchorElement.prototype.click = function () {};
+            // Headless encoder can starve right after a heavy suite; one retry
+            // tolerates that, two failures still surface a real regression.
+            let success = await ui.renderVideo();
+            if (!success) { await sleep(500); success = await ui.renderVideo(); }
+            if (!success) throw new Error('render mocap không trả video hợp lệ');
+            if (engine.camera !== camera || !engine.controls.enabled || ui._isRendering) throw new Error('render không trả controls/camera');
+            if (JSON.stringify([camera.left, camera.right]) !== JSON.stringify(bounds)) throw new Error('render không trả frustum');
+            const link = win.document.getElementById('mocap-render-download');
+            const blob = await (await win.fetch(link.href)).blob();
+            const video = win.document.createElement('video');
+            await new Promise((resolve, reject) => {
+              video.onloadedmetadata = resolve;
+              video.onerror = () => reject(new Error('mocap WebM không giải mã được'));
+              video.src = link.href;
+            });
+            if (video.videoWidth !== 1280 || video.videoHeight !== 720 || blob.size < 8192) throw new Error('mocap WebM sai kích thước/dữ liệu');
+            video.removeAttribute('src');
+            video.load();
+            win.URL.revokeObjectURL(link.href);
+            return `${blob.size} bytes · 1280×720 WebM · auto-frame ortho · restore controls/frustum`;
+          } finally {
+            win.HTMLAnchorElement.prototype.click = click;
+            format.value = formatBefore;
+            resolution.value = resolutionBefore;
+            await win.exporter.importProjectJSON(previous);
+          }
+        },
+      },
+      {
+        name: 'Camera View: enter perspective scene camera và exit khôi phục viewport ortho',
+        async run(win) {
+          const engine = win.engine;
+          const camMgr = win.app?.cameraManager;
+          if (!camMgr) throw new Error('cameraManager chưa sẵn sàng');
+          const previous = win.exporter.exportProjectJSON({ download: false });
+          try {
+            if (!engine.camera.isOrthographicCamera) engine.toggleProjection();
+            engine.dollyCamera(0.7);
+            const camera = engine.camera;
+            const before = camera.clone();
+            const target = engine.controls.target.clone();
+            const camObj = camMgr.activeCamera || camMgr.createCamera?.();
+            if (!camObj) throw new Error('không tìm thấy scene camera');
+            camMgr.enterCameraView(camObj);
+            if (!engine.camera.isPerspectiveCamera || engine.controls.enabled) throw new Error('camera view không dùng perspective / khóa controls');
+            camMgr.exitCameraView();
+            if (engine.camera !== camera || !engine.controls.enabled) throw new Error('exitCameraView không trả camera viewport');
+            if (camera.position.distanceTo(before.position) > 1e-6 || camera.quaternion.angleTo(before.quaternion) > 1e-6 || engine.controls.target.distanceTo(target) > 1e-6 || camera.zoom !== before.zoom || !camera.projectionMatrix.equals(before.projectionMatrix)) throw new Error('exitCameraView không trả đúng pose/zoom/projection');
+            engine._render();
+            return 'ortho dolly · enter camera perspective · exit trả ortho pose/zoom/target';
+          } finally {
+            camMgr?.exitCameraView();
+            await win.exporter.importProjectJSON(previous);
+          }
+        },
+      },
+    ];
+
+    (async () => {
+      let win = null;
+      try {
+        win = iframe.contentWindow;
+        await waitForStudio(win);
+      } catch (err) {
+        summaryEl.textContent = `Lỗi khởi động: ${err.message}`;
+        summaryEl.className = 'fail';
+        window.__MOCAP_SUITE_RESULTS__ = { error: err.message, results };
+        return;
+      }
+
+      for (const test of tests) {
+        const li = addItem(test.name);
+        try {
+          const detail = await test.run(win);
+          results.push({ name: test.name, ok: true, detail });
+          finishItem(li, true, detail);
+        } catch (err) {
+          results.push({ name: test.name, ok: false, detail: err.message });
+          finishItem(li, false, `${err.message}`);
+          console.error('[mocap-suite]', test.name, err);
+        }
+      }
+
+      const failed = results.filter((r) => !r.ok).length;
+      summaryEl.textContent = `${results.length - failed}/${results.length} PASS`;
+      summaryEl.className = failed ? 'fail' : 'pass';
+      window.__MOCAP_SUITE_RESULTS__ = { passed: results.length - failed, failed, results };
+      console.log('[mocap-suite]', window.__MOCAP_SUITE_RESULTS__);
+    })();
+  </script>
+</body>
+</html>

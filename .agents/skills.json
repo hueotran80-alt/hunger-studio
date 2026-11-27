@@ -1,0 +1,34 @@
+{
+  "entries": [
+    {
+      "path": "~/.gemini/config/skills-archive",
+      "include_only": [
+        "threejs-fundamentals",
+        "threejs-geometry",
+        "threejs-materials",
+        "threejs-lighting",
+        "threejs-textures",
+        "threejs-shaders",
+        "threejs-animation",
+        "threejs-gltf-loading",
+        "threejs-interaction",
+        "threejs-postprocessing",
+        "shader-programming",
+        "physics-tuning",
+        "mcp-builder",
+        "webapp-testing",
+        "frontend-design",
+        "web-design-guidelines",
+        "blender-modeling",
+        "blender-materials",
+        "blender-uv-texturing",
+        "blender-animation",
+        "blender-export",
+        "performance-optimization"
+      ],
+      "exclude": [
+        "threejs-materials-lighting"
+      ]
+    }
+  ]
+}

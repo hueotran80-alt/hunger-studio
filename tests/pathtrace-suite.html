@@ -1,0 +1,684 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <title>Path Tracing Regression</title>
+  <!-- The suite imports /js/render/pathtrace-*.js, which use bare 'three'
+       specifiers; without an import map those modules fail to resolve. -->
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "../vendor/three/three.module.js",
+      "three/addons/": "../vendor/three/addons/"
+    }
+  }
+  </script>
+  <style>
+    body { background:#181818;color:#ddd;font:14px system-ui;margin:16px; }
+    iframe { width:960px;height:600px;border:1px solid #444; }
+    li { margin:8px 0; } .pass { color:#8cdaac; } .fail { color:#f99; }
+    #rendered { max-width:480px;border:1px solid #444; }
+  </style>
+</head>
+<body>
+  <h1>Path Tracing — GPU / UI regression</h1>
+  <p id="summary">Đang chạy…</p>
+  <ol id="results"></ol>
+  <img id="rendered" alt="PNG render kiểm thử">
+  <iframe id="studio" src="/index.html" title="Studio under test"></iframe>
+  <script type="module">
+    const frame = document.querySelector('#studio');
+    const results = window.__PATH_TRACE_RESULTS__ = [];
+    const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+    const assert = (condition, message) => { if (!condition) throw new Error(message); };
+    assert.equal = (actual, expected, message) => {
+      if (!Object.is(actual, expected)) {
+        throw new Error(message || `kỳ vọng ${String(expected)}, nhận ${String(actual)}`);
+      }
+    };
+    assert.throws = (fn, pattern, message) => {
+      let thrown = null;
+      try { fn(); } catch (error) { thrown = error; }
+      if (!thrown) throw new Error(message || 'Hàm phải ném lỗi nhưng không ném');
+      if (pattern && !pattern.test(String(thrown.message || thrown))) {
+        throw new Error(message || `Sai thông điệp lỗi: ${thrown.message || thrown}`);
+      }
+    };
+    async function until(check, timeout = 30000) {
+      const start = performance.now();
+      while (!check()) {
+        if (performance.now() - start > timeout) throw new Error('Timeout');
+        await sleep(30);
+      }
+    }
+    async function pixels(url, win) {
+      const image = new win.Image(); image.src = url; await image.decode();
+      const canvas = win.document.createElement('canvas');
+      canvas.width = image.width; canvas.height = image.height;
+      const context = canvas.getContext('2d'); context.drawImage(image, 0, 0);
+      const data = context.getImageData(0, 0, image.width, image.height).data;
+      const colors = new Set(); let opaque = 0, transparent = 0;
+      for (let i = 0; i < data.length; i += 4) {
+        if (data[i + 3]) { opaque++; colors.add(`${data[i]},${data[i + 1]},${data[i + 2]}`); }
+        else transparent++;
+      }
+      return { width:image.width, height:image.height, colors:colors.size, opaque, transparent, data };
+    }
+    function state(app) {
+      const engine = app.engine, r = engine.renderer;
+      const size = r.getSize({ set(x, y) { this.x=x;this.y=y;return this; } });
+      return JSON.stringify({ size:[size.x,size.y],ratio:r.getPixelRatio(),running:engine.isRunning,
+        camera:engine.camera.uuid,position:engine.camera.position.toArray(),zoom:engine.camera.zoom,
+        target:engine.controls.target.toArray(),controls:engine.controls.enabled,
+        tone:r.toneMapping,exposure:r.toneMappingExposure,clearAlpha:r.getClearAlpha(),
+        renderTarget:r.getRenderTarget()?.uuid,children:app.sceneManager.getAllObjects().map((o)=>o.uuid) });
+    }
+    async function test(name, fn) {
+      const row = document.createElement('li'); row.textContent = name; document.querySelector('#results').appendChild(row);
+      try { const detail = await fn(); row.className='pass';row.textContent += ' — PASS '+(detail||'');results.push({name,ok:true,detail}); }
+      catch (error) { row.className='fail';row.textContent += ' — FAIL '+error.message;results.push({name,ok:false,detail:error.stack}); }
+    }
+    try {
+      await until(()=>frame.contentWindow.app?.pathTraceRender && frame.contentWindow.studio);
+      const win=frame.contentWindow, app=win.app, manager=app.pathTraceRender;
+      app.stemTutor?.setBubbleOpen(false);
+      win.studio.clearScene();
+      const cube=win.studio.addCube({name:'TraceCube',y:1,color:0xe05522});
+      app.sceneManager.select(cube);
+      app.engine.focusSelection();
+      await sleep(100);
+      await test('Lazy-load: pathtracer chưa tải lúc mở Studio; không vá Scene.prototype', async()=>{
+        assert(!win.performance.getEntriesByType('resource').some((r)=>r.name.includes('/three-gpu-pathtracer/')), 'Tải bundle ngay khi mở app');
+        const THREE=await import('/vendor/three/three.module.js');
+        assert(!('backgroundRotation' in THREE.Scene.prototype), 'Prototype bị vá');
+      });
+      await test('PNG PBR qua MatCap: màu thật, cảnh/camera/renderer không đổi', async()=>{
+        app.matcapStudio.toggleMatCapMode(true);
+        assert(cube.material.isMeshMatcapMaterial && cube.userData.__originalMaterial?.isMeshStandardMaterial,'MatCap fixture absent');
+        const before=state(app), displayed=cube.material, geometry=cube.geometry;
+        const result=await manager.render({samples:4,scale:0.5});
+        const image=await pixels(result.dataUrl,win);
+        assert(image.colors>10 && image.opaque>100,'PNG trống hoặc đồng màu');
+        assert(result.width===image.width && result.height===image.height,'PNG sai kích thước');
+        assert(state(app)===before && cube.material===displayed && cube.geometry===geometry,'Cảnh gốc bị thay đổi');
+        document.querySelector('#rendered').src=result.dataUrl;
+        return `${image.width}×${image.height}; ${image.colors} màu`;
+      });
+      await test('Orthographic PNG + nền trong suốt; không đổi phép chiếu gốc', async()=>{
+        app.engine.toggleProjection();
+        const background=app.engine.scene.background; app.engine.scene.background=null;
+        try {
+          const before=state(app), result=await manager.render({samples:4,scale:0.5});
+          const image=await pixels(result.dataUrl,win);
+          assert(image.colors>10 && image.opaque>20 && image.transparent>20,'Không có mesh/nền alpha');
+          assert(state(app)===before,'Orthographic bị thay đổi');
+        } finally { app.engine.scene.background=background;app.engine.toggleProjection(); }
+      });
+      const THREE=await import('/vendor/three/three.module.js');
+      const PathTraceRenderManager=manager.constructor;
+      function isolated(scene,camera) {
+        return new PathTraceRenderManager({engine:{scene,camera,renderer:app.engine.renderer},sceneManager:{rootContainer:scene}});
+      }
+      // Read-only size facade: new manager tests render at 96×64 without resizing the viewport.
+      function bounded(scene,camera) {
+        const viewport=app.engine.renderer;
+        const renderer={getSize:(v)=>v.set(192,128),outputColorSpace:viewport.outputColorSpace,
+          toneMapping:viewport.toneMapping,toneMappingExposure:viewport.toneMappingExposure};
+        return new PathTraceRenderManager({engine:{scene,camera,renderer},sceneManager:{rootContainer:scene}});
+      }
+      function centerRGBA(image) {
+        const sum=[0,0,0,0];let count=0;
+        for(let y=Math.floor(image.height*0.4);y<image.height*0.6;y++)for(let x=Math.floor(image.width*0.4);x<image.width*0.6;x++) {
+          const i=(y*image.width+x)*4;for(let c=0;c<4;c++)sum[c]+=image.data[i+c];count++;
+        }
+        assert(count>20,'Vùng đo PNG quá nhỏ');return sum.map((v)=>v/count);
+      }
+      await test('Denoise GPU xác định: Float/HalfFloat, giảm variance, giữ biên/RGB/alpha và tone mapping', async()=>{
+        const [GPU,{FullScreenQuad},{createDenoiseMaterial}]=await Promise.all([
+          win.eval("import('/vendor/three/three.module.js')"),
+          win.eval("import('/vendor/three/addons/postprocessing/Pass.js')"),
+          win.eval("import('/js/render/pathtrace-denoise.js')")
+        ]);
+        const width=64,height=48,before=state(app),renderer=new GPU.WebGLRenderer({alpha:true,
+          antialias:false,premultipliedAlpha:false,preserveDrawingBuffer:true});
+        const resources=[],quads=[];let shaderError=false;
+        renderer.debug.onShaderError=()=>{shaderError=true;};
+        renderer.setPixelRatio(1);renderer.setSize(width,height,false);
+        renderer.outputColorSpace=app.engine.renderer.outputColorSpace;
+        const read=(quad)=>{
+          renderer.setRenderTarget(null);renderer.setScissorTest(false);renderer.setClearColor(0,0);renderer.clear();quad.render(renderer);
+          assert(!shaderError&&!renderer.getContext().isContextLost(),'Shader/context denoise lỗi');
+          const data=new Uint8Array(width*height*4),gl=renderer.getContext();
+          gl.readPixels(0,0,width,height,gl.RGBA,gl.UNSIGNED_BYTE,data);
+          assert(gl.getError()===gl.NO_ERROR,'Không đọc được framebuffer RGBA');return data;
+        };
+        const stats=(data,x0,x1,y0,y1)=>{
+          const mean=[0,0,0],square=[0,0,0];let count=0;
+          for(let y=y0;y<y1;y++)for(let x=x0;x<x1;x++) {
+            const i=(y*width+x)*4;for(let c=0;c<3;c++){mean[c]+=data[i+c];square[c]+=data[i+c]**2;}count++;
+          }
+          for(let c=0;c<3;c++)mean[c]/=count;
+          return {mean,variance:square.reduce((s,v,c)=>s+v/count-mean[c]**2,0)/3};
+        };
+        const details=[];
+        try {
+          assert(renderer.capabilities.isWebGL2&&renderer.extensions.has('EXT_color_buffer_float'),'GPU cần Float/HalfFloat');
+          assert(app.engine.renderer.toneMapping!==GPU.NoToneMapping,'Fixture viewport cần tone mapping');
+          for(const type of [GPU.FloatType,GPU.HalfFloatType]) {
+            const values=new Float32Array(width*height*4),cleanValues=new Float32Array(values.length);
+            for(let y=0;y<height;y++)for(let x=0;x<width;x++) {
+              const i=(y*width+x)*4,alpha=y<16?1:y<32?0.5:0;
+              const base=x<32?[0.72,0.065,0.035]:[0.035,0.065,0.72];
+              // A clean band isolates edge retention from the intentional flat-region noise.
+              const noise=x>=28&&x<36?0:(((x*17+y*29)&3)-1.5)*0.018;
+              for(let c=0;c<3;c++) {
+                values[i+c]=alpha?base[c]+noise:0;
+                cleanValues[i+c]=alpha?base[c]:0;
+              }
+              values[i+3]=cleanValues[i+3]=alpha;
+            }
+            const bytes=type===GPU.FloatType?values:Uint16Array.from(values,(v)=>GPU.DataUtils.toHalfFloat(v));
+            const cleanBytes=type===GPU.FloatType?cleanValues:Uint16Array.from(cleanValues,(v)=>GPU.DataUtils.toHalfFloat(v));
+            const texture=new GPU.DataTexture(bytes,width,height,GPU.RGBAFormat,type);
+            const cleanTexture=new GPU.DataTexture(cleanBytes,width,height,GPU.RGBAFormat,type);
+            for(const map of [texture,cleanTexture]) {
+              map.minFilter=map.magFilter=GPU.NearestFilter;map.generateMipmaps=false;
+              map.colorSpace=GPU.LinearSRGBColorSpace;map.needsUpdate=true;resources.push(map);
+            }
+            const original=bytes.slice(),version=texture.version,image=texture.image;
+            const textureSettings=()=>JSON.stringify([texture.type,texture.format,texture.colorSpace,texture.minFilter,
+              texture.magFilter,texture.wrapS,texture.wrapT,texture.generateMipmaps,texture.flipY,texture.premultiplyAlpha,texture.unpackAlignment]);
+            const settings=textureSettings();
+            let sourceDisposed=false;texture.addEventListener('dispose',()=>{sourceDisposed=true;});
+            const rawMaterial=new GPU.MeshBasicMaterial({map:texture,transparent:true,blending:GPU.NoBlending,depthTest:false,depthWrite:false});
+            const filteredMaterial=createDenoiseMaterial(texture);
+            const cleanMaterial=new GPU.MeshBasicMaterial({map:cleanTexture,transparent:true,blending:GPU.NoBlending,depthTest:false,depthWrite:false});
+            resources.push(rawMaterial,filteredMaterial,cleanMaterial);
+            assert(filteredMaterial.map===texture&&filteredMaterial.sigma===2&&filteredMaterial.kSigma===1&&filteredMaterial.threshold===0.1,'Mất cấu hình production');
+            const rawQuad=new FullScreenQuad(rawMaterial),filteredQuad=new FullScreenQuad(filteredMaterial),cleanQuad=new FullScreenQuad(cleanMaterial);
+            quads.push(rawQuad,filteredQuad,cleanQuad);
+            let unmapped;
+            for(const tone of [GPU.NoToneMapping,app.engine.renderer.toneMapping]) {
+              renderer.toneMapping=tone;renderer.toneMappingExposure=tone===GPU.NoToneMapping?1:app.engine.renderer.toneMappingExposure*1.7;
+              const raw=read(rawQuad),filtered=read(filteredQuad),rawAfter=read(rawQuad),clean=read(cleanQuad);
+              assert(raw.every((v,i)=>v===rawAfter[i]),'Bộ lọc ghi vào texture GPU nguồn');
+              assert(!sourceDisposed&&texture.image===image&&texture.version===version&&textureSettings()===settings&&bytes.every((v,i)=>v===original[i]),'Texture CPU/thuộc tính nguồn bị đổi');
+              for(let y=0;y<height;y++)for(let x=0;x<width;x++) {
+                const i=(y*width+x)*4,expected=y<16?255:y<32?128:0;
+                assert(Math.abs(raw[i+3]-expected)<=1&&Math.abs(filtered[i+3]-raw[i+3])<=1,'Alpha/coverage đổi tại '+x+','+y);
+              }
+              for(const [x0,x1] of [[4,28],[36,60]])for(const y0 of [4,20]) {
+                const a=stats(raw,x0,x1,y0,y0+8),b=stats(filtered,x0,x1,y0,y0+8),reference=stats(clean,x0,x1,y0,y0+8);
+                assert(a.variance>3&&b.variance<a.variance*0.65,'Không giảm variance đáng kể: '+a.variance+' → '+b.variance);
+                // Tone mapping is nonlinear, so averaging noisy output is not the clean color reference.
+                assert(b.mean.every((v,c)=>Math.abs(v-reference.mean[c])<3),'RGB lệch màu sạch: '+reference.mean+' → '+b.mean);
+                const colorError=(mean)=>mean.reduce((sum,v,c)=>sum+Math.abs(v-reference.mean[c]),0);
+                assert(colorError(b.mean)<=colorError(a.mean)+1,'Lọc làm tăng sai số màu sạch');
+                details.push((b.variance/a.variance).toFixed(2));
+              }
+              for(const x of [31,32])for(const y of [8,15,16,24,31]) {
+                const i=(y*width+x)*4,dominant=x<32?0:2,other=x<32?2:0;
+                assert(filtered[i+dominant]>filtered[i+other]+50,'Biên màu bão hoà bị trộn');
+                for(let c=0;c<3;c++)assert(Math.abs(filtered[i+c]-raw[i+c])<5,'RGB biên/alpha bị tối hoặc chảy màu');
+              }
+              for(const [x0,x1] of [[4,28],[36,60]]) {
+                const opaque=stats(filtered,x0,x1,4,12),half=stats(filtered,x0,x1,20,28);
+                assert(opaque.mean.every((v,c)=>Math.abs(v-half.mean[c])<2),'Straight RGB bị nhân alpha trước/sau tone mapping');
+              }
+              if(tone===GPU.NoToneMapping)unmapped=raw;
+              else assert(raw.some((v,i)=>i%4!==3&&Math.abs(v-unmapped[i])>10),'Tone mapping/exposure không thực sự chạy');
+            }
+          }
+          assert(state(app)===before,'Renderer GPU riêng làm đổi viewport');
+          return 'variance filtered/raw: '+details.join(',');
+        } finally {
+          quads.forEach((quad)=>quad.dispose());resources.forEach((resource)=>resource.dispose());
+          renderer.dispose();renderer.forceContextLoss();
+        }
+      });
+      await test('Manager PNG denoise on/off/default: straight RGB bán trong suốt, flags và nguồn nguyên vẹn', async()=>{
+        const scene=new THREE.Scene(),g=new THREE.PlaneGeometry(2,1.2);
+        const bytes=new Uint8Array([255,255,255,255]),texture=new THREE.DataTexture(bytes,1,1);texture.needsUpdate=true;
+        const material=new THREE.MeshStandardMaterial({map:texture,color:0,emissive:0x486080,metalness:1,roughness:1,transparent:true});
+        const mesh=new THREE.Mesh(g,material);scene.add(mesh);
+        const camera=new THREE.OrthographicCamera(-1.5,1.5,1,-1,0.1,10);camera.position.z=4;
+        const tracer=bounded(scene,camera),before=state(app),positions=Array.from(g.attributes.position.array),version=texture.version;
+        let disposed=false;for(const resource of [g,material,texture])resource.addEventListener('dispose',()=>{disposed=true;});
+        const phases=[];
+        try {
+          const baseline=await tracer.render({samples:4,scale:0.5,onProgress:(_p,_n,phase)=>phases.push(phase)});
+          assert(baseline.denoised===false&&!phases.includes('Denoising…'),'Default không giữ pipeline gốc');
+          const opaque=centerRGBA(await pixels(baseline.dataUrl,win));material.opacity=0.5;
+          phases.length=0;
+          const off=await tracer.render({samples:32,scale:0.5,denoise:false,onProgress:(_p,_n,phase)=>phases.push(phase)});
+          assert(off.denoised===false&&!phases.includes('Denoising…'),'Explicit off vẫn lọc');
+          phases.length=0;
+          const on=await tracer.render({samples:32,scale:0.5,denoise:true,onProgress:(p,n,phase)=>{
+            phases.push(phase);if(phase==='Denoising…')assert(p===1&&n===32&&tracer.busy,'Phase denoise sai');
+          }});
+          assert(on.denoised===true&&phases.filter((p)=>p==='Denoising…').length===1,'Thiếu flag/phase on');
+          const images=await Promise.all([pixels(off.dataUrl,win),pixels(on.dataUrl,win)]),averages=images.map(centerRGBA);
+          for(let j=0;j<images.length;j++) {
+            const image=images[j],rgba=averages[j],result=j?on:off;
+            assert(image.width===96&&image.height===64&&result.width===image.width&&result.height===image.height,'Sai PNG bounded');
+            assert(image.opaque>100&&image.transparent>100,'PNG mất mesh/nền alpha');
+            assert(rgba[3]>90&&rgba[3]<165,'Alpha bán trong suốt sai: '+rgba);
+            for(let c=0;c<3;c++)assert(Math.abs(rgba[c]-opaque[c])<8,'PNG straight RGB bị tối/cháy: '+opaque+' → '+rgba);
+          }
+          for(let c=0;c<3;c++)assert(Math.abs(averages[0][c]-averages[1][c])<8,'On/off đổi màu PNG');
+          assert(!disposed&&mesh.geometry===g&&mesh.material===material&&material.map===texture&&material.opacity===0.5,'Denoise sửa/dispose nguồn');
+          assert(texture.version===version&&bytes.every((v)=>v===255)&&JSON.stringify(Array.from(g.attributes.position.array))===JSON.stringify(positions),'Texture/geometry nguồn bị ghi');
+          assert(state(app)===before&&!tracer.busy,'Viewport/busy không khôi phục');
+          return 'on RGBA '+averages[1].map((v)=>v.toFixed(1)).join(',');
+        } finally {g.dispose();material.dispose();texture.dispose();}
+      });
+      await test('Denoise: input không boolean, huỷ sau yield, overlap/callback lỗi giải phóng context rồi render lại', async()=>{
+        const scene=new THREE.Scene(),g=new THREE.PlaneGeometry(2,1.2);
+        const material=new THREE.MeshStandardMaterial({color:0,emissive:0x486080,metalness:1,roughness:1});
+        const mesh=new THREE.Mesh(g,material);scene.add(mesh);
+        const camera=new THREE.OrthographicCamera(-1.5,1.5,1,-1,0.1,10);camera.position.z=4;
+        const tracer=bounded(scene,camera),before=state(app),contexts=[];
+        const prototype=win.HTMLCanvasElement.prototype,getContext=prototype.getContext;
+        let disposed=false;g.addEventListener('dispose',()=>{disposed=true;});material.addEventListener('dispose',()=>{disposed=true;});
+        prototype.getContext=function(...args) {
+          const context=getContext.apply(this,args);
+          if((args[0]==='webgl2'||args[0]==='webgl')&&context&&context!==app.engine.renderer.getContext()&&!contexts.includes(context))contexts.push(context);
+          return context;
+        };
+        try {
+          const busyDescriptor=Object.getOwnPropertyDescriptor(tracer,'busy');let busyValue=tracer.busy,busyWrites=0;
+          Object.defineProperty(tracer,'busy',{configurable:true,get:()=>busyValue,set:(value)=>{busyValue=value;busyWrites++;}});
+          try {
+            for(const denoise of [null,0,1,'false','true',[],{},new win.Boolean(false)]) {
+              let error,called=false;try {await tracer.render({samples:2,scale:0.5,denoise,onProgress:()=>{called=true;}});}catch(e){error=e;}
+              assert(error?.message.includes('true or false')&&!called&&!tracer.busy&&busyWrites===0&&contexts.length===0,'Nonboolean không bị chặn trước busy/GPU');
+            }
+          } finally {Object.defineProperty(tracer,'busy',busyDescriptor);}
+          let reached=false,cancelledAfterYield=false,overlap;
+          const cancelled=await tracer.render({samples:2,scale:0.5,denoise:true,onProgress:(_p,_n,phase)=>{
+            if(phase==='Denoising…') {
+              reached=true;
+              overlap=tracer.render({samples:1,scale:0.5,denoise:false}).then(()=>false,(e)=>e.message.includes('already running'));
+              win.setTimeout(()=>{cancelledAfterYield=true;tracer.cancel();},0);
+            }
+          }});
+          assert(reached&&cancelledAfterYield&&cancelled===null&&await overlap,'Không huỷ sau yield/chặn overlap ở denoise');
+          assert(!tracer.busy&&state(app)===before,'Cancel giữ busy/đổi viewport');
+          const sentinel=new win.Error('Denoise callback sentinel');let error;
+          try {await tracer.render({samples:2,scale:0.5,denoise:true,onProgress:(_p,_n,phase)=>{if(phase==='Denoising…')throw sentinel;}});}catch(e){error=e;}
+          assert(error===sentinel&&!tracer.busy&&state(app)===before,'Callback error không truyền/cleanup');
+          const again=await tracer.render({samples:2,scale:0.5,denoise:true});
+          const image=await pixels(again.dataUrl,win);
+          assert(again.denoised===true&&image.opaque>100&&image.transparent>100,'Không render PNG thật sau cancel/error');
+          assert(contexts.length===3,'Không theo dõi đủ context GPU riêng: '+contexts.length);
+          await until(()=>contexts.every((context)=>context.isContextLost()),5000);
+          assert(!disposed&&mesh.geometry===g&&mesh.material===material&&!tracer.busy&&state(app)===before,'Cleanup dispose nguồn/đổi viewport');
+          return '3 context riêng đã release; render lại có PNG';
+        } finally {prototype.getContext=getContext;g.dispose();material.dispose();}
+      });
+      await test('PNG giữ màu đỏ/xanh lá/xanh dương của mesh đa vật liệu và mesh kế tiếp', async()=>{
+        const scene=new THREE.Scene();scene.background=new THREE.Color(0x111111);
+        const materials=[0xff0000,0x00ff00,0x0000ff,0xffff00].map((emissive)=>new THREE.MeshStandardMaterial({color:0,emissive,metalness:1,roughness:1}));
+        const g=new THREE.BufferGeometry(), positions=[];
+        for(let i=0;i<3;i++) {
+          const part=new THREE.PlaneGeometry(0.8,1).toNonIndexed();part.translate(i-1.5,0,0);
+          positions.push(...part.attributes.position.array);part.dispose();g.addGroup(i*6,6,i);
+        }
+        g.setAttribute('position',new THREE.Float32BufferAttribute(positions,3));g.computeVertexNormals();
+        const multi=new THREE.Mesh(g,materials.slice(0,3));
+        const last=new THREE.Mesh(new THREE.PlaneGeometry(0.8,1),materials[3]);last.position.x=1.5;scene.add(multi,last);
+        const camera=new THREE.OrthographicCamera(-3,3,1.5,-1.5,0.1,10);camera.position.z=4;
+        const before=state(app);
+        try {
+          const result=await isolated(scene,camera).render({samples:4,scale:0.5}), image=await pixels(result.dataUrl,win);
+          const counts=[0,0,0,0];
+          for(let i=0;i<image.data.length;i+=4) {
+            const [r,g,b]=image.data.slice(i,i+3);
+            if(r>g+50&&r>b+50)counts[0]++;
+            if(g>r+40&&g>b+40)counts[1]++;
+            if(b>r+50&&b>g+50)counts[2]++;
+            if(r>b+40&&g>b+40&&Math.abs(r-g)<30)counts[3]++;
+          }
+          assert(counts.every((n)=>n>20),'Mất/gán sai vật liệu: '+counts.join(','));
+          assert(state(app)===before&&multi.material.length===3&&!g.attributes.color,'Nguồn/viewport bị sửa');
+          document.querySelector('#rendered').src=result.dataUrl;
+          return 'pixel theo màu: '+counts.join(',');
+        } finally {g.dispose();last.geometry.dispose();materials.forEach((m)=>m.dispose());}
+      });
+      await test('PNG alpha bán trong suốt giữ RGB thay vì làm sáng/cháy màu', async()=>{
+        const scene=new THREE.Scene(), g=new THREE.PlaneGeometry(4,4);
+        const material=new THREE.MeshStandardMaterial({color:0,emissive:0x486080,metalness:1,roughness:1,transparent:true});
+        scene.add(new THREE.Mesh(g,material));
+        const camera=new THREE.OrthographicCamera(-2,2,1,-1,0.1,10);camera.position.z=4;
+        const tracer=isolated(scene,camera), before=state(app);
+        const center=(image)=>{
+          const values=[0,0,0,0];let count=0;
+          for(let y=Math.floor(image.height*0.4);y<image.height*0.6;y++)for(let x=Math.floor(image.width*0.4);x<image.width*0.6;x++) {
+            const i=(y*image.width+x)*4;for(let c=0;c<4;c++)values[c]+=image.data[i+c];count++;
+          }
+          return values.map((v)=>v/count);
+        };
+        try {
+          const opaque=center(await pixels((await tracer.render({samples:4,scale:0.5})).dataUrl,win));
+          material.opacity=0.5;
+          const translucent=center(await pixels((await tracer.render({samples:32,scale:0.5})).dataUrl,win));
+          assert(translucent[3]>90&&translucent[3]<165,'Alpha không gần 0.5: '+translucent);
+          for(let c=0;c<3;c++)assert(Math.abs(translucent[c]-opaque[c])<8,'RGB đổi khi alpha giảm: '+opaque+' → '+translucent);
+          assert(state(app)===before&&!tracer.busy,'Trạng thái viewport/busy sai');
+          return 'RGB/alpha '+translucent.map((v)=>v.toFixed(1)).join(',');
+        } finally {g.dispose();material.dispose();}
+      });
+      await test('SkinnedMesh PNG giữ tư thế đã chụp dù xương tiếp tục di chuyển', async()=>{
+        const scene=new THREE.Scene(), g=new THREE.PlaneGeometry(0.8,1.4);
+        const count=g.attributes.position.count, indices=new Uint16Array(count*4), weights=new Float32Array(count*4);
+        for(let i=0;i<count;i++)weights[i*4]=1;
+        g.setAttribute('skinIndex',new THREE.Uint16BufferAttribute(indices,4));
+        g.setAttribute('skinWeight',new THREE.Float32BufferAttribute(weights,4));
+        const material=new THREE.MeshStandardMaterial({color:0,emissive:0xff0000,metalness:1,roughness:1});
+        const skinned=new THREE.SkinnedMesh(g,material), bone=new THREE.Bone();
+        skinned.add(bone);scene.add(skinned);skinned.bind(new THREE.Skeleton([bone]));bone.position.x=1;
+        const camera=new THREE.OrthographicCamera(-3,3,1.5,-1.5,0.1,10);camera.position.z=4;
+        const tracer=isolated(scene,camera), before=state(app), positions=Array.from(g.attributes.position.array);
+        let moved=false, disposed=false;g.addEventListener('dispose',()=>{disposed=true;});
+        const centroid=(image)=>{
+          let count=0,x=0,y=0;
+          for(let i=0;i<image.data.length;i+=4)if(image.data[i]>image.data[i+1]+50&&image.data[i]>image.data[i+2]+50) {
+            x+=(i/4)%image.width;y+=Math.floor(i/4/image.width);count++;
+          }
+          assert(count>100,'Mesh có xương không hiện trong PNG');return [x/count,y/count];
+        };
+        try {
+          const result=await tracer.render({samples:8,scale:0.5,onProgress:(_p,n)=>{
+            if(n>=1&&!moved){bone.position.x=-1;scene.updateMatrixWorld(true);moved=true;}
+          }});
+          const image=await pixels(result.dataUrl,win), center=centroid(image);
+          assert(result.bakedSkinned===1&&result.skippedSkinned===0&&moved,'Không bake rig hoặc chưa đổi pose');
+          assert(center[0]>image.width*0.6,'Ảnh theo pose mới/T-pose thay vì pose đã chụp');
+          const reference=new THREE.Scene(), plane=new THREE.Mesh(new THREE.PlaneGeometry(0.8,1.4),material);plane.position.x=1;reference.add(plane);
+          try {
+            const expected=centroid(await pixels((await isolated(reference,camera).render({samples:8,scale:0.5})).dataUrl,win));
+            assert(center.every((v,i)=>Math.abs(v-expected[i])<2),'Silhouette không khớp mesh tĩnh tương đương');
+          } finally {plane.geometry.dispose();}
+          assert(!disposed&&skinned.geometry===g&&skinned.material===material&&bone.position.x===-1,'Nguồn bị thay/khôi phục pose');
+          assert(JSON.stringify(Array.from(g.attributes.position.array))===JSON.stringify(positions),'Geometry nguồn bị bake');
+          assert(state(app)===before&&!tracer.busy,'Viewport/busy bị đổi');
+          return 'pose chụp ở phải, rig nguồn tiếp tục sang trái';
+        } finally {g.dispose();material.dispose();skinned.skeleton.dispose();}
+      });
+      await test('Michelle GLB: render tư thế animation, rig/clip còn nguyên và phát tiếp được', async()=>{
+        const {GLTFLoader}=await win.eval("import('/vendor/three/addons/loaders/GLTFLoader.js')");
+        const gltf=await new GLTFLoader().loadAsync('/models/Michelle.glb');
+        const scene=new THREE.Scene();scene.add(gltf.scene);
+        const mixer=new THREE.AnimationMixer(gltf.scene), clip=gltf.animations[0];assert(clip,'GLB thiếu clip');
+        mixer.clipAction(clip).play();mixer.setTime(clip.duration*0.35);scene.updateMatrixWorld(true);
+        const skins=[];gltf.scene.traverse((node)=>{if(node.isSkinnedMesh)skins.push(node);});assert(skins.length,'GLB thiếu SkinnedMesh');
+        const original=skins.map((node)=>({geometry:node.geometry,material:node.material,skeleton:node.skeleton,
+          position:Array.from(node.geometry.attributes.position.array),bind:node.bindMatrixInverse.toArray()}));
+        const tracks=clip.tracks.map((track)=>({track,values:Array.from(track.values)}));
+        const bounds=new THREE.Box3().setFromObject(gltf.scene,true), center=bounds.getCenter(new THREE.Vector3()), size=bounds.getSize(new THREE.Vector3());
+        const half=Math.max(size.y,size.x,0.1)*0.7;
+        const camera=new THREE.OrthographicCamera(-half,half,half,-half,0.01,1000);
+        camera.position.copy(center).add(new THREE.Vector3(0,0,Math.max(size.z,half)*3));camera.lookAt(center);
+        const tracer=isolated(scene,camera), before=state(app), time=mixer.time;
+        try {
+          const result=await tracer.render({samples:4,scale:0.5}), image=await pixels(result.dataUrl,win);
+          assert(result.bakedSkinned===skins.length&&result.skippedSkinned===0,'Nhân vật bị bỏ qua');
+          assert(image.colors>50&&image.opaque>500&&image.transparent>100,'Ảnh nhân vật rỗng/mất alpha');
+          assert(mixer.time===time,'Render sửa thời gian animation');
+          skins.forEach((node,i)=>{
+            const source=original[i];
+            assert(node.geometry===source.geometry&&node.material===source.material&&node.skeleton===source.skeleton,'Đổi tài nguyên nhân vật');
+            assert(JSON.stringify(Array.from(node.geometry.attributes.position.array))===JSON.stringify(source.position),'Ghi pose vào geometry nguồn');
+            assert(JSON.stringify(node.bindMatrixInverse.toArray())===JSON.stringify(source.bind),'Sửa bind inverse nguồn');
+          });
+          tracks.forEach(({track,values},i)=>assert(clip.tracks[i]===track&&JSON.stringify(Array.from(track.values))===JSON.stringify(values),'Clip bị sửa'));
+          const pose=skins[0].skeleton.bones.map((bone)=>bone.quaternion.toArray());mixer.update(0.25);scene.updateMatrixWorld(true);
+          assert(mixer.time>time&&skins[0].skeleton.bones.some((bone,i)=>bone.quaternion.toArray().some((v,j)=>Math.abs(v-pose[i][j])>1e-5)),'Animation không phát tiếp');
+          assert(state(app)===before&&!tracer.busy,'Viewport/busy bị đổi');
+          document.querySelector('#rendered').src=result.dataUrl;
+          return `${skins.length} mesh có xương; ${image.colors} màu; playback tiếp tục`;
+        } finally {
+          mixer.stopAllAction();mixer.uncacheRoot(gltf.scene);
+          const resources=new Set();gltf.scene.traverse((node)=>{
+            if(node.geometry)resources.add(node.geometry);if(node.skeleton)resources.add(node.skeleton);
+            for(const material of node.material?(Array.isArray(node.material)?node.material:[node.material]):[]) {
+              resources.add(material);for(const value of Object.values(material))if(value?.isTexture)resources.add(value);
+            }
+          });resources.forEach((resource)=>resource.dispose());
+        }
+      });
+      await test('UV1 lỗi rõ ràng qua dialog; cleanup xong vẫn render lại được', async()=>{
+        const texture=new THREE.Texture();texture.channel=1;
+        const scene=new THREE.Scene(), g=new THREE.PlaneGeometry();
+        const material=new THREE.MeshStandardMaterial({map:texture});scene.add(new THREE.Mesh(g,material));
+        const camera=new THREE.PerspectiveCamera(45,1,0.1,10);camera.position.z=3;
+        const tracer=isolated(scene,camera), before=state(app);
+        try {
+          tracer.openDialog();const dialog=tracer._backdrop;
+          dialog.querySelector('#pt-start').click();
+          await until(()=>!tracer.busy&&!dialog.querySelector('#pt-start').disabled);
+          assert(dialog.querySelector('#pt-status').textContent.includes('UV0'),'Dialog thiếu lỗi UV0');
+          assert(dialog.querySelector('#pt-download').hidden&&state(app)===before,'Lỗi UV làm hỏng trạng thái');
+          dialog.querySelector('#pt-close').click();
+          material.map=null;
+          assert((await tracer.render({samples:1,scale:0.5})).dataUrl.startsWith('data:image/png'),'Không render được sau lỗi');
+        } finally {tracer._backdrop?.remove();g.dispose();material.dispose();texture.dispose();}
+      });
+      await test('Huỷ trong lúc lấy mẫu + chặn render trùng; viewport giữ nguyên', async()=>{
+        const before=state(app);
+        let overlapRejected=false;
+        const pending=manager.render({samples:256,scale:0.5,onProgress:(_p,n)=>{if(n>=1)manager.cancel();}});
+        try { await manager.render(); } catch { overlapRejected=true; }
+        assert(await pending===null,'Huỷ không trả null');
+        assert(overlapRejected && !manager.busy && state(app)===before,'Huỷ/overlap làm hỏng trạng thái');
+      });
+      await test('Input sai / cảnh trống: lỗi rõ ràng và không giữ busy', async()=>{
+        for (const options of [{samples:NaN},{samples:Infinity},{samples:257},{scale:NaN}]) {
+          let failed=false;try { await manager.render(options); } catch { failed=true; }
+          assert(failed && !manager.busy,'Input sai không bị chặn');
+        }
+        win.studio.clearScene();
+        const before=state(app);let failed=false;
+        try { await manager.render(); } catch { failed=true; }
+        assert(failed && !manager.busy && state(app)===before,'Lỗi cảnh trống làm đổi viewport');
+        const next=win.studio.addCube({name:'TraceAfterError',y:1});app.sceneManager.select(next);app.engine.focusSelection();
+      });
+      await test('Menu → dialog: render PNG 32 samples và tải PNG', async()=>{
+        app.stemTutor?.setBubbleOpen(true);
+        win.document.querySelector('#menu-render .menu-btn').click();
+        win.document.querySelector('#btn-render-pathtrace').click();
+        assert(!manager._backdrop.hidden && win.document.activeElement.id==='pt-start','Dialog/focus không mở');
+        const box=manager._backdrop.querySelector('[role=dialog]').getBoundingClientRect();
+        assert(win.document.elementFromPoint(box.left+box.width/2,box.top+box.height/2)?.closest('.pt-backdrop')===manager._backdrop,'Giáo viên AI che hộp render');
+        assert(!manager._backdrop.querySelector('#pt-denoise').checked,'Checkbox denoise không mặc định off');
+        win.document.querySelector('#pt-start').click();
+        await until(()=>!manager.busy && !win.document.querySelector('#pt-start').disabled,180000);
+        assert(!manager._backdrop.querySelector('#pt-status').textContent.includes('denoised'),'Menu mặc định chạy denoise');
+        const preview=win.document.querySelector('#pt-preview');
+        assert(preview.src.startsWith('data:image/png') && !win.document.querySelector('#pt-download').hidden,'UI không nhận PNG');
+        const image=await pixels(preview.src,win);assert(image.colors>10,'UI PNG trống');
+        let download;
+        const click=win.HTMLAnchorElement.prototype.click;
+        win.HTMLAnchorElement.prototype.click=function(){download={href:this.href,name:this.download};};
+        try { win.document.querySelector('#pt-download').click(); } finally {win.HTMLAnchorElement.prototype.click=click;}
+        assert(download?.href===preview.src && download.name.endsWith('.png'),'Download không trỏ PNG');
+        win.document.querySelector('#pt-close').click();
+        assert(manager._backdrop.hidden,'Dialog không đóng');
+        document.querySelector('#rendered').src=preview.src;
+        return win.document.querySelector('#pt-status').textContent;
+      });
+      await test('Đóng khi render already running: huỷ trước khi thả phím viewport; mở lại được', async()=>{
+        manager.openDialog();
+        const before=state(app);
+        win.document.querySelector('#pt-start').click();
+        win.document.querySelector('#pt-close').click();
+        assert(!manager._backdrop.hidden,'Dialog đóng trước khi render dừng');
+        await until(()=>!manager.busy && manager._backdrop.hidden);
+        assert(state(app)===before,'Close-cancel làm đổi viewport');
+        manager.openDialog();assert(!win.document.querySelector('#pt-start').disabled,'Không mở lại được');
+        win.document.querySelector('#pt-close').click();
+      });
+      await test('Checkbox UI thật: on/off, disabled/restored success/cancel/error, status/download và focus trap khi mở lại', async()=>{
+        const sourceValues=(mesh)=>JSON.stringify({position:mesh.position.toArray(),quaternion:mesh.quaternion.toArray(),
+          scale:mesh.scale.toArray(),visible:mesh.visible,
+          materials:[mesh.material,mesh.userData.__originalMaterial].flat().filter(Boolean).map((m)=>({
+            uuid:m.uuid,type:m.type,color:m.color?.toArray(),emissive:m.emissive?.toArray(),emissiveIntensity:m.emissiveIntensity,
+            opacity:m.opacity,transparent:m.transparent,metalness:m.metalness,roughness:m.roughness,
+            blending:m.blending,premultipliedAlpha:m.premultipliedAlpha,toneMapped:m.toneMapped,
+            textures:Object.entries(m).filter(([,v])=>v?.isTexture).map(([key,v])=>[key,v.uuid,v.version])}))});
+        const before=state(app),sources=app.sceneManager.getAllObjects().filter((o)=>o.isMesh).map((mesh)=>({mesh,
+          geometry:mesh.geometry,material:mesh.material,original:mesh.userData.__originalMaterial,values:sourceValues(mesh),
+          positions:Array.from(mesh.geometry.attributes.position.array)}));
+        const render=manager.render,hadOwnRender=Object.hasOwn(manager,'render');
+        manager.openDialog();
+        const dialog=manager._backdrop,q=(id)=>dialog.querySelector('#pt-'+id);
+        const checkbox=q('denoise'),start=q('start'),cancel=q('cancel'),download=q('download'),status=q('status'),preview=q('preview');
+        const engine=q('engine'),samples=q('samples'),scale=q('scale'),threads=q('threads'),tonemap=q('tonemap'),sampleValue=samples.value,scaleValue=scale.value;
+        const selects=[engine,samples,scale,threads,tonemap].filter(Boolean);
+        const smallSamples=new win.Option('4 (GPU regression)', '4');
+        let mode='success',lastResult,phases=[],observed=[];
+        // Instrument only the callback; every UI click still delegates to the production GPU renderer.
+        manager.render=async function(options) {
+          lastResult=undefined;phases=[];observed=[];
+          const result=await render.call(this,{...options,onProgress:(p,n,phase)=>{
+            phases.push(phase);
+            observed.push(checkbox.disabled&&start.disabled&&samples.disabled&&scale.disabled&&!cancel.disabled);
+            options.onProgress?.(p,n,phase);
+            if(phase==='Denoising…') {
+              if(mode==='cancel')cancel.click();
+              if(mode==='error')throw new win.Error('Denoise UI sentinel');
+            }
+          }});
+          lastResult=result;return result;
+        };
+        const unchanged=()=>{
+          assert(state(app)===before&&!manager.busy,'UI render đổi viewport/busy');
+          for(const source of sources)assert(source.mesh.geometry===source.geometry&&source.mesh.material===source.material&&
+            source.mesh.userData.__originalMaterial===source.original&&sourceValues(source.mesh)===source.values&&
+            JSON.stringify(Array.from(source.geometry.attributes.position.array))===JSON.stringify(source.positions),'UI render sửa nguồn mesh/PBR');
+        };
+        const run=async(checked,nextMode)=>{
+          mode=nextMode;
+          if(checkbox.checked!==checked)checkbox.click();
+          assert(checkbox.checked===checked&&!checkbox.disabled,'Checkbox không bật/tắt thực sự');
+          start.click();
+          assert(manager.busy&&checkbox.disabled&&start.disabled&&samples.disabled&&scale.disabled&&!cancel.disabled,'Checkbox/control không khóa khi render');
+          assert(download.hidden&&preview.style.display==='none','Render mới giữ kết quả cũ hiển thị');
+          await until(()=>!manager.busy&&!start.disabled,180000);
+          assert(!checkbox.disabled&&!samples.disabled&&!scale.disabled&&cancel.disabled&&checkbox.checked===checked,'Control không phục hồi sau '+nextMode);
+          assert(observed.length>0&&observed.every(Boolean),'Control mở sớm trong callback render');
+          assert(phases.includes('Denoising…')===checked,'Checkbox không truyền denoise vào renderer thật');
+          unchanged();
+        };
+        const tab=(element,shiftKey=false)=>{
+          element.focus();const event=new win.KeyboardEvent('keydown',{key:'Tab',shiftKey,bubbles:true,cancelable:true});
+          element.dispatchEvent(event);return event;
+        };
+        try {
+          assert(checkbox.type==='checkbox'&&!checkbox.checked&&!checkbox.disabled,'Menu/close đã đổi default unchecked');
+          samples.appendChild(smallSamples);samples.value='4';scale.value='0.5';
+          await run(true,'success');
+          assert(lastResult?.denoised===true&&status.textContent.includes('denoised')&&status.textContent.startsWith('Done:'),'UI on thiếu completion/flag');
+          assert(!download.hidden&&preview.style.display==='block'&&preview.src===lastResult.dataUrl,'UI on thiếu PNG/download');
+          const image=await pixels(preview.src,win);assert(image.colors>10&&image.opaque>100,'UI denoised PNG trống');
+          let downloaded;const anchorClick=win.HTMLAnchorElement.prototype.click;
+          win.HTMLAnchorElement.prototype.click=function(){downloaded={href:this.href,name:this.download};};
+          try {download.click();}finally {win.HTMLAnchorElement.prototype.click=anchorClick;}
+          assert(downloaded?.href===lastResult.dataUrl&&downloaded.name.endsWith('.png'),'Download UI on không trỏ PNG thật');
+          q('close').click();assert(dialog.hidden,'Không đóng UI on');manager.openDialog();
+          assert(manager._backdrop===dialog&&!dialog.hidden&&win.document.activeElement===start&&checkbox.checked&&!checkbox.disabled,'Reopen không giữ checkbox/focus');
+          const firstControl=selects[0];
+          assert(tab(q('close')).defaultPrevented&&win.document.activeElement===firstControl,'Tab không wrap trong dialog');
+          assert(tab(firstControl,true).defaultPrevented&&win.document.activeElement===q('close'),'Shift-Tab không wrap');
+          // Make the checkbox the first enabled control to exercise the real trap's input selector.
+          selects.forEach((c)=>{c.disabled=true;});
+          try {
+            assert(tab(q('close')).defaultPrevented&&win.document.activeElement===checkbox,'Focus trap bỏ qua input checkbox');
+            assert(tab(checkbox,true).defaultPrevented&&win.document.activeElement===q('close'),'Checkbox thoát focus trap khi Shift-Tab');
+          } finally {selects.forEach((c)=>{c.disabled=false;});}
+          checkbox.focus();assert(win.document.activeElement===checkbox,'Checkbox không nhận focus');
+          await run(false,'success');
+          assert(lastResult?.denoised===false&&status.textContent.startsWith('Done:')&&!status.textContent.includes('denoised'),'UI off vẫn báo denoised');
+          assert(!download.hidden&&preview.src===lastResult.dataUrl,'UI off mất download PNG');
+          assert((await pixels(preview.src,win)).colors>10,'UI off PNG trống');
+          await run(true,'cancel');
+          assert(lastResult===null&&status.textContent==='Render cancelled.'&&download.hidden&&preview.style.display==='none','UI cancel giữ PNG/status sai');
+          assert(!dialog.hidden,'Nút cancel tự đóng dialog');
+          await run(true,'error');
+          assert(lastResult===undefined&&status.textContent==='Error: Denoise UI sentinel'&&download.hidden&&preview.style.display==='none','UI error giữ PNG/status sai');
+          q('close').click();manager.openDialog();
+          assert(!dialog.hidden&&win.document.activeElement===start&&checkbox.checked&&!checkbox.disabled&&!start.disabled,'Reopen sau lỗi không phục hồi checkbox');
+          checkbox.click();assert(!checkbox.checked,'Không tắt checkbox sau lỗi');unchanged();
+          return 'GPU UI on/off; cancel/error restored; input nằm trong focus trap';
+        } finally {
+          if(manager.busy){manager.cancel();await until(()=>!manager.busy&&!start.disabled,180000);}
+          if(hadOwnRender)manager.render=render;else delete manager.render;
+          smallSamples.remove();samples.value=sampleValue;scale.value=scaleValue;
+          selects.forEach((c)=>{c.disabled=false;});checkbox.checked=false;
+          q('close').click();
+        }
+      });
+
+      await test('Environment Parity (Phase 6): raw equirect source, rotation & intensity vào uniform', async()=>{
+        assert(app.environmentStudio, 'Thiếu EnvironmentStudio');
+        app.environmentStudio.setHdriPreset('golden-sunset');
+        app.environmentStudio.setEnvironmentIntensity(1.6);
+        app.environmentStudio.setEnvironmentRotation(60);
+
+        const { buildTracingScene } = await import('/js/render/pathtrace-scene.js');
+        const snapshot = buildTracingScene({ scene: app.engine.scene });
+
+        try {
+          assert(!snapshot.environmentSkipped, 'rawEnvironmentSource không được skip');
+          assert(snapshot.scene.environment?.isDataTexture, 'Môi trường snapshot phải là DataTexture');
+          assert.equal(snapshot.environmentIntensity, 1.6, 'environmentIntensity sai');
+          const expectedY = (60 * Math.PI) / 180;
+          assert(Math.abs(snapshot.environmentRotation.y - expectedY) < 1e-4, 'environmentRotation.y sai');
+          return `Parity OK: intensity=${snapshot.environmentIntensity}, rotY=${snapshot.environmentRotation.y.toFixed(3)}`;
+        } finally {
+          snapshot.dispose();
+          app.environmentStudio.setHdriPreset('studio-softbox');
+          app.environmentStudio.setEnvironmentIntensity(1.0);
+          app.environmentStudio.setEnvironmentRotation(0);
+        }
+      });
+
+      await test('PathTraceSession & Hero Frame (Phase 6): kẹp tối đa 32 samples và AbortController', async()=>{
+        const { PathTraceSession, PATHTRACE_CAPS } = await import('/js/render/pathtrace-session.js');
+        const session = new PathTraceSession({
+          scene: app.engine.scene,
+          camera: app.engine.camera,
+          renderer: app.engine.renderer,
+        });
+
+        assert.equal(PATHTRACE_CAPS.HERO_FRAME_MAX_SAMPLES, 32);
+        assert.equal(PATHTRACE_CAPS.MAX_SAMPLES, 256);
+        assert.throws(() => session.validateCaps({ samples: 300 }), /Samples must be an integer/);
+
+        let passedSamples = null;
+        session.render = async (opts) => {
+          passedSamples = opts.samples;
+          return { canvas: win.document.createElement('canvas'), width: 128, height: 64, samples: opts.samples };
+        };
+
+        const hero = await session.renderHeroFrame({ frameIndex: 5, samples: 64 });
+        assert.equal(hero.frameIndex, 5);
+        assert.equal(passedSamples, 32, 'Hero frame phải bị kẹp tối đa 32 samples');
+
+        // Test AbortController
+        const abortCtrl = new AbortController();
+        abortCtrl.abort();
+        session.render = async (opts) => {
+          if (opts.signal?.aborted) return null;
+          return { canvas: win.document.createElement('canvas') };
+        };
+        const abortedRes = await session.render({ signal: abortCtrl.signal });
+        assert.equal(abortedRes, null, 'AbortController phải dừng session và trả về null');
+
+        return 'Hero frame kẹp 32 samples; AbortSignal huỷ tức thì';
+      });
+    } catch (error) { results.push({name:'Khởi tạo suite',ok:false,detail:error.stack}); }
+    document.querySelector('#summary').textContent=`${results.filter((r)=>r.ok).length}/${results.length} PASS`;
+  </script>
+</body>
+</html>

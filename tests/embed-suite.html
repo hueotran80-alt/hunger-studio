@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <title>Web Blender Studio — Embed Viewer Suite</title>
+  <style>
+    :root { color-scheme: dark; }
+    body { margin: 0; background: #141414; color: #e6e6e6; font: 13px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    header { padding: 16px 20px; border-bottom: 1px solid #2f2f2f; display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+    h1 { font-size: 15px; margin: 0; font-weight: 600; }
+    #summary { padding: 3px 10px; border-radius: 999px; background: #2a2a2a; border: 1px solid #3d3d3d; font-variant-numeric: tabular-nums; }
+    #summary.pass { background: #12351f; border-color: #2ecc71; color: #8ef0b0; }
+    #summary.fail { background: #3a1414; border-color: #e74c3c; color: #ff9b90; }
+    main { display: grid; grid-template-columns: minmax(420px, 1fr) 900px; gap: 16px; padding: 16px 20px; align-items: start; }
+    ol { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 8px; }
+    li { border: 1px solid #2f2f2f; border-radius: 6px; padding: 9px 11px; background: #1b1b1b; }
+    li.pass { border-color: #245c39; }
+    li.fail { border-color: #7a2e2a; background: #221515; }
+    li.running { border-color: #4a4a2a; }
+    .name { font-weight: 600; }
+    .detail { color: #9aa0a6; margin-top: 2px; white-space: pre-wrap; word-break: break-word; }
+    .badge { float: right; font-size: 11px; padding: 1px 7px; border-radius: 999px; background: #2a2a2a; }
+    li.pass .badge { background: #1d4d30; color: #8ef0b0; }
+    li.fail .badge { background: #5a1f1c; color: #ffb4ab; }
+    #stage { width: 900px; height: 560px; border: 1px solid #2f2f2f; border-radius: 6px; overflow: hidden; background: #000; }
+    #stage iframe { width: 100%; height: 100%; border: 0; display: block; }
+    code { color: #8ab4f8; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Embed Viewer — Browser Suite</h1>
+    <span id="summary">Đang chạy…</span>
+    <span class="detail">Mở khi server chạy. Kết quả: <code>window.__EMBED_SUITE_RESULTS__</code>.</span>
+  </header>
+
+  <main>
+    <ol id="results"></ol>
+    <div id="stage"></div>
+  </main>
+
+  <script type="module">
+    import { encodeSharePayload } from '../js/embed/embed-core.js';
+
+    const resultsEl = document.getElementById('results');
+    const summaryEl = document.getElementById('summary');
+    const stage = document.getElementById('stage');
+    const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+    const results = [];
+    window.__EMBED_SUITE_RESULTS__ = results;
+
+    function assert(cond, message) {
+      if (!cond) throw new Error(message);
+    }
+
+    function addItem(name) {
+      const li = document.createElement('li');
+      li.className = 'running';
+      li.innerHTML = `<span class="badge">…</span><div class="name"></div><div class="detail"></div>`;
+      li.querySelector('.name').textContent = name;
+      resultsEl.appendChild(li);
+      return li;
+    }
+
+    async function test(name, fn) {
+      const item = addItem(name);
+      const entry = { name, status: 'running', detail: '' };
+      results.push(entry);
+      try {
+        const detail = await fn();
+        entry.status = 'pass';
+        entry.detail = typeof detail === 'string' ? detail : '';
+        item.className = 'pass';
+        item.querySelector('.badge').textContent = 'PASS';
+        item.querySelector('.detail').textContent = entry.detail;
+      } catch (error) {
+        entry.status = 'fail';
+        entry.detail = error && error.stack ? error.stack : String(error);
+        item.className = 'fail';
+        item.querySelector('.badge').textContent = 'FAIL';
+        item.querySelector('.detail').textContent = entry.detail;
+      }
+      updateSummary();
+    }
+
+    function updateSummary() {
+      const failed = results.filter((r) => r.status === 'fail').length;
+      const passed = results.filter((r) => r.status === 'pass').length;
+      summaryEl.textContent = `${passed} / ${results.length} PASS · ${failed} FAIL`;
+      summaryEl.className = failed ? 'fail' : (passed === results.length ? 'pass' : '');
+    }
+
+    function openEmbed(url) {
+      stage.innerHTML = '';
+      const frame = document.createElement('iframe');
+      frame.src = url;
+      frame.title = 'Embed under test';
+      stage.appendChild(frame);
+      return frame;
+    }
+
+    async function waitFor(check, timeoutMs, label) {
+      const started = Date.now();
+      while (Date.now() - started < timeoutMs) {
+        try {
+          const value = await check();
+          if (value) return value;
+        } catch (_) { /* frame not ready */ }
+        await sleep(80);
+      }
+      throw new Error(`Timeout: ${label}`);
+    }
+
+    async function waitReady(frame, timeoutMs = 30000) {
+      const win = await waitFor(
+        () => (frame.contentWindow && frame.contentWindow.studioEmbed ? frame.contentWindow : null),
+        timeoutMs,
+        'viewer boot'
+      );
+      await waitFor(
+        () => win.studioEmbed.ready || win.document.getElementById('embed-host').dataset.state === 'error',
+        timeoutMs,
+        'viewer ready'
+      );
+      return win;
+    }
+
+    async function testHostedModel() {
+      const frame = openEmbed('/embed.html?glb=/models/Michelle.glb&autoplay=1&grid=0');
+      const win = await waitReady(frame);
+      const viewer = win.studioEmbed;
+      const state = viewer.getState();
+      assert(win.document.getElementById('embed-host').dataset.state === 'ready', 'state is not ready');
+      assert(state.clips.includes('SambaDance'), `clips=${state.clips}`);
+      assert(state.quality.triangles > 1000, `triangles=${state.quality.triangles}`);
+      assert(state.playing, 'autoplay should be playing');
+      const distance = viewer.camera.position.distanceTo(viewer.controls.target);
+      assert(distance > 1.5, `camera too close: ${distance}`);
+
+      viewer.pause();
+      const pausedAt = viewer.getState().time;
+      await sleep(260);
+      assert(Math.abs(viewer.getState().time - pausedAt) < 1e-6, 'pause did not stop time');
+      assert(viewer.seek(5) && Math.abs(viewer.getState().time - 5) < 1e-3, 'seek failed');
+      viewer.play();
+      await sleep(250);
+      assert(viewer.getState().time > 5, 'play did not advance after seek');
+      viewer.dispose();
+      assert(!frame.contentDocument.querySelector('#embed-host canvas'), 'dispose left the canvas');
+      return `clips ${state.clips.join(', ')} · ${state.quality.triangles} tris`;
+    }
+
+    async function testParamOverrides() {
+      const frame = openEmbed('/embed.html?glb=/models/Michelle.glb&autoplay=0&ui=0&grid=0&shadow=0&transparent=1');
+      const win = await waitReady(frame);
+      const viewer = win.studioEmbed;
+      const doc = win.document;
+      assert(viewer.getState().playing === false, 'autoplay=0 ignored');
+      assert(doc.getElementById('embed-controls').hidden === true, 'ui=0 should hide controls');
+      assert(doc.getElementById('embed-badge').hidden === true, 'ui=0 should hide badge');
+      assert(viewer.grid.visible === false, 'grid=0 ignored');
+      assert(viewer.shadowPlane.visible === false, 'shadow=0 ignored');
+      assert(doc.body.classList.contains('is-transparent'), 'transparent=1 ignored');
+      assert(viewer.scene.background === null, 'transparent background should be null');
+      viewer.dispose();
+      return 'flags applied';
+    }
+
+    async function testInlinePayload() {
+      const glb = await (await fetch('/tests/fixtures/embed-cube.glb')).arrayBuffer();
+      const payload = await encodeSharePayload(new Uint8Array(glb));
+      const frame = openEmbed(`/embed.html?grid=0#z=${payload}`);
+      const win = await waitReady(frame);
+      const viewer = win.studioEmbed;
+      const state = viewer.getState();
+      assert(state.ready, 'inline payload did not load');
+      assert(state.quality.triangles > 0, 'no triangles from inline payload');
+      assert(state.clips.length >= 1, 'fixture clip missing');
+      assert(payload.startsWith('z'), 'payload should be gzip');
+      viewer.dispose();
+      return `payload ${payload.length} chars · ${state.quality.triangles} tris`;
+    }
+
+    async function testInvalidSource() {
+      const frame = openEmbed('/embed.html?glb=javascript%3Aalert(1)');
+      const win = await waitFor(
+        () => (frame.contentWindow && frame.contentWindow.document.getElementById('embed-host') ? frame.contentWindow : null),
+        10000,
+        'invalid-source frame'
+      );
+      await waitFor(
+        () => win.document.getElementById('embed-host').dataset.state === 'error',
+        10000,
+        'invalid-source error state'
+      );
+      const doc = win.document;
+      assert(!doc.getElementById('embed-error').hidden, 'error UI hidden');
+      assert(doc.title.indexOf('alert') === -1, 'title should not be attacker-controlled');
+      return 'rejected without navigating';
+    }
+
+    async function testPostMessageControl() {
+      const frame = openEmbed('/embed.html?glb=/models/Michelle.glb&autoplay=1&grid=0');
+      const win = await waitReady(frame);
+      const viewer = win.studioEmbed;
+      win.postMessage({ type: 'studio-embed', action: 'pause' }, '*');
+      await sleep(150);
+      const paused = viewer.getState().time;
+      await sleep(240);
+      assert(Math.abs(viewer.getState().time - paused) < 1e-6, 'postMessage pause failed');
+      win.postMessage({ type: 'studio-embed', action: 'seek', time: 2 }, '*');
+      await sleep(120);
+      assert(Math.abs(viewer.getState().time - 2) < 1e-3, 'postMessage seek failed');
+      viewer.dispose();
+      return 'pause + seek via postMessage';
+    }
+
+    async function testSharedOptionsRoundTrip() {
+      const frame = openEmbed('/embed.html?glb=/models/Michelle.glb&autoplay=0&loop=0&controls=0&bg=%23223344&dpr=1');
+      const win = await waitReady(frame);
+      const viewer = win.studioEmbed;
+      assert(viewer.options.loop === false, 'loop=0 ignored');
+      assert(viewer.controls.enabled === false, 'controls=0 should disable OrbitControls');
+      assert(viewer.scene.background.getHexString() === '223344', 'bg color ignored');
+      const ratio = viewer.renderer.getPixelRatio();
+      assert(Math.abs(ratio - 1) < 1e-6, `dpr=1 ignored (${ratio})`);
+      viewer.dispose();
+      return 'loop/controls/bg/dpr applied';
+    }
+
+    await test('Hosted .glb loads, plays, pauses, seeks, disposes', testHostedModel);
+    await test('URL flags override defaults (ui/grid/shadow/autoplay/transparent)', testParamOverrides);
+    await test('Self-contained #z= payload decodes and renders', testInlinePayload);
+    await test('Invalid model URL is rejected safely', testInvalidSource);
+    await test('postMessage play/pause/seek API', testPostMessageControl);
+    await test('loop/controls/bg/dpr options are applied', testSharedOptionsRoundTrip);
+
+    stage.innerHTML = '<div style="padding:20px;color:#8ef0b0">Suite finished. Results in window.__EMBED_SUITE_RESULTS__.</div>';
+    stage.style.height = 'auto';
+  </script>
+</body>
+</html>

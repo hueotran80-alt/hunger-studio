@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <title>Web Blender Studio — Asset Library Browser Suite</title>
+  <style>
+    :root { color-scheme: dark; }
+    body { margin: 0; background: #141414; color: #e6e6e6; font: 13px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    header { padding: 16px 20px; border-bottom: 1px solid #2f2f2f; display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+    h1 { font-size: 15px; margin: 0; font-weight: 600; }
+    #summary { padding: 3px 10px; border-radius: 999px; background: #2a2a2a; border: 1px solid #3d3d3d; }
+    #summary.pass { background: #12351f; border-color: #2ecc71; color: #8ef0b0; }
+    #summary.fail { background: #3a1414; border-color: #e74c3c; color: #ff9b90; }
+    main { display: grid; grid-template-columns: minmax(460px, 1fr) 640px; gap: 16px; padding: 16px 20px; align-items: start; }
+    ol { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 8px; }
+    li { border: 1px solid #2f2f2f; border-radius: 6px; padding: 9px 11px; background: #1b1b1b; }
+    li.pass { border-color: #245c39; }
+    li.fail { border-color: #7a2e2a; background: #221515; }
+    li.running { border-color: #4a4a2a; }
+    .name { font-weight: 600; }
+    .detail { color: #9aa0a6; margin-top: 2px; white-space: pre-wrap; word-break: break-word; }
+    .badge { float: right; font-size: 11px; padding: 1px 7px; border-radius: 999px; background: #2a2a2a; }
+    li.pass .badge { background: #1d4d30; color: #8ef0b0; }
+    li.fail .badge { background: #5a1f1c; color: #ffb4ab; }
+    iframe { width: 640px; height: 480px; border: 1px solid #2f2f2f; border-radius: 6px; background: #000; }
+    code { color: #8ab4f8; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Asset Library Browser Suite</h1>
+    <span id="summary">Đang chạy…</span>
+    <span class="detail">Kết quả: <code>window.__ASSET_SUITE_RESULTS__</code></span>
+  </header>
+
+  <main>
+    <ol id="results"></ol>
+    <iframe id="studio" src="/index.html" title="Web Blender Studio under test"></iframe>
+  </main>
+
+  <script type="module">
+    import { scanLocalDirectory } from '../js/ui/asset-library-sources.js';
+
+    const resultsEl = document.getElementById('results');
+    const summaryEl = document.getElementById('summary');
+    const iframe = document.getElementById('studio');
+    const items = [];
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const assert = (cond, msg) => { if (!cond) throw new Error(msg); };
+
+    function addItem(name) {
+      const li = document.createElement('li');
+      li.className = 'running';
+      li.innerHTML = '<span class="badge">…</span><div class="name"></div><div class="detail"></div>';
+      li.querySelector('.name').textContent = name;
+      resultsEl.appendChild(li);
+      return li;
+    }
+    function record(name, ok, detail) {
+      items.push({ name, status: ok ? 'pass' : 'fail', detail: detail || '' });
+      const li = addItem(name);
+      li.className = ok ? 'pass' : 'fail';
+      li.querySelector('.badge').textContent = ok ? 'PASS' : 'FAIL';
+      li.querySelector('.detail').textContent = detail || '';
+    }
+    async function test(name, fn) {
+      const li = addItem(name);
+      try {
+        const detail = await fn();
+        li.className = 'pass';
+        li.querySelector('.badge').textContent = 'PASS';
+        li.querySelector('.detail').textContent = detail || '';
+        items.push({ name, status: 'pass', detail: detail || '' });
+        console.log(`[asset-suite] PASS ${name} :: ${detail || ''}`);
+      } catch (error) {
+        li.className = 'fail';
+        li.querySelector('.badge').textContent = 'FAIL';
+        li.querySelector('.detail').textContent = String(error && error.message || error);
+        items.push({ name, status: 'fail', detail: String(error && error.message || error) });
+        console.log(`[asset-suite] FAIL ${name} :: ${String(error && error.message || error)}`);
+      }
+    }
+
+    async function waitStudio() {
+      for (let i = 0; i < 160; i++) {
+        const w = iframe.contentWindow;
+        if (w && w.app && w.app.assetBrowser && w.app.exporter && w.sceneManager
+          && w.sceneManager.getSelectableObjects().length > 0) return w;
+        await sleep(250);
+      }
+      throw new Error('Studio iframe không sẵn sàng sau 40s');
+    }
+
+    const w = await waitStudio();
+    const doc = w.document;
+    const ab = w.app.assetBrowser;
+
+    await test('Asset Browser pane opens with online/local/fab kind tabs', async () => {
+      doc.querySelector('.dock-tab[data-pane="dock-asset-browser"]').click();
+      await sleep(300);
+      assert(doc.getElementById('asset-browser-root'), 'thiếu panel asset-browser-root');
+      for (const k of ['online', 'local', 'fab']) {
+        assert(doc.querySelector(`#ab-kind-tabs button[data-kind="${k}"]`), `thiếu tab kind ${k}`);
+      }
+      assert(doc.getElementById('ab-local-btn') && doc.getElementById('ab-credits-btn'), 'thiếu nút local/credits');
+      return 'panel + 3 kind mới + nút local/credits';
+    });
+
+    await test('Online CC0/CC-BY catalog renders cards with license badges', async () => {
+      for (let i = 0; i < 40 && ab.onlineItems.length === 0; i++) await sleep(250);
+      assert(ab.onlineItems.length >= 4, `catalog online chỉ có ${ab.onlineItems.length} item`);
+      ab.activeKind = 'online';
+      ab.render();
+      const cards = [...doc.querySelectorAll('#ab-grid .ab-asset-card')];
+      assert(cards.length >= 4, `grid chỉ render ${cards.length} card`);
+      const badges = cards.map((c) => c.textContent);
+      assert(badges.some((t) => /CC0/.test(t)) && badges.some((t) => /CC-BY/.test(t)), 'thiếu badge license');
+      return `${cards.length} card, badge CC0 + CC-BY`;
+    });
+
+    await test('One-click online import spawns mesh and records attribution credit', async () => {
+      const cube = w.studio.addCube({ name: 'FixtureSrc', width: 0.4, height: 0.4, depth: 0.4 });
+      const glb = await w.app.exporter.exportGLTF(cube, { binary: true, download: false, quiet: true });
+      w.sceneManager.removeObject(cube, false, true);
+      const url = URL.createObjectURL(glb.blob);
+      const before = w.sceneManager.getSelectableObjects().length;
+      const placed = await ab.applyOrSpawnAsset({
+        kind: 'online', id: 'suite_ccby_fixture', name: 'Suite Fixture', url,
+        license: 'CC-BY-4.0', author: 'Suite Tester', source: 'test', tags: ['test'],
+      });
+      assert(placed, 'import online không trả object');
+      assert(w.sceneManager.getSelectableObjects().length > before, 'mesh không vào scene');
+      const credits = w.sceneManager.rootContainer.userData.credits || [];
+      const credit = credits.find((c) => c.id === 'suite_ccby_fixture');
+      assert(credit && credit.author === 'Suite Tester' && credit.license === 'CC-BY-4.0', 'credit attribution thiếu/sai');
+      URL.revokeObjectURL(url);
+      return 'mesh vào scene + credit CC-BY ghi đúng';
+    });
+
+    await test('Fab cards are link-only: acquire link + import button, dblclick fetches nothing', async () => {
+      ab.activeKind = 'fab';
+      ab.render();
+      const cards = [...doc.querySelectorAll('#ab-grid .ab-asset-card')];
+      assert(cards.length >= 1, 'không có card Fab');
+      const link = cards[0].querySelector('a');
+      assert(link && /^https:\/\//.test(link.href) && link.target === '_blank', 'link acquire sai');
+      assert(/fab|quixel|unrealengine/.test(link.href), 'link không trỏ về Fab/Epic');
+      const fetched = [];
+      const origFetch = w.fetch;
+      w.fetch = (...args) => { fetched.push(String(args[0])); return origFetch(...args); };
+      cards[0].dispatchEvent(new w.MouseEvent('dblclick', { bubbles: true }));
+      await sleep(200);
+      w.fetch = origFetch;
+      assert(fetched.length === 0, `dblclick Fab đã fetch byte: ${fetched.join(',')}`);
+      let opened = 0;
+      const input = doc.getElementById('ab-user-file-input');
+      const origClick = input.click.bind(input);
+      input.click = () => { opened++; };
+      cards[0].querySelector('button').click();
+      input.click = origClick;
+      assert(opened === 1, 'nút Import… không mở file picker');
+      return 'link-only, 0 fetch, Import mở picker';
+    });
+
+    await test('Local folder bridge scans and imports user-owned files with credit', async () => {
+      const entries = [
+        { kind: 'file', name: 'my_scan.glb' },
+        { kind: 'file', name: 'readme.md' },
+        { kind: 'directory', name: 'sub' },
+      ];
+      const scanned = await scanLocalDirectory({ values: async function* () { for (const e of entries) yield e; } });
+      assert(scanned.length === 1 && scanned[0].name === 'my_scan.glb', 'scan lọc sai');
+      const cube = w.studio.addCube({ name: 'LocalSrc', width: 0.3, height: 0.3, depth: 0.3 });
+      const glb = await w.app.exporter.exportGLTF(cube, { binary: true, download: false, quiet: true });
+      w.sceneManager.removeObject(cube, false, true);
+      const file = new w.File([glb.blob], 'my_scan.glb', { type: 'model/gltf-binary' });
+      const placed = await ab.applyOrSpawnAsset({ ...scanned[0], handle: { getFile: async () => file } });
+      assert(placed, 'import local không trả object');
+      const credit = (w.sceneManager.rootContainer.userData.credits || []).find((c) => c.id === 'local_my_scan.glb');
+      assert(credit && credit.source === 'local', 'credit local thiếu');
+      return 'scan 1 file hợp lệ + import + credit local';
+    });
+
+    await test('Dragging an asset card onto the viewport places it at the drop point', async () => {
+      const item = { kind: 'primitives', prim: 'cube', id: 'suite_drop_prim', name: 'DropPrim', tags: ['test'] };
+      const canvas = doc.querySelector('#viewport-canvas-host canvas');
+      const r = canvas.getBoundingClientRect();
+      const cx = r.x + r.width * 0.25, cy = r.y + r.height * 0.72;
+      const dt = new w.DataTransfer();
+      dt.setData('application/x-wbs-asset', JSON.stringify(item));
+      canvas.dispatchEvent(new w.DragEvent('dragover', { bubbles: true, cancelable: true, clientX: cx, clientY: cy, dataTransfer: dt }));
+      canvas.dispatchEvent(new w.DragEvent('drop', { bubbles: true, cancelable: true, clientX: cx, clientY: cy, dataTransfer: dt }));
+      await sleep(400);
+      const placed = w.sceneManager.getSelectableObjects().find((o) => o.name === 'DropPrim');
+      assert(placed, 'kéo thả card không spawn được object (overlay nuốt drop?)');
+      assert(Math.abs(placed.position.x) > 0.05 || Math.abs(placed.position.z) > 0.05,
+        `object đặt tại gốc (${placed.position.x.toFixed(2)},${placed.position.z.toFixed(2)}) thay vì điểm thả`);
+      return `đặt tại (${placed.position.x.toFixed(2)}, ${placed.position.y.toFixed(2)}, ${placed.position.z.toFixed(2)})`;
+    });
+
+    await test('Online import honors an explicit drop transform', async () => {
+      const cube = w.studio.addCube({ name: 'DropSrc2', width: 0.3, height: 0.3, depth: 0.3 });
+      const glb = await w.app.exporter.exportGLTF(cube, { binary: true, download: false, quiet: true });
+      w.sceneManager.removeObject(cube, false, true);
+      const url = URL.createObjectURL(glb.blob);
+      const T = w.studio._THREE;
+      const dropInfo = { position: new T.Vector3(1.5, 0, 2.5), quaternion: new T.Quaternion() };
+      const placed = await ab.applyOrSpawnAsset({
+        kind: 'online', id: 'suite_drop_online', name: 'DropOnline', url,
+        license: 'CC0-1.0', author: 'Suite', source: 'test', tags: ['test'],
+      }, dropInfo);
+      assert(placed, 'import online với dropInfo không trả object');
+      assert(Math.abs(placed.position.x - 1.5) < 1e-6 && Math.abs(placed.position.z - 2.5) < 1e-6,
+        `online không theo drop transform: (${placed.position.x},${placed.position.z})`);
+      URL.revokeObjectURL(url);
+      return 'online đặt đúng (1.5, 0, 2.5)';
+    });
+
+    await test('Dropping a real file on the viewport still imports it', async () => {
+      const cube = w.studio.addCube({ name: 'FileDropSrc', width: 0.3, height: 0.3, depth: 0.3 });
+      const glb = await w.app.exporter.exportGLTF(cube, { binary: true, download: false, quiet: true });
+      w.sceneManager.removeObject(cube, false, true);
+      const before = w.sceneManager.getSelectableObjects().length;
+      const canvas = doc.querySelector('#viewport-canvas-host canvas');
+      const r = canvas.getBoundingClientRect();
+      const dt = new w.DataTransfer();
+      dt.items.add(new w.File([glb.blob], 'filedrop.glb', { type: 'model/gltf-binary' }));
+      canvas.dispatchEvent(new w.DragEvent('drop', { bubbles: true, cancelable: true, clientX: r.x + r.width / 2, clientY: r.y + r.height / 2, dataTransfer: dt }));
+      await sleep(900);
+      assert(w.sceneManager.getSelectableObjects().length > before, 'thả file không import');
+      return 'file drop vẫn import bình thường';
+    });
+
+    await test('Credits popover lists attribution and the Fab redistribution rule', async () => {
+      doc.getElementById('ab-credits-btn').click();
+      const pop = doc.getElementById('ab-credits-pop');
+      assert(pop, 'popover credits không mở');
+      assert(/Suite Tester/.test(pop.textContent) && /CC-BY-4.0/.test(pop.textContent), 'popover thiếu attribution');
+      assert(/redistribute/i.test(pop.textContent), 'popover thiếu điều khoản Fab');
+      doc.getElementById('ab-credits-btn').click();
+      assert(!doc.getElementById('ab-credits-pop'), 'popover không đóng');
+      return 'attribution + điều khoản Fab hiện đủ';
+    });
+
+    await test('Credits survive project save/load round-trip', async () => {
+      const json = w.app.exporter.serializeProject();
+      const raw = JSON.stringify(json);
+      assert(raw.includes('suite_ccby_fixture'), 'credits không vào project JSON');
+      const file = new w.File([raw], 'roundtrip.blend.json', { type: 'application/json' });
+      await w.app.exporter.importProjectJSON(file);
+      await sleep(500);
+      const credits = w.sceneManager.rootContainer.userData.credits || [];
+      assert(credits.some((c) => c.id === 'suite_ccby_fixture'), 'credits mất sau round-trip');
+      return 'credits bền qua save/load';
+    });
+
+    const passed = items.filter((i) => i.status === 'pass').length;
+    const failed = items.filter((i) => i.status === 'fail').length;
+    window.__ASSET_SUITE_RESULTS__ = { passed, failed, items };
+    summaryEl.textContent = `${passed} passed · ${failed} failed`;
+    summaryEl.className = failed ? 'fail' : 'pass';
+    console.log(`[asset-suite] ${passed} passed, ${failed} failed`);
+  </script>
+</body>
+</html>

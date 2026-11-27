@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "description": "Domain-agnostic evaluation matrix for the 8 generic Hunger 3D Studio skills.",
+  "cases": [
+    {
+      "id": "product-flanged-valve",
+      "tier": "product",
+      "skills": ["hunger-project-contract", "hunger-parametric-cad", "hunger-surface-pbr", "hunger-multizoom-qa-delivery"],
+      "assertions": {
+        "maxRenderedTris": 150000,
+        "maxDrawCalls": 100,
+        "maxGlbMB": 25,
+        "requireIndexedGeometry": true,
+        "requireLosslessDataMaps": true
+      }
+    },
+    {
+      "id": "architecture-suspension-bridge",
+      "tier": "architecture",
+      "skills": ["hunger-orchestrator", "hunger-parametric-cad", "hunger-camera-look", "hunger-runtime-budget-agent"],
+      "assertions": {
+        "maxRenderedTris": 800000,
+        "maxDrawCalls": 220,
+        "maxGlbMB": 40,
+        "requireTrueCoshCatenary": true,
+        "requireInstancedMembers": true
+      }
+    },
+    {
+      "id": "character-rig-export",
+      "tier": "product",
+      "skills": ["hunger-character-mocap", "hunger-multizoom-qa-delivery"],
+      "assertions": {
+        "preserveSkinningAttributes": true,
+        "preserveAnimationClips": true,
+        "zeroOrphanTracks": true
+      }
+    }
+  ]
+}

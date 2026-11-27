@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="robots" content="noindex,nofollow">
+  <title>3D Viewer — Hunger</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2320232a'/%3E%3Ccircle cx='16' cy='16' r='8' fill='none' stroke='%23e87d0d' stroke-width='3'/%3E%3Ccircle cx='16' cy='16' r='3' fill='%234772b3'/%3E%3C/svg%3E">
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0; padding: 0; width: 100%; height: 100%;
+      overflow: hidden; background: #1b1b1b; color: #e8e8e8;
+      font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+    body.is-transparent { background: transparent; }
+    [hidden] { display: none !important; }
+    #embed-host { position: fixed; inset: 0; overflow: hidden; background: transparent; }
+    #embed-host > canvas { display: block; width: 100%; height: 100%; touch-action: none; outline: none; }
+
+    .overlay { position: absolute; z-index: 5; }
+    #embed-loading {
+      inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+      gap: 14px; background: rgba(18, 18, 18, .82); text-align: center; padding: 24px;
+    }
+    .spinner {
+      width: 30px; height: 30px; border-radius: 50%;
+      border: 2px solid rgba(255,255,255,.16); border-top-color: #f0a04b;
+      animation: spin .8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    #embed-status { color: #bdbdbd; font-size: 12px; letter-spacing: .02em; }
+
+    #embed-error {
+      inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+      gap: 8px; background: rgba(18, 18, 18, .94); text-align: center; padding: 28px;
+    }
+    #embed-error strong { font-size: 15px; color: #fff; }
+    #embed-error-detail {
+      max-width: 520px; color: #a9a9a9; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 11px; word-break: break-word; white-space: pre-wrap;
+    }
+    #embed-retry {
+      margin-top: 8px; padding: 6px 16px; border-radius: 6px; border: 1px solid #4a4a4a;
+      background: #2c2c2c; color: #eee; cursor: pointer; font: inherit;
+    }
+    #embed-retry:hover { background: #383838; }
+
+    #embed-controls {
+      right: 12px; bottom: 12px; display: flex; gap: 6px; padding: 6px;
+      border-radius: 10px; background: rgba(20,20,20,.72); border: 1px solid rgba(255,255,255,.08);
+      backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+    }
+    #embed-controls button {
+      width: 32px; height: 32px; display: grid; place-items: center;
+      border: 0; border-radius: 7px; background: transparent; color: #e6e6e6;
+      font-size: 15px; line-height: 1; cursor: pointer;
+    }
+    #embed-controls button:hover { background: rgba(255,255,255,.1); }
+    #embed-controls button:focus-visible { outline: 2px solid #f0a04b; outline-offset: 1px; }
+
+    #embed-badge {
+      left: 12px; bottom: 12px; display: inline-flex; align-items: center; gap: 6px;
+      padding: 5px 9px; border-radius: 999px; text-decoration: none;
+      background: rgba(20,20,20,.6); border: 1px solid rgba(255,255,255,.08);
+      color: #c9c9c9; font-size: 10px; letter-spacing: .04em; text-transform: uppercase;
+      backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+    }
+    #embed-badge[hidden] { display: none !important; }
+    #embed-badge:hover { color: #fff; border-color: rgba(240,160,75,.55); }
+    #embed-badge::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: #f0a04b; }
+    @media (max-width: 420px) {
+      #embed-badge { font-size: 9px; padding: 4px 7px; }
+      #embed-controls button { width: 30px; height: 30px; }
+    }
+  </style>
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "./vendor/three/three.module.js",
+      "three/addons/": "./vendor/three/addons/"
+    }
+  }
+  </script>
+</head>
+<body>
+  <div id="embed-host">
+    <div id="embed-loading" class="overlay">
+      <div class="spinner"></div>
+      <div id="embed-status">Loading model…</div>
+    </div>
+
+    <div id="embed-error" class="overlay" hidden>
+      <strong>Unable to display model</strong>
+      <div id="embed-error-detail"></div>
+      <button id="embed-retry" type="button">Retry</button>
+    </div>
+
+    <div id="embed-controls" class="overlay" hidden>
+      <button id="embed-play" type="button" title="Play / Pause" aria-label="Play or pause animation">⏸</button>
+      <button id="embed-reset" type="button" title="Reset camera to default view" aria-label="Reset camera">⟲</button>
+      <button id="embed-ar" type="button" title="View in AR (USDZ)" aria-label="View in AR" hidden style="width:auto;padding:0 9px;font-size:11px;font-weight:600;letter-spacing:.04em;">AR</button>
+      <button id="embed-fullscreen" type="button" title="Fullscreen" aria-label="Fullscreen">⛶</button>
+    </div>
+
+    <a id="embed-badge" href="index.html" target="_blank" rel="noopener">Hunger</a>
+  </div>
+
+  <script type="module">
+    import { bootEmbed } from './js/embed/embed-viewer.js';
+    bootEmbed(document.getElementById('embed-host')).catch((err) => {
+      console.error('[Embed] Boot failed:', err);
+    });
+  </script>
+</body>
+</html>

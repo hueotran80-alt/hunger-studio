@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <title>Web Blender Studio — Look-Dev & Raster Render Suite</title>
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "../vendor/three/three.module.js",
+      "three/addons/": "../vendor/three/addons/"
+    }
+  }
+  </script>
+  <style>
+    :root { color-scheme: dark; }
+    body { margin:0; background:#141414; color:#e6e6e6; font:13px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; padding:16px 20px; }
+    h1 { font-size:15px; margin:0 0 12px; }
+    #summary { padding:3px 10px; border-radius:999px; background:#2a2a2a; border:1px solid #3d3d3d; }
+    #summary.pass { background:#12351f; border-color:#2ecc71; color:#8ef0b0; }
+    #summary.fail { background:#3a1414; border-color:#e74c3c; color:#ff9b90; }
+    ol { list-style:none; padding:0; display:flex; flex-direction:column; gap:8px; }
+    li { border:1px solid #2f2f2f; border-radius:6px; padding:9px 11px; background:#1b1b1b; }
+    li.pass { border-color:#245c39; } li.fail { border-color:#7a2e2a; background:#221515; }
+    .detail { color:#9aa0a6; margin-top:2px; white-space:pre-wrap; }
+  </style>
+</head>
+<body>
+  <h1>Look-Dev & Raster Render Suite (Phase 4) <span id="summary">Đang chạy…</span></h1>
+  <ol id="results"></ol>
+  <div id="viewport-container" style="width:300px; height:200px; display:none;"></div>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { MaterialStudio } from '../js/core/material-studio.js';
+    import { PostProcessingManager, POST_PRESETS } from '../js/render/post-processing.js';
+    import { RasterRenderer } from '../js/render/raster-renderer.js';
+    import { ProceduralTextureClient } from '../js/render/procedural-texture-client.js';
+
+    const results = [];
+    window.__RENDER_SUITE_RESULTS__ = results;
+    const resultsEl = document.getElementById('results');
+    const summaryEl = document.getElementById('summary');
+
+    async function test(name, fn) {
+      const li = document.createElement('li');
+      li.innerHTML = '<div class="name"></div><div class="detail"></div>';
+      li.querySelector('.name').textContent = name;
+      resultsEl.appendChild(li);
+      const entry = { name, ok: false, detail: '' };
+      results.push(entry);
+      try {
+        entry.detail = (await fn()) || '';
+        entry.ok = true; li.className = 'pass';
+      } catch (e) {
+        entry.detail = String(e && e.stack || e); li.className = 'fail';
+      }
+      li.querySelector('.detail').textContent = entry.detail;
+      const passed = results.filter(r => r.ok).length;
+      summaryEl.textContent = `${passed}/${results.length} pass`;
+      if (passed === results.length) summaryEl.className = 'pass';
+      else summaryEl.className = 'fail';
+    }
+
+    // 1. Physical Material Upgrade in Browser
+    await test('MaterialStudio: Nâng cấp MeshStandardMaterial thành MeshPhysicalMaterial giữ trọn vẹn thuộc tính', () => {
+      const studio = new MaterialStudio({ THREE });
+      const std = new THREE.MeshStandardMaterial({
+        color: 0xef4444,
+        roughness: 0.25,
+        metalness: 0.8,
+        name: 'SportsCar_Paint',
+      });
+      const phys = studio.upgradeToPhysicalMaterial(std, {
+        clearcoat: 1.0,
+        clearcoatRoughness: 0.05,
+      });
+
+      if (!phys.isMeshPhysicalMaterial) throw new Error('Vật liệu phải là MeshPhysicalMaterial');
+      if (phys.clearcoat !== 1.0) throw new Error('Clearcoat phải bằng 1.0');
+      return `Đã nâng cấp: ${phys.name} (Clearcoat: ${phys.clearcoat}, Rough: ${phys.clearcoatRoughness})`;
+    });
+
+    // 2. Realistic Presets
+    await test('MaterialStudio: Tải các preset vật liệu chân thực (Glass, Car Paint, Velvet)', () => {
+      const studio = new MaterialStudio({ THREE });
+      const presets = studio.getMaterialPresets();
+      const glass = presets.glass_crystal.create();
+      const car = presets.car_paint_red.create();
+      const velvet = presets.velvet_royal.create();
+
+      if (glass.transmission < 0.9) throw new Error('Glass transmission phải >= 0.9');
+      if (car.clearcoat !== 1.0) throw new Error('Car clearcoat phải bằng 1.0');
+      if (velvet.sheen !== 1.0) throw new Error('Velvet sheen phải bằng 1.0');
+      return `Tải thành công: Glass (ior: ${glass.ior}, trans: ${glass.transmission}), Car, Velvet`;
+    });
+
+    // 3. Procedural Texture Worker Async
+    await test('ProceduralTextureClient: Sinh texture procedural và Sobel normal map trong Web Worker', async () => {
+      const client = new ProceduralTextureClient();
+      const maps = await client.generateTextureMaps('voronoi', 128, 128, { seed: 99, bumpIntensity: 2.0, keepRawBuffers: true });
+
+      if (!maps.diffuseTexture || !maps.normalTexture) throw new Error('Phải sinh được cả diffuse và normal texture');
+      if (maps.width !== 128 || maps.height !== 128) throw new Error('Kích thước phải đúng 128x128');
+      const pxCount = maps.rgba ? (maps.rgba.length / 4) : (maps.width * maps.height);
+      client.dispose();
+      return `Sinh thành công: Voronoi 128x128 (${pxCount} pixels)`;
+    });
+
+    // 4. WebGLRenderer and RasterRenderer pipeline
+    await test('RasterRenderer & PostProcessing: Khởi tạo pipeline và chuyển đổi Preset Fast/Studio/Cinematic', () => {
+      const container = document.getElementById('viewport-container');
+      const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+      renderer.setSize(300, 200);
+      container.appendChild(renderer.domElement);
+
+      const scene = new THREE.Scene();
+      const camera = new THREE.PerspectiveCamera(50, 300 / 200, 0.1, 100);
+      camera.position.set(0, 2, 5);
+
+      const cube = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshStandardMaterial({ color: 0x22c55e }));
+      scene.add(cube);
+
+      const raster = new RasterRenderer({
+        renderer,
+        scene,
+        camera,
+        preset: POST_PRESETS.STUDIO,
+      });
+
+      raster.setPreset(POST_PRESETS.FAST);
+      raster.renderFrame({ delta: 0.016 });
+
+      raster.setPreset(POST_PRESETS.STUDIO);
+      raster.renderFrame({ delta: 0.016 });
+
+      raster.setPreset(POST_PRESETS.CINEMATIC);
+      raster.renderFrame({ delta: 0.016 });
+
+      const stillData = raster.captureStill(scene, camera, { width: 100, height: 100 });
+      if (!stillData || !stillData.startsWith('data:image/')) {
+        throw new Error('Chụp still capture phải trả về data URL hợp lệ');
+      }
+
+      raster.dispose();
+      renderer.dispose();
+      container.removeChild(renderer.domElement);
+      return `RenderFrame & CaptureStill thành công qua 3 chế độ Fast/Studio/Cinematic`;
+    });
+
+    // 5. Environment raw source parity
+    await test('RasterRenderer: Bảo toàn rawEnvironmentSource cho Phase 6 Path-Tracing', () => {
+      const scene = new THREE.Scene();
+      const raster = new RasterRenderer();
+      const mockEnv = new THREE.Texture();
+      const rawSource = new THREE.DataTexture(new Uint8Array(16), 2, 2, THREE.RGBAFormat);
+
+      raster.setEnvironment(scene, {
+        pmremTexture: mockEnv,
+        rawSource: rawSource,
+        rotation: 0.785,
+        intensity: 1.5,
+      });
+
+      if (scene.environment !== mockEnv) throw new Error('scene.environment không đúng');
+      if (scene.userData.rawEnvironmentSource !== rawSource) throw new Error('rawEnvironmentSource không được bảo tồn');
+      raster.dispose();
+      return `Đã lưu rawEnvironmentSource (${rawSource.image.width}x${rawSource.image.height}) vào scene.userData`;
+    });
+  </script>
+</body>
+</html>

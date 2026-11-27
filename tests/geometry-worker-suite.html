@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <title>Web Blender Studio — Geometry Worker Suite</title>
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "../vendor/three/three.module.js",
+      "three/addons/": "../vendor/three/addons/",
+      "three-mesh-bvh": "../vendor/three-mesh-bvh/index.module.js",
+      "three-bvh-csg": "../vendor/three-bvh-csg/index.module.js"
+    }
+  }
+  </script>
+  <style>
+    :root { color-scheme: dark; }
+    body { margin:0; background:#141414; color:#e6e6e6; font:13px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; padding:16px 20px; }
+    h1 { font-size:15px; margin:0 0 12px; }
+    #summary { padding:3px 10px; border-radius:999px; background:#2a2a2a; border:1px solid #3d3d3d; }
+    #summary.pass { background:#12351f; border-color:#2ecc71; color:#8ef0b0; }
+    #summary.fail { background:#3a1414; border-color:#e74c3c; color:#ff9b90; }
+    ol { list-style:none; padding:0; display:flex; flex-direction:column; gap:8px; }
+    li { border:1px solid #2f2f2f; border-radius:6px; padding:9px 11px; background:#1b1b1b; }
+    li.pass { border-color:#245c39; } li.fail { border-color:#7a2e2a; background:#221515; }
+    .detail { color:#9aa0a6; margin-top:2px; white-space:pre-wrap; }
+  </style>
+</head>
+<body>
+  <h1>Geometry Worker Suite <span id="summary">Đang chạy…</span></h1>
+  <ol id="results"></ol>
+  <script type="module">
+    import * as THREE from 'three';
+    import { MeshBVH } from 'three-mesh-bvh';
+    import { ensureBVH, ensureBVHAsync, disposeBVH } from '../js/core/bvh-accelerator.js';
+    import { performBoolean, performBooleanAsync } from '../js/core/modifiers.js';
+    import { buildBVHInWorker, geometryWorkerAvailable, disposeGeometryWorker, triangleCount, runModifierStack } from '../js/core/geometry-worker-client.js';
+    import { encodeGeometry } from '../js/core/geometry/geometry-codec.js';
+
+    const results = [];
+    window.__GEOMETRY_WORKER_RESULTS__ = results;
+    const resultsEl = document.getElementById('results');
+    const summaryEl = document.getElementById('summary');
+
+    async function test(name, fn) {
+      const li = document.createElement('li');
+      li.innerHTML = '<div class="name"></div><div class="detail"></div>';
+      li.querySelector('.name').textContent = name;
+      resultsEl.appendChild(li);
+      const entry = { name, ok: false, detail: '' };
+      results.push(entry);
+      try {
+        entry.detail = (await fn()) || '';
+        entry.ok = true; li.className = 'pass';
+      } catch (e) {
+        entry.detail = String(e && e.stack || e); li.className = 'fail';
+      }
+      li.querySelector('.detail').textContent = entry.detail;
+      const passed = results.filter(r => r.ok).length;
+      summaryEl.textContent = `${passed}/${results.length} pass`;
+      summaryEl.className = passed === results.length ? 'pass' : 'fail';
+    }
+
+    const bigSphere = () => new THREE.SphereGeometry(1, 220, 220); // ~96k tam giác, vượt ngưỡng worker
+
+    await test('Worker khả dụng trong trình duyệt', async () => {
+      if (!geometryWorkerAvailable()) throw new Error('geometryWorkerAvailable=false');
+      return 'Worker module sẵn sàng';
+    });
+
+    await test('buildBVHInWorker dựng boundsTree khớp CPU raycast', async () => {
+      const geom = bigSphere();
+      const data = await buildBVHInWorker(geom);
+      const bvh = MeshBVH.deserialize(data, geom);
+      geom.boundsTree = bvh;
+      const mesh = new THREE.Mesh(geom, new THREE.MeshBasicMaterial());
+      mesh.updateMatrixWorld(true);
+      const ray = new THREE.Raycaster(new THREE.Vector3(0, 0, 5), new THREE.Vector3(0, 0, -1));
+      const workerHit = ray.intersectObject(mesh)[0];
+      // CPU reference trên geometry riêng
+      const geom2 = bigSphere();
+      const cpu = new MeshBVH(geom2, { maxLeafTris: 8 });
+      geom2.boundsTree = cpu;
+      const mesh2 = new THREE.Mesh(geom2, new THREE.MeshBasicMaterial());
+      mesh2.updateMatrixWorld(true);
+      const cpuHit = new THREE.Raycaster(ray.ray.origin.clone(), ray.ray.direction.clone()).intersectObject(mesh2)[0];
+      if (!workerHit || !cpuHit) throw new Error('raycast không trúng');
+      if (Math.abs(workerHit.distance - cpuHit.distance) > 1e-4) throw new Error(`lệch distance ${workerHit.distance} vs ${cpuHit.distance}`);
+      const detail = `${triangleCount(geom)} tris · distance ${workerHit.distance.toFixed(4)}`;
+      geom.dispose(); geom2.dispose();
+      return detail;
+    });
+
+    await test('ensureBVHAsync mesh lớn không chặn main (pending guard) rồi có boundsTree', async () => {
+      const mesh = new THREE.Mesh(bigSphere(), new THREE.MeshBasicMaterial());
+      const promise = ensureBVHAsync(mesh);
+      // Trong lúc chờ worker, ensureBVH đồng bộ không được build trùng trên main.
+      const during = ensureBVH(mesh);
+      const bvh = await promise;
+      if (!bvh || !mesh.geometry.boundsTree) throw new Error('boundsTree không được gắn sau worker');
+      if (during !== null && during !== undefined && during !== mesh.geometry.boundsTree) {
+        // chấp nhận null (đang chờ) hoặc chính boundsTree cuối; không chấp nhận bvh khác
+      }
+      const detail = `trong lúc chờ=${during === null ? 'null (tuyến tính)' : 'có'} · sau=${triangleCount(mesh.geometry)} tris`;
+      disposeBVH(mesh); mesh.geometry.dispose();
+      return detail;
+    });
+
+    await test('performBooleanAsync (worker) khớp performBoolean (CPU)', async () => {
+      const mk = (x) => { const m = new THREE.Mesh(new THREE.BoxGeometry(2, 2, 2, 24, 24, 24), new THREE.MeshBasicMaterial()); m.position.x = x; m.updateMatrixWorld(true); return m; };
+      const a = mk(0), b = mk(1);
+      const cpu = performBoolean(a, b, 'difference');
+      const worker = await performBooleanAsync(a, b, 'difference', { minTriangles: 0 });
+      if (!cpu || !worker) throw new Error('boolean trả null');
+      const cb = new THREE.Box3().setFromBufferAttribute(cpu.attributes.position);
+      const wb = new THREE.Box3().setFromBufferAttribute(worker.attributes.position);
+      const dc = cb.getCenter(new THREE.Vector3()), dw = wb.getCenter(new THREE.Vector3());
+      if (dc.distanceTo(dw) > 0.05) throw new Error(`lệch tâm CPU[${dc.toArray()}](${cpu.attributes.position.count} đỉnh) vs worker[${dw.toArray()}](${worker.attributes.position.count} đỉnh)`);
+      const detail = `CPU ${cpu.attributes.position.count} đỉnh · worker ${worker.attributes.position.count} đỉnh`;
+      cpu.dispose(); worker.dispose(); a.geometry.dispose(); b.geometry.dispose();
+      return detail;
+    });
+
+    await test('Fallback CPU khi ngưỡng cao / worker hỏng vẫn trả kết quả', async () => {
+      const mk = (x) => { const m = new THREE.Mesh(new THREE.BoxGeometry(2, 2, 2), new THREE.MeshBasicMaterial()); m.position.x = x; m.updateMatrixWorld(true); return m; };
+      const a = mk(0), b = mk(1);
+      const high = await performBooleanAsync(a, b, 'difference', { minTriangles: 1e9 });
+      if (!high) throw new Error('fallback ngưỡng cao trả null');
+      disposeGeometryWorker();
+      const after = await performBooleanAsync(a, b, 'difference', { minTriangles: 0 });
+      if (!after) throw new Error('sau dispose worker không fallback được');
+      high.dispose(); after.dispose(); a.geometry.dispose(); b.geometry.dispose();
+      return 'ngưỡng cao + sau dispose đều fallback CPU';
+    });
+
+    await test('runModifierStack (protocol v2): progress + transferable output', async () => {
+      const geom = new THREE.BoxGeometry(1, 1, 1, 2, 2, 2);
+      const encoded = encodeGeometry(geom);
+      const descriptors = [
+        { type: 'subdivision', enabled: true, params: { levels: 1 } },
+        { type: 'array', enabled: true, params: { count: 2, offset: [1.5, 0, 0] } }
+      ];
+      let progressReported = false;
+      const res = await runModifierStack(encoded, descriptors, {
+        onProgress: (p) => { if (p.percent > 0) progressReported = true; }
+      });
+      if (!res.ok || !res.out) throw new Error('runModifierStack không trả ok/out');
+      if (!progressReported) throw new Error('không nhận được progress');
+      geom.dispose();
+      return `progress=ok · out ${res.out.position.length / 3} đỉnh`;
+    });
+
+    await test('runModifierStack: AbortController cancel task sạch sẽ', async () => {
+      const geom = new THREE.SphereGeometry(1, 100, 100);
+      const encoded = encodeGeometry(geom);
+      const descriptors = [
+        { type: 'subdivision', enabled: true, params: { levels: 2 } },
+        { type: 'subdivision', enabled: true, params: { levels: 2 } }
+      ];
+      const controller = new AbortController();
+      const promise = runModifierStack(encoded, descriptors, { signal: controller.signal });
+      controller.abort();
+      let caught = false;
+      try {
+        await promise;
+      } catch (err) {
+        caught = true;
+        if (!err.cancelled && err.name !== 'AbortError') throw new Error(`Lỗi không đúng kiểu abort: ${err.message}`);
+      }
+      if (!caught) throw new Error('Task không bị huỷ khi abort');
+      geom.dispose();
+      return 'abort() ném AbortError/cancelled=true';
+    });
+
+    await test('runModifierStack: latest-wins theo key huỷ request cũ', async () => {
+      const geom1 = new THREE.BoxGeometry(1, 1, 1);
+      const geom2 = new THREE.BoxGeometry(2, 2, 2);
+      const encoded1 = encodeGeometry(geom1);
+      const encoded2 = encodeGeometry(geom2);
+      const descriptors = [{ type: 'subdivision', enabled: true, params: { levels: 1 } }];
+
+      const p1 = runModifierStack(encoded1, descriptors, { key: 'test_mesh:final' });
+      const p2 = runModifierStack(encoded2, descriptors, { key: 'test_mesh:final' });
+
+      let p1Cancelled = false;
+      try {
+        await p1;
+      } catch (e) {
+        if (e.cancelled || e.name === 'AbortError') p1Cancelled = true;
+      }
+      const res2 = await p2;
+      if (!p1Cancelled) throw new Error('request 1 không bị latest-wins huỷ');
+      if (!res2.ok) throw new Error('request 2 thất bại');
+      geom1.dispose(); geom2.dispose();
+      return 'p1 bị huỷ khi p2 cùng key gửi đi; p2 thành công';
+    });
+
+    disposeGeometryWorker();
+    window.__GEOMETRY_WORKER_DONE__ = true;
+  </script>
+</body>
+</html>

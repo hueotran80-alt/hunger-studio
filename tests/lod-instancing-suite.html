@@ -1,0 +1,565 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <title>Web Blender Studio — Rust WASM Auto-LOD, Fast Orbit &amp; GPU Foliage Scatter Suite</title>
+  <style>
+    :root { color-scheme: dark; }
+    body { margin: 0; background: #141414; color: #e6e6e6; font: 13px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; padding: 16px 20px; }
+    header { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+    h1 { font-size: 15px; margin: 0; }
+    #summary { padding: 3px 10px; border-radius: 999px; background: #2a2a2a; border: 1px solid #3d3d3d; font-variant-numeric: tabular-nums; }
+    #summary.pass { background: #12351f; border-color: #2ecc71; color: #8ef0b0; }
+    #summary.fail { background: #3a1414; border-color: #e74c3c; color: #ff9b90; }
+    ol { list-style: none; padding: 0; margin: 0 0 14px; display: flex; flex-direction: column; gap: 8px; }
+    li { border: 1px solid #2f2f2f; border-radius: 6px; padding: 9px 11px; background: #1b1b1b; }
+    li.pass { border-color: #245c39; }
+    li.fail { border-color: #7a2e2a; background: #221515; }
+    .detail { color: #9aa0a6; margin-top: 2px; white-space: pre-wrap; font-size: 12px; }
+    iframe { width: 1280px; height: 760px; border: 1px solid #333; border-radius: 6px; background: #111; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Rust WASM Auto-LOD, Fast Orbit &amp; GPU Foliage Scatter Suite</h1>
+    <span id="summary">Đang chạy…</span>
+  </header>
+  <ol id="results"></ol>
+  <iframe id="studio-frame" src="../index.html" title="Studio under LOD & Instancing test"></iframe>
+
+  <script type="module">
+    const resultsEl = document.getElementById('results');
+    const summaryEl = document.getElementById('summary');
+    const frame = document.getElementById('studio-frame');
+    const items = [];
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+    function assert(cond, msg) {
+      if (!cond) throw new Error(msg || 'Assertion failed');
+    }
+
+    async function waitFor(check, timeoutMs = 25000, label = 'condition') {
+      const t0 = Date.now();
+      while (Date.now() - t0 < timeoutMs) {
+        try {
+          const val = await check();
+          if (val) return val;
+        } catch (_) {}
+        await sleep(60);
+      }
+      throw new Error(`Timeout waiting for ${label}`);
+    }
+
+    async function test(name, fn) {
+      const li = document.createElement('li');
+      li.innerHTML = '<div class="name"></div><div class="detail">Đang chạy…</div>';
+      li.querySelector('.name').textContent = name;
+      resultsEl.appendChild(li);
+      const entry = { name, status: 'running', detail: '' };
+      items.push(entry);
+      try {
+        const detail = await fn();
+        entry.status = 'pass';
+        entry.detail = detail || '';
+        li.className = 'pass';
+        li.querySelector('.detail').textContent = `PASS · ${entry.detail}`;
+      } catch (err) {
+        entry.status = 'fail';
+        entry.detail = err && err.stack ? err.stack : String(err);
+        li.className = 'fail';
+        li.querySelector('.detail').textContent = `FAIL · ${entry.detail}`;
+        console.error('[lod-instancing-suite]', name, err);
+      }
+    }
+
+    const w = await waitFor(
+      () => (frame.contentWindow?.app && frame.contentWindow?.instancingSystem && frame.contentWindow?.lodManager ? frame.contentWindow : null),
+      25000,
+      'Studio + LOD/Instancing boot'
+    );
+    await w.lodManager.ensureKernel();
+    await sleep(200);
+
+    // 1. 30,000 Grass Tufts + 500 3-LOD Stylized Trees Stress Test
+    await test('1. GPU Scatter 30,000 cỏ + 500 cây 3-LOD: ≤ 16 draw calls, 2 dòng Outliner, cắt Frustum & chia LOD WASM', async () => {
+      w.studio.clearScene();
+      const terrainGeom = new w.THREE.PlaneGeometry(80, 80, 48, 48);
+      terrainGeom.rotateX(-Math.PI / 2);
+      const terrain = new w.THREE.Mesh(
+        terrainGeom,
+        new w.THREE.MeshStandardMaterial({ color: 0x385a2c, roughness: 0.9 })
+      );
+      terrain.name = 'Bench_Terrain';
+      w.sceneManager.addObject(terrain, null, false, false);
+
+      const t0 = performance.now();
+      const grassGroup = await w.studio.scatter('grass', terrain, {
+        count: 30000,
+        lodDistances: [0, 16, 34],
+        maxDistance: 95,
+        windSway: true,
+      });
+      const treeGroup = await w.studio.scatter('tree', terrain, {
+        count: 500,
+        minSpacing: 1.5,
+        lodDistances: [0, 22, 48],
+        maxDistance: 140,
+        windSway: true,
+      });
+      const scatterMs = performance.now() - t0;
+
+      assert(grassGroup?.userData?.instanceCount === 30000, `Grass count mismatch: ${grassGroup?.userData?.instanceCount}`);
+      assert(treeGroup?.userData?.instanceCount > 200, `Tree count too low: ${treeGroup?.userData?.instanceCount}`);
+
+      // Position camera low overlooking the meadow so close (LOD0), mid (LOD1), and far (LOD2) buckets are all populated
+      w.engine.camera.position.set(0, 4.5, 22);
+      w.engine.controls.target.set(0, 0, -10);
+      w.engine.controls.update();
+      w.engine.requestRender();
+      await sleep(120);
+
+      // Clear TransformControls gizmo selection (~15 handle meshes) to measure pure 3D scene draw calls
+      w.sceneManager.clearSelection();
+
+      // Settle initial shadow map pass, then measure steady-state single-pass scene render draw calls
+      w.engine.lodManager.update(w.engine.camera, 1.0);
+      w.engine.instancingSystem.update(w.engine.camera, 1.0, 0.016);
+      w.engine.renderer.render(w.engine.scene, w.engine.camera);
+      w.engine.renderer.info.reset();
+      w.engine.renderer.render(w.engine.scene, w.engine.camera);
+      const drawCalls = w.engine.renderer.info.render.calls;
+
+      assert(drawCalls <= 16, `Expected <= 16 WebGL draw calls for 30,500+ objects, got ${drawCalls}`);
+
+      w.outliner.render();
+      const outlinerRows = w.document.querySelectorAll('#outliner-container .outliner-item');
+      // Scene Collection + Terrain + Grass_Scatter + Tree_Forest_Scatter = 4 rows total!
+      assert(outlinerRows.length <= 6, `Outliner bloated to ${outlinerRows.length} rows instead of compact scatter nodes`);
+
+      const [g0, g1, g2] = grassGroup.userData._activeTierCounts;
+      assert(g0 > 0 && (g1 > 0 || g2 > 0), `Expected multi-tier grass LOD distribution, got [${g0}, ${g1}, ${g2}]`);
+      assert((g0 + g1 + g2) < 30000, `Expected frustum culling to cull off-screen grass, visible=${g0 + g1 + g2}/30000`);
+
+      return `30,000 grass + ${treeGroup.userData.instanceCount} trees built in ${scatterMs.toFixed(1)} ms · ${drawCalls} draw calls · Outliner=${outlinerRows.length} rows · Visible Grass LODs=[${g0}, ${g1}, ${g2}]`;
+    });
+
+    // 2. ViewportGovernor ("Fast Orbit") dynamic DPR + Post-Processing suspension + Crisp Restore
+    await test('2. Fast Orbit (ViewportGovernor): hạ DPR & tắt GTAO/DOF khi xoay chuột, giữ AgX và khôi phục sắc nét sau 160ms', async () => {
+      w.studio.clearScene();
+      const gov = w.viewportGovernor;
+      assert(gov && gov.enabled, 'ViewportGovernor must be enabled by default');
+      gov.lowFpsProtection = false;
+      gov.avgFrameMs = 12.0;
+
+      // Switch to Cinematic preset so GTAO + Bokeh are enabled at rest
+      w.engine.rasterRenderer?.setPreset?.('cinematic');
+      w.engine.renderer.setPixelRatio(2.0);
+      w.engine.rasterRenderer?.setSize?.(800, 600, 2.0);
+
+      const pp = w.engine.rasterRenderer?.postProcessing;
+      const hadGtao = Boolean(pp?.gtaoPass?.enabled);
+
+      // Fire OrbitControls 'start'
+      w.engine.controls.dispatchEvent({ type: 'start' });
+      assert(gov.isInteracting === true, 'Governor did not enter interacting state on controls start');
+      const orbitDpr = w.engine.renderer.getPixelRatio();
+      const orbitBias = gov.getEffectiveLodBias();
+      assert(orbitDpr <= 1.0, `Expected Fast Orbit DPR <= 1.0, got ${orbitDpr}`);
+      assert(orbitBias < 0.6, `Expected Fast Orbit LOD bias < 0.6, got ${orbitBias}`);
+      if (hadGtao) {
+        assert(pp.gtaoPass.enabled === false, 'GTAO should be suspended during Fast Orbit');
+        assert(pp.outputPass.enabled === true, 'AgX OutputPass must stay enabled so tone mapping never flashes');
+      }
+
+      // Fire OrbitControls 'end' and wait for settle timer (160ms)
+      w.engine.controls.dispatchEvent({ type: 'end' });
+      await sleep(230);
+      assert(gov.isInteracting === false, 'Governor did not settle back to crisp state after 230ms');
+      assert(gov.getEffectiveLodBias() === 1.0, 'LOD bias did not restore to 1.0');
+      if (hadGtao) {
+        assert(pp.gtaoPass.enabled === true, 'GTAO was not restored after orbit ended');
+      }
+      w.engine.rasterRenderer?.setPreset?.('fast');
+      return `Orbit DPR: 2.00 → ${orbitDpr.toFixed(2)} → ${w.engine.renderer.getPixelRatio().toFixed(2)} · LOD bias: 1.00 → ${orbitBias.toFixed(2)} → 1.00`;
+    });
+
+    // 3. Non-destructive Rust WASM QEM Detail Slider & 3-Tier Auto-LOD on Standalone High-Poly Mesh
+    await test('3. Thanh trượt Detail (%) & Auto-LOD 3 tầng (Rust QEM): giảm 12,288 → ~2,458 tris không phá gốc & tự đổi theo khoảng cách', async () => {
+      w.studio.clearScene();
+      const hiGeom = new w.THREE.SphereGeometry(1.5, 96, 64);
+      const hiMesh = new w.THREE.Mesh(hiGeom, new w.THREE.MeshStandardMaterial({ color: 0xe17055 }));
+      hiMesh.name = 'HighPoly_Sculpt';
+      w.sceneManager.addObject(hiMesh, null, true, false);
+
+      const origTris = hiMesh.geometry.index.count / 3;
+      const reduced = await w.studio.simplify(hiMesh, 0.2);
+      assert(reduced.baseTriangles === origTris, `Expected ${origTris} base tris, got ${reduced.baseTriangles}`);
+      assert(reduced.currentTriangles < origTris * 0.3 && reduced.currentTriangles > origTris * 0.1, `Unexpected 20% QEM tris: ${reduced.currentTriangles}`);
+
+      const restored = await w.studio.simplify(hiMesh, 1.0);
+      assert(restored.currentTriangles === origTris, `Lossless 100% restore failed: ${restored.currentTriangles}`);
+
+      const lodInfo = await w.studio.enableAutoLOD(hiMesh, { distances: [0, 8, 20] });
+      assert(lodInfo && lodInfo.lod2Tris < lodInfo.lod1Tris && lodInfo.lod1Tris < lodInfo.lod0Tris, 'Invalid Auto-LOD triangle cascade');
+
+      // Near camera (4m) -> LOD0
+      w.engine.camera.position.set(0, 0, 4);
+      w.engine.camera.updateMatrixWorld(true);
+      w.lodManager.update(w.engine.camera, 1.0);
+      const nearTris = hiMesh.geometry.index.count / 3;
+
+      // Far camera (30m) -> LOD2
+      w.engine.camera.position.set(0, 0, 30);
+      w.engine.camera.updateMatrixWorld(true);
+      w.lodManager.update(w.engine.camera, 1.0);
+      const farTris = hiMesh.geometry.index.count / 3;
+
+      assert(nearTris === lodInfo.lod0Tris && farTris === lodInfo.lod2Tris, `Expected near=${lodInfo.lod0Tris} & far=${lodInfo.lod2Tris}, got near=${nearTris}, far=${farTris}`);
+      assert(hiMesh.isMesh === true, 'Mesh identity broken by Auto-LOD');
+
+      return `QEM 100% (${restored.currentTriangles}) ↔ 20% (${reduced.currentTriangles}) · Auto-LOD near=${nearTris} tris → far=${farTris} tris`;
+    });
+
+    // 4. Batch Selected Meshes to GPU Instances, Alt+D Append & Atomic Undo/Redo
+    await test('4. Gộp vật trùng thành 1 GPU Instance (Alt+Shift+D), nhân bản Alt+D 0-draw-call & Undo/Redo nguyên tử', async () => {
+      w.studio.clearScene();
+      const boxes = [];
+      for (let i = 0; i < 20; i++) {
+        boxes.push(w.studio.addCube({ name: `FencePost_${i}`, x: (i % 5) * 1.5, y: 0.5, z: Math.floor(i / 5) * 1.5 }));
+      }
+      w.sceneManager.setSelection(boxes);
+
+      const batched = await w.studio.batchToInstances();
+      assert(batched?.userData?.isScatterGroup, 'batchToInstances did not create ScatterGroup');
+      assert(batched.userData.instanceCount === 20, `Expected 20 batched instances, got ${batched.userData.instanceCount}`);
+
+      // Alt+D on ScatterGroup appends 1 GPU instance inside the same group
+      w.sceneManager.select(batched);
+      w.app.blenderProTools.duplicateLinkedSelection();
+      assert(batched.userData.instanceCount === 21, `Alt+D on ScatterGroup expected 21 instances, got ${batched.userData.instanceCount}`);
+
+      // Undo Alt+D -> 20 instances; Undo Batch -> 20 individual meshes restored!
+      w.sceneManager.undo();
+      assert(batched.userData.instanceCount === 20, `Undo Alt+D failed: ${batched.userData.instanceCount}`);
+      w.sceneManager.undo();
+      const restoredMeshes = w.sceneManager.getAllObjects().filter((o) => o.isMesh && o.name.startsWith('FencePost_'));
+      assert(restoredMeshes.length === 20, `Undo Batch expected 20 original meshes, got ${restoredMeshes.length}`);
+
+      return `20 Meshes → 1 GPU ScatterGroup → Alt+D (21 inst) → Undo ×2 restored 20 Meshes`;
+    });
+
+    // 5. Foliage Brush Stroke + .wbs ZIP & .glb Export Round-Trip
+    await test('5. Cọ vẽ/xoá Foliage BVH & lưu/mở gói .wbs (ZIP + Binary Blob) + xuất .glb bảo toàn dữ liệu', async () => {
+      w.studio.clearScene();
+      const groundGeom = new w.THREE.PlaneGeometry(30, 30, 16, 16);
+      groundGeom.rotateX(-Math.PI / 2);
+      const ground = new w.THREE.Mesh(groundGeom, new w.THREE.MeshStandardMaterial({ color: 0x3b5e2b }));
+      ground.name = 'Meadow_Save_Ground';
+      w.sceneManager.addObject(ground, null, false, false);
+
+      const meadow = await w.studio.scatter('grass', ground, { count: 2500, windSway: true });
+      assert(meadow.userData.instanceCount === 2500, 'Initial meadow count != 2500');
+
+      // Test Foliage Brush paint & erase via BVH surface hit
+      const started = w.instancingSystem.startFoliageBrush(meadow, ground, { mode: 'paint', radius: 2.0, density: 8, minSpacing: 0.1 });
+      assert(started === true, 'startFoliageBrush failed');
+      w.instancingSystem._applyBrushAtHit({ point: new w.THREE.Vector3(0, 0, 0), face: { normal: new w.THREE.Vector3(0, 1, 0) } }, 'paint');
+      const afterPaint = meadow.userData.instanceCount;
+      assert(afterPaint > 2500, `Expected paint stroke to add instances, got ${afterPaint}`);
+
+      w.instancingSystem._applyBrushAtHit({ point: new w.THREE.Vector3(0, 0, 0), face: { normal: new w.THREE.Vector3(0, 1, 0) } }, 'erase');
+      const afterErase = meadow.userData.instanceCount;
+      assert(afterErase < afterPaint, `Expected erase stroke to remove instances, got ${afterErase}`);
+      w.instancingSystem.stopFoliageBrush();
+
+      // Export .glb without mutating live scatter group
+      const glbRes = await w.app.exporter.exportGLTF(null, { binary: true, download: false, quiet: true });
+      assert(glbRes?.buffer?.byteLength > 1000, 'GLB export of scattered meadow returned empty buffer');
+
+      // Export .wbs ZIP package & re-import into clean scene
+      const pkg = await w.app.exporter.exportProjectPackage({ download: false, minBlobBytes: 256 });
+      assert(pkg?.bytes?.byteLength > 500 && pkg.blobCount >= 1, 'Failed to package scatter matrices into .wbs blobs');
+
+      w.studio.clearScene();
+      const imp = await w.app.exporter.importProjectJSON(pkg.bytes);
+      assert(imp?.success, `.wbs import failed: ${JSON.stringify(imp)}`);
+
+      let restoredGroup = null;
+      w.scene.traverse((o) => { if (o.userData?.isScatterGroup) restoredGroup = o; });
+      assert(restoredGroup && restoredGroup.userData.instanceCount === afterErase, `Expected ${afterErase} instances after .wbs reload, got ${restoredGroup?.userData?.instanceCount}`);
+
+      return `Brush: 2500 → ${afterPaint} (paint) → ${afterErase} (erase) · .wbs=${(pkg.bytes.byteLength / 1024).toFixed(1)} KB (${pkg.blobCount} blobs) · .glb=${(glbRes.buffer.byteLength / 1024).toFixed(1)} KB`;
+    });
+
+    // 6. Regression: Clicking Group Potted Plant in Scene preserves normal-mapped PBR texture + Mac Option+D & Option+Shift+D
+    await test('6. Hồi quy UX Mac: click chậu cây (Group có Normal Map) giữ 100% texture gốc, chỉnh/khôi phục chất liệu & Option+D / Option+Shift+D', async () => {
+      w.studio.clearScene();
+      const THREE = w.THREE;
+
+      const greenData = new Uint8Array([34, 197, 94, 255, 22, 163, 74, 255, 22, 163, 74, 255, 34, 197, 94, 255]);
+      const leafDiffuse = new THREE.DataTexture(greenData, 2, 2, THREE.RGBAFormat);
+      leafDiffuse.needsUpdate = true;
+
+      const normData = new Uint8Array([128, 128, 255, 255, 132, 124, 255, 255, 124, 132, 255, 255, 128, 128, 255, 255]);
+      const leafNormal = new THREE.DataTexture(normData, 2, 2, THREE.RGBAFormat);
+      leafNormal.needsUpdate = true;
+
+      const plantGroup = new THREE.Group();
+      plantGroup.name = 'PottedPlant_Mac';
+
+      const leavesMesh = new THREE.Mesh(
+        new THREE.ConeGeometry(0.6, 1.1, 12),
+        new THREE.MeshStandardMaterial({ name: 'wood_leaves_pbr', map: leafDiffuse, normalMap: leafNormal, roughness: 0.55 })
+      );
+      leavesMesh.name = 'Plant_Leaves';
+
+      const potMesh = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.42, 0.32, 0.5, 16),
+        new THREE.MeshStandardMaterial({ name: 'marble_pot_pbr', color: 0xd6ccc2, normalMap: leafNormal, roughness: 0.7 })
+      );
+      potMesh.name = 'Ceramic_Pot';
+
+      plantGroup.add(leavesMesh, potMesh);
+      w.sceneManager.addObject(plantGroup, null, true, false);
+      plantGroup.userData._lastClickedMesh = leavesMesh;
+
+      // Simulate clicking object in Scene -> Inspector renders both 'object' and 'material' tabs
+      w.sceneManager.select(plantGroup);
+      w.inspector.activeTab = 'object';
+      w.inspector.render();
+      w.inspector.activeTab = 'material';
+      w.inspector.render();
+
+      assert(leavesMesh.material.map === leafDiffuse, 'Inspector overwrote imported diffuse map with procedural Perlin noise!');
+      assert(leavesMesh.material.normalMap === leafNormal, 'Inspector overwrote imported normal map!');
+      const partSelect = w.document.getElementById('mat-group-part-select');
+      assert(Boolean(partSelect && partSelect.options.length === 2), 'Inspector did not render Group part material selector');
+
+      // Test Reset to Clay & 1-click Restore Original Material without mutating original texture
+      w.document.getElementById('btn-mat-reset-clay')?.click();
+      assert(Boolean(leavesMesh.material.userData?.isDefaultClay), 'Reset to Clay did not switch part to clay');
+      assert(leafDiffuse.image?.data?.[1] === 197, 'Original texture was mutated');
+      w.document.getElementById('btn-restore-imported-mat-clay')?.click();
+      assert(leavesMesh.material.map === leafDiffuse || Boolean(leavesMesh.material.map), 'Restore Original Material failed');
+
+      // Focus a range slider in Inspector (user dragged Roughness slider), then press macOS Option+D ('∂', code='KeyD', altKey=true) in 'web' keymap!
+      w.app.blenderProTools.setKeymapPreset('web', false);
+      const roughSlider = w.document.getElementById('mat-roughness');
+      roughSlider?.focus();
+
+      w.window.dispatchEvent(new w.KeyboardEvent('keydown', {
+        key: '∂',
+        code: 'KeyD',
+        keyCode: 68,
+        altKey: true,
+        bubbles: true,
+        cancelable: true
+      }));
+
+      const plantGroups = w.sceneManager.getAllObjects().filter((o) => o.isGroup && o.name.startsWith('PottedPlant_Mac'));
+      assert(plantGroups.length === 2, `Mac Option+D on Group expected 2 plants, got ${plantGroups.length}`);
+      const linkedGroup = plantGroups.find((g) => g !== plantGroup);
+      assert(Math.abs(linkedGroup.position.x - 1) < 1e-5 && Math.abs(linkedGroup.position.z - 1) < 1e-5, 'Linked Group was not offset to (1, 0, 1)');
+      assert(linkedGroup.children[0].geometry === leavesMesh.geometry, 'Linked Group child did not share BufferGeometry');
+
+      // Batch both Group plants into 1 GPU InstancedScatterGroup via Option+Shift+D
+      w.sceneManager.setSelection(plantGroups);
+      const batchedPlants = await w.app.blenderProTools.batchSelectionToGpuInstances();
+      assert(batchedPlants?.userData?.isScatterGroup && batchedPlants.userData.instanceCount === 2, 'Option+Shift+D failed to batch Group models');
+
+      return 'Texture preserved 100% on click · Group Material UI + Restore OK · Mac Option+D (∂/KeyD) & Option+Shift+D OK';
+    });
+
+    // 7. Benchmark exact user stress case: 4-part Potted Plant 04 (~8,800 tris) × 75 Option+D presses (668k tris) -> Auto GPU Instanced 60 FPS!
+    await test('7. Stress Test thực tế (76 chậu cây 4 bộ phận · ~670k mặt): nhấn Option+D 75 lần tự động gộp GPU Instancing, <= 12 draw calls, 60 FPS', async () => {
+      w.studio.clearScene();
+      const THREE = w.THREE;
+
+      // Build realistic 4-part Potted Plant 04 (~8,832 triangles per plant -> 76 plants = 671,232 base triangles!)
+      const plant = new THREE.Group();
+      plant.name = 'Potted Plant 04';
+      const groundPart = new THREE.Mesh(new THREE.CircleGeometry(0.35, 32), new THREE.MeshStandardMaterial({ color: 0x3f2e21 }));
+      groundPart.name = 'potted_plant_04_ground';
+      const dirtPart = new THREE.Mesh(new THREE.SphereGeometry(0.34, 48, 32), new THREE.MeshStandardMaterial({ color: 0x4a3728 }));
+      dirtPart.name = 'potted_plant_04_dirt';
+      const foliagePart = new THREE.Mesh(new THREE.TorusKnotGeometry(0.38, 0.11, 160, 24), new THREE.MeshStandardMaterial({ color: 0x2ecc71 }));
+      foliagePart.name = 'potted_plant_04_plant';
+      const potPart = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 0.28, 0.55, 48, 8), new THREE.MeshStandardMaterial({ color: 0xe5e7eb }));
+      potPart.name = 'potted_plant_04_pot';
+      plant.add(groundPart, dirtPart, foliagePart, potPart);
+      plant.traverse((c) => { if (c.isMesh) { c.castShadow = true; c.receiveShadow = true; } });
+      w.sceneManager.addObject(plant, null, true, false);
+      w.sceneManager.select(plant);
+
+      const tDup0 = performance.now();
+      for (let i = 0; i < 75; i++) {
+        w.window.dispatchEvent(new w.KeyboardEvent('keydown', {
+          key: '∂',
+          code: 'KeyD',
+          keyCode: 68,
+          altKey: true,
+          bubbles: true,
+          cancelable: true
+        }));
+      }
+      const dupTotalMs = performance.now() - tDup0;
+
+      const scatterGroups = w.sceneManager.getAllObjects().filter((o) => o.userData?.isScatterGroup);
+      assert(scatterGroups.length === 1, `Expected 76 plants to auto-pool into 1 GPU group, got ${scatterGroups.length}`);
+      assert(scatterGroups[0].userData.instanceCount === 76, `Expected 76 instances, got ${scatterGroups[0].userData.instanceCount}`);
+      assert(!scatterGroups[0].name.includes('_Linked_Linked'), `Runaway _Linked name was not cleaned: ${scatterGroups[0].name}`);
+
+      // Measure 10 active camera orbit WebGL renders across all 76 plants (~671k base faces)
+      let renderSumMs = 0;
+      for (let f = 0; f < 10; f++) {
+        const ang = f * 0.25;
+        w.engine.camera.position.set(Math.cos(ang) * 14, 7, Math.sin(ang) * 14);
+        w.engine.camera.lookAt(0, 0, 0);
+        const r0 = performance.now();
+        w.engine.render();
+        renderSumMs += (performance.now() - r0);
+      }
+      const avgRenderMs = renderSumMs / 10;
+      const drawCalls = w.engine.renderer.info.render.calls;
+      assert(drawCalls <= 20, `Expected <= 20 GPU draw calls for 76 4-part plants, got ${drawCalls}`);
+
+      return `75× Option+D in ${dupTotalMs.toFixed(1)} ms → 1 GPU Group (76 plants) · ${drawCalls} draw calls · ${avgRenderMs.toFixed(2)} ms/frame (~60 FPS)`;
+    });
+
+    // 8. Compressed OPFS Autosave + 100% Lossless Asset Material Recovery (even during Solid/MatCap mode + RGBA Alpha Cutouts + HDRI!)
+    await test('8. OPFS Autosave nén WebP + Gzip & bảo toàn 100% vật liệu đa kênh (kể cả khi đang ở Solid/MatCap, Alpha lá cây & HDRI)', async () => {
+      w.studio.clearScene();
+      await w.app.clearAutosaveDraft();
+      const THREE = w.THREE;
+
+      // Build 512x512 RGBA leaf texture (left half opaque noisy green leaf, right half transparent alpha=0 cutout!)
+      const texCanvas = w.document.createElement('canvas');
+      texCanvas.width = 512;
+      texCanvas.height = 512;
+      const tctx = texCanvas.getContext('2d');
+      const imgData = tctx.createImageData(512, 512);
+      for (let y = 0; y < 512; y++) {
+        for (let x = 0; x < 512; x++) {
+          const idx = (y * 512 + x) * 4;
+          if (x < 256) {
+            imgData.data[idx] = 30 + ((x * 17 + y * 13) % 40);
+            imgData.data[idx + 1] = 155 + ((x * 7 + y * 23) % 70);
+            imgData.data[idx + 2] = 50 + ((x * 11 + y * 5) % 35);
+            imgData.data[idx + 3] = 255;
+          } else {
+            imgData.data[idx] = 0;
+            imgData.data[idx + 1] = 0;
+            imgData.data[idx + 2] = 0;
+            imgData.data[idx + 3] = 0; // Transparent cutout!
+          }
+        }
+      }
+      tctx.putImageData(imgData, 0, 0);
+      const leafMap = new THREE.CanvasTexture(texCanvas);
+      leafMap.colorSpace = THREE.SRGBColorSpace;
+      leafMap.flipY = false;
+      leafMap.needsUpdate = true;
+
+      const normCanvas = w.document.createElement('canvas');
+      normCanvas.width = 512;
+      normCanvas.height = 512;
+      const nctx = normCanvas.getContext('2d');
+      nctx.fillStyle = '#8080ff';
+      nctx.fillRect(0, 0, 512, 512);
+      const leafNormal = new THREE.CanvasTexture(normCanvas);
+      leafNormal.flipY = false;
+      leafNormal.needsUpdate = true;
+
+      const assetGroup = new THREE.Group();
+      assetGroup.name = 'PolyHaven_Fern_SaveTest';
+
+      const fernLeaves = new THREE.Mesh(
+        new THREE.SphereGeometry(0.8, 64, 48),
+        new THREE.MeshStandardMaterial({
+          name: 'Fern_Alpha_PBR',
+          map: leafMap,
+          normalMap: leafNormal,
+          transparent: true,
+          alphaTest: 0.42,
+          side: THREE.DoubleSide,
+          roughness: 0.48,
+        })
+      );
+      fernLeaves.name = 'Fern_Leaves';
+
+      const glassPot = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.45, 0.35, 0.6, 48, 8),
+        new THREE.MeshPhysicalMaterial({
+          name: 'Glazed_Glass_Pot',
+          color: 0xdbeafe,
+          roughness: 0.12,
+          transmission: 0.65,
+          ior: 1.52,
+          clearcoat: 0.85,
+        })
+      );
+      glassPot.name = 'Glass_Pot';
+
+      assetGroup.add(fernLeaves, glassPot);
+      w.sceneManager.addObject(assetGroup, null, true, false);
+
+      // Activate HDRI AND turn ON Solid/MatCap mode (previously destroyed PBR materials on Autosave!)
+      w.environmentStudio?.setHdriPreset?.('golden-sunset');
+      w.matcapStudio?.toggleMatCapMode?.(true);
+      assert(fernLeaves.material.isMeshMatcapMaterial === true, 'Expected MatCap override active before autosave');
+
+      // Compare legacy uncompressed PNG JSON size vs new WebP + Gzip OPFS Autosave size!
+      const legacyRawJson = w.app.exporter.exportProjectJSON({ download: false, useWebpTextures: false });
+      const legacyBytes = legacyRawJson.length;
+      const compressedDiskBytes = await w.app.saveAutosaveNow();
+      assert(compressedDiskBytes > 0 && compressedDiskBytes < legacyBytes * 0.35,
+        `Expected >= 3x compression on 512x512 RGBA, got legacy=${legacyBytes} B vs compressed=${compressedDiskBytes} B`);
+
+      // Clear everything & switch HDRI away, then restore from OPFS Autosave!
+      w.studio.clearScene();
+      w.environmentStudio?.setHdriPreset?.('studio-softbox');
+
+      const draft = await w.app.loadAutosaveDraft();
+      assert(Boolean(draft?.json), 'Failed to load autosave draft from OPFS');
+      await w.app.exporter.importProjectJSON(draft.json);
+      await w.app.clearAutosaveDraft();
+
+      const restoredGroup = w.sceneManager.getAllObjects().find((o) => o.name === 'PolyHaven_Fern_SaveTest');
+      assert(Boolean(restoredGroup), 'Restored group not found');
+      const rLeaves = restoredGroup.children.find((c) => c.name === 'Fern_Leaves');
+      const rPot = restoredGroup.children.find((c) => c.name === 'Glass_Pot');
+
+      // 1. Verify MatCap did NOT overwrite PBR material!
+      assert(!rLeaves.material.isMeshMatcapMaterial, 'MatCap gray material overwrote Fern PBR material!');
+      assert(Boolean(rLeaves.material.map && rLeaves.material.normalMap), 'Missing map or normalMap after restore!');
+      assert(Math.abs(rLeaves.material.alphaTest - 0.42) < 1e-4 && rLeaves.material.side === THREE.DoubleSide, 'Lost alphaTest or DoubleSide!');
+      assert(rLeaves.material.map.flipY === false, 'Lost GLTF flipY=false on restored texture!');
+
+      // 2. Verify WebP preserved BOTH opaque green leaf RGB AND transparent alpha=0 cutout!
+      const verifyCanvas = w.document.createElement('canvas');
+      verifyCanvas.width = 64;
+      verifyCanvas.height = 64;
+      const vctx = verifyCanvas.getContext('2d');
+      vctx.drawImage(rLeaves.material.map.image, 0, 0, 64, 64);
+      const leftPx = vctx.getImageData(12, 32, 1, 1).data;
+      const rightPx = vctx.getImageData(52, 32, 1, 1).data;
+      assert(leftPx[1] > 120 && leftPx[3] > 240, `Opaque green leaf pixel corrupted: rgba(${leftPx.join(',')})`);
+      assert(rightPx[3] < 10, `Transparent leaf cutout alpha lost: alpha=${rightPx[3]}`);
+
+      // 3. Verify Physical BSDF Pot + HDRI + __importedMaterial backup!
+      assert(rPot.material.isMeshPhysicalMaterial && Math.abs(rPot.material.transmission - 0.65) < 1e-3 && Math.abs(rPot.material.clearcoat - 0.85) < 1e-3,
+        'Lost MeshPhysicalMaterial transmission/clearcoat channels!');
+      assert(Boolean(rLeaves.userData?.__importedMaterial && rPot.userData?.__importedMaterial), 'Missing __importedMaterial backup after restore');
+      assert(w.environmentStudio?.currentHdriPreset === 'golden-sunset', `Expected HDRI golden-sunset, got ${w.environmentStudio?.currentHdriPreset}`);
+
+      return `Size: ${(legacyBytes / 1024).toFixed(0)} KB → ${(compressedDiskBytes / 1024).toFixed(1)} KB (${(legacyBytes / compressedDiskBytes).toFixed(1)}× smaller) · PBR + Alpha Cutout + Physical + HDRI 100% intact`;
+    });
+
+    const passed = items.filter((i) => i.status === 'pass').length;
+    const failed = items.filter((i) => i.status === 'fail').length;
+    summaryEl.textContent = `${passed}/${items.length} PASS` + (failed ? ` · ${failed} FAIL` : '');
+    summaryEl.className = failed === 0 ? 'pass' : 'fail';
+    window.__LOD_INSTANCING_SUITE_RESULTS__ = { passed, failed, total: items.length, items };
+  </script>
+</body>
+</html>

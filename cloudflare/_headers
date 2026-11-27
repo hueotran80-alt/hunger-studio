@@ -1,0 +1,51 @@
+# Cloudflare Workers Static Assets / Pages response headers for Hunger 3D Studio.
+# Automatically copied into dist/_headers by vite.config.js.
+
+/*
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Embedder-Policy: credentialless
+  X-Frame-Options: SAMEORIGIN
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+  Permissions-Policy: camera=(), geolocation=()
+
+/embed
+  ! Cross-Origin-Opener-Policy
+  ! X-Frame-Options
+  Cross-Origin-Embedder-Policy: credentialless
+  Cross-Origin-Resource-Policy: cross-origin
+  Cache-Control: no-cache
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; media-src 'self' blob: data: https:; worker-src 'self' blob:; connect-src 'self' blob: data: https:; object-src 'none'; base-uri 'self'; frame-ancestors *
+
+/embed.html
+  ! Cross-Origin-Opener-Policy
+  ! X-Frame-Options
+  Cross-Origin-Embedder-Policy: credentialless
+  Cross-Origin-Resource-Policy: cross-origin
+  Cache-Control: no-cache
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; media-src 'self' blob: data: https:; worker-src 'self' blob:; connect-src 'self' blob: data: https:; object-src 'none'; base-uri 'self'; frame-ancestors *
+
+/assets/copilot-exec-worker-*.js
+  ! Cache-Control
+  ! Content-Security-Policy
+  Content-Security-Policy: default-src 'none'; script-src 'self' 'unsafe-eval'; connect-src 'none'; worker-src 'none'; child-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'
+  Cross-Origin-Resource-Policy: same-origin
+  Cache-Control: no-cache
+
+/assets/agent-exec-worker-*.js
+  ! Cache-Control
+  ! Content-Security-Policy
+  Content-Security-Policy: default-src 'none'; script-src 'self' 'unsafe-eval'; connect-src 'none'; worker-src 'none'; child-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'
+  Cross-Origin-Resource-Policy: same-origin
+  Cache-Control: no-cache
+
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable
+
+/models/*
+  Cross-Origin-Resource-Policy: cross-origin
+  Cache-Control: public, max-age=86400
+
+/vendor/*
+  Cross-Origin-Resource-Policy: cross-origin
+  Cache-Control: public, max-age=86400

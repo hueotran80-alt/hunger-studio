@@ -1,0 +1,43 @@
+{
+  "provider": "local",
+  "allow_dev_login": true,
+  "allow_test_billing": false,
+  "session_secret": "CHANGE_ME_WITH_OPENSSL_RAND_HEX_32",
+  "data_dir": "cloud_data",
+  "free_credits": 100,
+  "max_project_bytes": 8388608,
+  "max_asset_bytes": 26214400,
+  "max_total_bytes": 314572800,
+  "costs": {
+    "save_project": 1,
+    "upload_asset": 5,
+    "ai_chat": 1
+  },
+  "billing": {
+    "sepay": {
+      "webhook_secret": "CHANGE_ME_SEPAY_WEBHOOK_SECRET",
+      "api_key": "",
+      "bank": "VCB",
+      "account": "0123456789",
+      "holder": "NGUYEN VAN A",
+      "qr_template": "compact2"
+    },
+    "lemonsqueezy": {
+      "api_key": "",
+      "store_id": "",
+      "signing_secret": "",
+      "variants": {
+        "starter": "",
+        "pro": "",
+        "studio": ""
+      }
+    }
+  },
+  "supabase": {
+    "url": "",
+    "anon_key": "",
+    "service_key": "",
+    "project_bucket": "studio-projects",
+    "asset_bucket": "shared-models"
+  }
+}

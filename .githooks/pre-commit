@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Block accidentally committing secret files or API keys
+FORBIDDEN_REGEX='(^|/)(ai_config\.json|cloud_config\.json|cloud_config\.local\.json|\.studio_token|\.env(\..*)?|secrets.*\.json|.*\.pem|.*\.key)$'
+STAGED="$(git diff --cached --name-only --diff-filter=ACM)"
+
+if echo "$STAGED" | grep -E "$FORBIDDEN_REGEX" >/dev/null 2>&1; then
+  echo "BLOCKED: Refusing to commit secret/config file:"
+  echo "$STAGED" | grep -E "$FORBIDDEN_REGEX"
+  exit 1
+fi
+
+if git diff --cached -U0 | grep -E '^\+.*(sk-[A-Za-z0-9]{24,}|AIzaSy[A-Za-z0-9_-]{30,}|sbp_[A-Za-z0-9]{20,})' >/dev/null 2>&1; then
+  echo "BLOCKED: Potential plaintext API secret detected in staged diff."
+  exit 1
+fi

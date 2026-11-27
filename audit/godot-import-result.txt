@@ -1,0 +1,19 @@
+
+== Godot: 4.7.2.stable.official.ed1daf0bf
+== import godot-import-demo.glb (1850108 byte)
+   import OK (không có lỗi)
+== Godot 4.7.2-stable (official) — import res://model.glb
+ok    load() trả PackedScene
+ok    instantiate() OK: AuxScene
+ok    Skeleton3D: 65 xương
+ok    SkinnedMesh: 1/1 MeshInstance3D
+ok    AnimationPlayer: 1 animation ["Mocap_MediaPipe_Action"]
+ok    clip "Mocap_MediaPipe_Action" · 7.933s · 21 track
+ok    toàn bộ 21 track giải được node
+      17/65 xương xoay > 0.01 rad · hông dịch 4.1493 (đơn vị local)
+ok    17 xương cùng chuyển động
+ok    cuối clip vẫn còn 17 xương khác pose đầu
+ok    track vị trí hông dịch 4.1493 (đơn vị local)
+GODOT IMPORT: ALL CHECKS PASSED
+
+GODOT IMPORT CHECK PASSED

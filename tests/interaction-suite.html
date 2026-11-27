@@ -1,0 +1,2300 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <title>Web Blender Studio — Interaction Ownership Suite</title>
+  <style>
+    :root { color-scheme: dark; }
+    body { margin: 0; background: #141414; color: #e6e6e6; font: 13px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    header { padding: 16px 20px; border-bottom: 1px solid #2f2f2f; display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+    h1 { font-size: 15px; margin: 0; font-weight: 600; }
+    #summary { padding: 3px 10px; border-radius: 999px; background: #2a2a2a; border: 1px solid #3d3d3d; font-variant-numeric: tabular-nums; }
+    #summary.pass { background: #12351f; border-color: #2ecc71; color: #8ef0b0; }
+    #summary.fail { background: #3a1414; border-color: #e74c3c; color: #ff9b90; }
+    main { display: grid; grid-template-columns: minmax(420px, 1fr) 900px; gap: 16px; padding: 16px 20px; align-items: start; }
+    ol { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 8px; }
+    li { border: 1px solid #2f2f2f; border-radius: 6px; padding: 9px 11px; background: #1b1b1b; }
+    li.pass { border-color: #245c39; }
+    li.fail { border-color: #7a2e2a; background: #221515; }
+    li.running { border-color: #4a4a2a; }
+    .name { font-weight: 600; }
+    .detail { color: #9aa0a6; margin-top: 2px; white-space: pre-wrap; word-break: break-word; }
+    .badge { float: right; font-size: 11px; padding: 1px 7px; border-radius: 999px; background: #2a2a2a; }
+    li.pass .badge { background: #1d4d30; color: #8ef0b0; }
+    li.fail .badge { background: #5a1f1c; color: #ffb4ab; }
+    iframe { width: 900px; height: 560px; border: 1px solid #2f2f2f; border-radius: 6px; background: #000; }
+    code { color: #8ab4f8; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Web Blender Studio — Interaction Ownership Suite</h1>
+    <span id="summary">Đang chạy…</span>
+    <span class="detail">Kiểm tra shortcut nào sở hữu phím nào, dialog/input có chặn nhầm không. Kết quả: <code>window.__INTERACTION_RESULTS__</code>.</span>
+  </header>
+
+  <main>
+    <ol id="results"></ol>
+    <iframe id="studio" src="/index.html" title="Web Blender Studio under test"></iframe>
+  </main>
+
+  <script type="module">
+    const iframe = document.getElementById('studio');
+    const resultsEl = document.getElementById('results');
+    const summaryEl = document.getElementById('summary');
+    const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+    const results = [];
+    window.__INTERACTION_RESULTS__ = results;
+
+    async function waitUntil(check, timeoutMs = 20000, label = 'condition') {
+      const started = Date.now();
+      while (Date.now() - started < timeoutMs) {
+        try {
+          if (await check()) return true;
+        } catch (_) { /* frame not ready */ }
+        await sleep(100);
+      }
+      throw new Error(`Timeout: ${label}`);
+    }
+
+    function frames(win, count = 2) {
+      return new Promise((resolve) => {
+        // Only used to let event handlers settle; a hidden tab pauses rAF, so
+        // there is nothing to wait for.
+        if (win.document.visibilityState === 'hidden') { resolve(); return; }
+        let left = count;
+        const step = () => {
+          left -= 1;
+          if (left <= 0) resolve();
+          else win.requestAnimationFrame(step);
+        };
+        win.requestAnimationFrame(step);
+      });
+    }
+
+    async function waitForStudio(win) {
+      await waitUntil(
+        () => win.app?.engine && win.sceneManager && win.studio && win.timelineUI && win.simulationManager,
+        30000,
+        'studio boot'
+      );
+    }
+
+    function addItem(name) {
+      const li = document.createElement('li');
+      li.className = 'running';
+      li.innerHTML = '<span class="badge">…</span><div class="name"></div><div class="detail"></div>';
+      li.querySelector('.name').textContent = name;
+      resultsEl.appendChild(li);
+      return li;
+    }
+
+    function updateSummary() {
+      const failed = results.filter((r) => r.status === 'fail').length;
+      const passed = results.filter((r) => r.status === 'pass').length;
+      summaryEl.textContent = `${passed} / ${results.length} PASS · ${failed} FAIL`;
+      summaryEl.className = failed ? 'fail' : (passed === results.length ? 'pass' : '');
+    }
+
+    async function test(name, fn) {
+      const item = addItem(name);
+      const entry = { name, status: 'running', detail: '' };
+      results.push(entry);
+      try {
+        const detail = await fn(iframe.contentWindow);
+        entry.status = 'pass';
+        entry.detail = typeof detail === 'string' ? detail : '';
+        item.className = 'pass';
+        item.querySelector('.badge').textContent = 'PASS';
+      } catch (error) {
+        entry.status = 'fail';
+        entry.detail = error && error.stack ? error.stack : String(error);
+        item.className = 'fail';
+        item.querySelector('.badge').textContent = 'FAIL';
+      }
+      item.querySelector('.detail').textContent = entry.detail;
+      updateSummary();
+    }
+
+    function press(win, key, code, options = {}) {
+      const event = new win.KeyboardEvent('keydown', {
+        key,
+        code,
+        bubbles: true,
+        cancelable: true,
+        ...options
+      });
+      (options.target || win.document.body).dispatchEvent(event);
+      return event;
+    }
+
+    async function reset(win) {
+      try { win.shareDialog?.close(); } catch (_) {}
+      try { win.cloudPanel?.close(); } catch (_) {}
+      try { win.modalTransform?.cancel(); } catch (_) {}
+      try { if (win.editMode?.isActive) win.editMode.exit(); } catch (_) {}
+      try { win.studio.clearScene(); } catch (_) {}
+      await frames(win, 3);
+      await sleep(100);
+    }
+
+    async function addCube(win, x = 0) {
+      const cube = win.studio.addCube({ x, y: 1, z: 0, width: 1, height: 1, depth: 1, name: `Test${x}` });
+      win.sceneManager.select(cube);
+      await frames(win, 1);
+      return cube;
+    }
+
+    await waitForStudio(iframe.contentWindow);
+
+    await test('Dialog chặn Delete / G / Space / Arrow (không thao tác cảnh phía sau)', async (win) => {
+      await reset(win);
+      const cube = await addCube(win, 0);
+      const before = cube.position.clone();
+      win.timelineEngine.seekToFrame(10);
+      const shareDialog = win.shareDialog || (await win.app._ensureShareDialog?.());
+      shareDialog.open();
+      await sleep(160);
+      if (win.document.querySelector('.ss-backdrop')?.hidden) throw new Error('share dialog không mở');
+
+      press(win, 'Delete', 'Delete');
+      press(win, 'g', 'KeyG');
+      press(win, ' ', 'Space');
+      press(win, 'ArrowRight', 'ArrowRight');
+      await sleep(80);
+
+      if (!win.sceneManager.getAllObjects().includes(cube)) throw new Error('Delete xoá object sau dialog');
+      if (!cube.position.equals(before)) throw new Error('G di chuyển object sau dialog');
+      if (win.modalTransform?.isActive) throw new Error('modal transform chạy sau dialog');
+      if (win.timelineEngine.isPlaying) throw new Error('Space phát timeline sau dialog');
+      if (win.timelineEngine.currentFrame !== 10) throw new Error(`Arrow đổi frame sau dialog: ${win.timelineEngine.currentFrame}`);
+      shareDialog.close();
+      return 'Delete/G/Space/Arrow bị chặn đúng';
+    });
+
+    await test('Tab trên nút đang focus không bật Edit Mode; Tab ở viewport thì có', async (win) => {
+      await reset(win);
+      await addCube(win, 1);
+      const btn = win.document.getElementById('tool-move');
+      btn.focus();
+      const blocked = press(win, 'Tab', 'Tab', { target: btn });
+      if (win.editMode.isActive) throw new Error('Tab trên nút đã bật Edit Mode');
+      if (blocked.defaultPrevented) throw new Error('Tab bị preventDefault khi đang điều hướng UI');
+
+      win.document.activeElement?.blur();
+      press(win, 'Tab', 'Tab');
+      await sleep(80);
+      if (!win.editMode.isActive) throw new Error('Tab ở viewport không bật Edit Mode');
+      press(win, 'Tab', 'Tab');
+      await sleep(80);
+      if (win.editMode.isActive) throw new Error('Tab lần 2 không thoát Edit Mode');
+      return 'UI navigation giữ Tab; viewport vẫn toggle Edit Mode';
+    });
+
+    await test('Đang gõ trong contenteditable không kích hoạt G/Delete/Space', async (win) => {
+      await reset(win);
+      const cube = await addCube(win, 2);
+      const before = cube.position.clone();
+      const span = win.document.createElement('span');
+      span.contentEditable = 'true';
+      span.tabIndex = 0;
+      span.textContent = 'rename';
+      win.document.body.appendChild(span);
+      span.focus();
+
+      press(win, 'g', 'KeyG', { target: span });
+      press(win, 'Delete', 'Delete', { target: span });
+      press(win, ' ', 'Space', { target: span });
+      await sleep(80);
+      span.remove();
+
+      if (win.sceneManager.getAllObjects().length !== 1) throw new Error('Delete xoá object khi đang gõ');
+      if (!cube.position.equals(before)) throw new Error('G chạy khi đang gõ');
+      if (win.modalTransform?.isActive) throw new Error('modal transform chạy khi đang gõ');
+      if (win.timelineEngine.isPlaying) throw new Error('Space phát timeline khi đang gõ');
+      return 'contenteditable sở hữu phím đúng';
+    });
+
+    await test('Code editor sở hữu Space và Ctrl+Z (không xoá object)', async (win) => {
+      await reset(win);
+      const cube = await addCube(win, 3);
+      const area = win.document.getElementById('script-code-area');
+      area.focus();
+      press(win, ' ', 'Space', { target: area });
+      press(win, 'z', 'KeyZ', { target: area, ctrlKey: true });
+      await sleep(80);
+      if (win.timelineEngine.isPlaying) throw new Error('Space trong editor phát timeline');
+      if (!win.sceneManager.getAllObjects().includes(cube)) throw new Error('Ctrl+Z trong editor đã undo scene');
+      area.blur();
+      return 'textarea giữ Space/Ctrl+Z';
+    });
+
+    await test('Keyframe picker sở hữu 1-6/Enter/Escape và chặn Space', async (win) => {
+      await reset(win);
+      const cube = await addCube(win, 4);
+      win.timelineUI._showInsertModal();
+      const modal = win.document.getElementById('tl-kf-modal');
+      if (!modal.classList.contains('is-open')) throw new Error('picker không mở');
+
+      press(win, ' ', 'Space');
+      await sleep(60);
+      if (win.timelineEngine.isPlaying) throw new Error('Space phát timeline khi picker mở');
+      if (!modal.classList.contains('is-open')) throw new Error('Space đóng nhầm picker');
+
+      press(win, '2', 'Digit2');
+      await sleep(80);
+      if (modal.classList.contains('is-open')) throw new Error('phím 2 không chọn Rotation/đóng picker');
+      if (!win.timelineEngine.hasKeyframe(cube, Math.round(win.timelineEngine.currentFrame))) {
+        throw new Error('phím 2 không tạo keyframe rotation');
+      }
+      return 'Space bị chặn; phím 2 tạo keyframe và đóng picker';
+    });
+
+    await test('Numpad 1 đổi view; Digit 1 không đổi view', async (win) => {
+      await reset(win);
+      const original = win.engine.setCameraPreset;
+      const calls = [];
+      win.engine.setCameraPreset = (preset) => { calls.push(preset); };
+      try {
+        press(win, '1', 'Digit1');
+        if (calls.length) throw new Error(`Digit1 gọi camera preset: ${calls.join(',')}`);
+        press(win, '1', 'Numpad1');
+        if (calls.join(',') !== 'front') throw new Error(`Numpad1 gọi: ${calls.join(',') || 'không'}`);
+      } finally {
+        win.engine.setCameraPreset = original;
+      }
+      return 'Numpad và hàng số tách đúng';
+    });
+
+    await test('Multi-select: Shift+D và menu Duplicate cùng nhân bản 2 object, 1 undo xoá cả 2', async (win) => {
+      await reset(win);
+      const a = await addCube(win, 5);
+      const b = await addCube(win, 8);
+      win.sceneManager.setSelection([a, b]);
+      press(win, 'D', 'KeyD', { shiftKey: true });
+      await sleep(120);
+      if (win.sceneManager.getAllObjects().length !== 4) {
+        throw new Error(`Shift+D tạo ${win.sceneManager.getAllObjects().length}/4 object`);
+      }
+      win.sceneManager.undo();
+      await sleep(80);
+      if (win.sceneManager.getAllObjects().length !== 2) throw new Error('1 undo không xoá đủ 2 bản sao');
+
+      win.sceneManager.setSelection([a, b]);
+      win.document.getElementById('btn-edit-duplicate').click();
+      await sleep(120);
+      if (win.sceneManager.getAllObjects().length !== 4) throw new Error('menu Duplicate không nhân bản đủ 2');
+      return '2 object → 4 → undo → 2';
+    });
+
+    await test('Menu Group/Ungroup hoạt động và undo khôi phục hierarchy', async (win) => {
+      await reset(win);
+      const a = await addCube(win, 11);
+      const b = await addCube(win, 14);
+      win.sceneManager.setSelection([a, b]);
+      win.document.getElementById('btn-edit-group').click();
+      await sleep(80);
+      const group = win.sceneManager.getAllObjects().find((o) => o.isGroup);
+      if (!group || group.children.length !== 2) throw new Error('menu Group không tạo group 2 con');
+
+      win.sceneManager.undo();
+      await sleep(80);
+      if (win.sceneManager.getAllObjects().length !== 2) throw new Error('undo Group không trả 2 object');
+      if (a.parent === group) throw new Error('undo Group vẫn gắn con vào group đã gỡ');
+
+      win.sceneManager.redo();
+      await sleep(80);
+      win.sceneManager.setSelection([group]);
+      win.document.getElementById('btn-edit-ungroup').click();
+      await sleep(80);
+      if (win.sceneManager.getAllObjects().length !== 2) throw new Error('menu Ungroup không trả 2 object');
+
+      win.sceneManager.setSelection([a, b]);
+      press(win, 'g', 'KeyG', { ctrlKey: true });
+      await sleep(80);
+      const keyedGroup = win.sceneManager.getAllObjects().find((o) => o.isGroup && o.children.length === 2);
+      if (!keyedGroup) throw new Error('Ctrl+G không tạo group từ vùng chọn');
+      return 'Group → undo → redo → Ungroup → Ctrl+G đúng';
+    });
+
+    await test('Modal G/R/S sở hữu phím: Delete/Tab/Ctrl+Z/Numpad không lọt xuống cảnh', async (win) => {
+      await reset(win);
+      const cube = await addCube(win, 20);
+      const before = cube.position.clone();
+      const started = win.app.modalTransform.start('translate');
+      if (!started) throw new Error('không khởi động được modal transform');
+      const originalToggle = win.cameraManager.toggleViewCamera;
+      let cameraToggles = 0;
+      win.cameraManager.toggleViewCamera = () => { cameraToggles += 1; };
+
+      press(win, 'Delete', 'Delete');
+      press(win, 'Tab', 'Tab');
+      press(win, 'z', 'KeyZ', { ctrlKey: true });
+      if (win.app.modalTransform.axisLock === 'Z') {
+        throw new Error('Ctrl+Z bị modal hiểu thành khóa trục Z');
+      }
+      press(win, 'f', 'KeyF');
+      press(win, '0', 'Numpad0');
+      await sleep(80);
+      win.cameraManager.toggleViewCamera = originalToggle;
+
+      if (!win.sceneManager.getAllObjects().includes(cube)) throw new Error('Delete xoá object giữa modal transform');
+      if (win.editMode.isActive) throw new Error('Tab bật Edit Mode giữa modal transform');
+      if (!cube.position.equals(before)) throw new Error('Ctrl+Z/F làm đổi vị trí giữa modal transform');
+      if (cameraToggles !== 0) throw new Error('Numpad0 đổi camera giữa modal transform');
+      if (!win.app.modalTransform.isActive) throw new Error('modal transform bị huỷ bởi phím khác');
+
+      press(win, 'Escape', 'Escape');
+      await sleep(80);
+      if (win.app.modalTransform.isActive) throw new Error('Escape không huỷ modal transform');
+      return 'Delete/Tab/Ctrl+Z/Numpad bị chặn; Escape đóng đúng';
+    });
+
+    await test('Shift+F12 và menu Viewport Render gọi render; nhãn không còn F12 trần', async (win) => {
+      await reset(win);
+      await addCube(win, 17);
+      const original = win.app.exporter.captureRenderPNG;
+      let calls = 0;
+      win.app.exporter.captureRenderPNG = () => { calls += 1; };
+      try {
+        press(win, 'F12', 'F12', { shiftKey: true });
+        win.document.getElementById('btn-render-viewport').click();
+        if (calls !== 2) throw new Error(`render được gọi ${calls}/2 lần`);
+      } finally {
+        win.app.exporter.captureRenderPNG = original;
+      }
+      const label = win.document.querySelector('#btn-render-viewport .shortcut')?.textContent || '';
+      if (!/Shift\+F12/.test(label)) throw new Error(`nhãn render vẫn là: ${label}`);
+      return 'Shift+F12 + menu render → 2 lần gọi';
+    });
+
+    await test('Help → About mở hộp thoại non-blocking (không dùng window.alert)', async (win) => {
+      await reset(win);
+      const original = win.alert;
+      let alertCalled = false;
+      win.alert = () => { alertCalled = true; };
+      let text = '';
+      try {
+        win.document.getElementById('btn-help-about').click();
+        const modal = win.document.getElementById('wbs-info-dialog-backdrop');
+        text = modal?.textContent || '';
+        modal?.querySelector('button')?.click();
+        if (win.document.getElementById('wbs-info-dialog-backdrop')) {
+          throw new Error('Close button không đóng được hộp thoại About');
+        }
+      } finally {
+        win.alert = original;
+      }
+      if (alertCalled) throw new Error('About vẫn gọi window.alert() đồng bộ');
+      if (!text.includes('Hunger')) throw new Error('About không hiện nội dung');
+      return text.split('\n')[0].trim().slice(0, 48);
+    });
+
+    await test('Cmd/Ctrl+Shift+R không bị app chặn (vẫn reload được)', async (win) => {
+      await reset(win);
+      await addCube(win, 21);
+      const metaR = press(win, 'R', 'KeyR', { metaKey: true, shiftKey: true });
+      const ctrlR = press(win, 'R', 'KeyR', { ctrlKey: true, shiftKey: true });
+      if (metaR.defaultPrevented || ctrlR.defaultPrevented) {
+        throw new Error('app preventDefault Cmd/Ctrl+Shift+R');
+      }
+      if (win.app.modalTransform.isActive) throw new Error('Cmd+Shift+R mở modal Rotate');
+      return 'không chặn reload; không mở Rotate';
+    });
+
+    await test('Edit Mode: Shift+A mở Add menu, không Select All; A mới Select All', async (win) => {
+      await reset(win);
+      await addCube(win, 22);
+      win.engine.toggleEditMode();
+      await sleep(120);
+      if (!win.editMode.isActive) throw new Error('không vào được Edit Mode');
+      const original = win.editMode.toggleSelectAll;
+      let calls = 0;
+      win.editMode.toggleSelectAll = () => { calls += 1; };
+      try {
+        press(win, 'A', 'KeyA', { shiftKey: true });
+        await sleep(40);
+        if (calls !== 0) throw new Error('Shift+A gọi Select All trong Edit Mode');
+        press(win, 'a', 'KeyA');
+        await sleep(40);
+        if (calls !== 1) throw new Error('A không gọi Select All trong Edit Mode');
+      } finally {
+        win.editMode.toggleSelectAll = original;
+        win.document.getElementById('menu-add')?.classList.remove('open');
+        win.engine.toggleEditMode();
+      }
+      return 'Shift+A ≠ Select All; A = Select All';
+    });
+
+    await test('Ctrl+G cần ≥2 object; 1 object không tạo group', async (win) => {
+      await reset(win);
+      await addCube(win, 23);
+      press(win, 'g', 'KeyG', { ctrlKey: true });
+      await sleep(80);
+      if (win.sceneManager.getAllObjects().some((o) => o.isGroup)) {
+        throw new Error('Ctrl+G tạo group chỉ với 1 object');
+      }
+      return '1 object bị từ chối';
+    });
+
+    await test('Click chọn nhiều object bằng Shift và Cmd/Ctrl', async (win) => {
+      await reset(win);
+      const a = win.studio.addCube({ x: -2, y: 1, z: 0, name: 'PickA' });
+      const b = win.studio.addCube({ x: 2, y: 1, z: 0, name: 'PickB' });
+      win.sceneManager.select(a);
+      const cam = win.engine.camera;
+      const canvas = win.engine.domElement;
+      const rect = canvas.getBoundingClientRect();
+      const screen = (obj) => {
+        const v = obj.position.clone();
+        v.y += 1;
+        v.project(cam);
+        return { x: rect.left + (v.x + 1) / 2 * rect.width, y: rect.top + (-v.y + 1) / 2 * rect.height };
+      };
+      const click = (obj, modifiers = {}) => {
+        const p = screen(obj);
+        canvas.dispatchEvent(new win.PointerEvent('pointerdown', {
+          clientX: p.x, clientY: p.y, bubbles: true, cancelable: true,
+          pointerId: 1, pointerType: 'mouse', button: 0, buttons: 1, ...modifiers
+        }));
+        canvas.dispatchEvent(new win.PointerEvent('pointerup', {
+          clientX: p.x, clientY: p.y, bubbles: true, cancelable: true,
+          pointerId: 1, pointerType: 'mouse', button: 0, ...modifiers
+        }));
+      };
+      click(b, { shiftKey: true });
+      await sleep(40);
+      if (win.sceneManager.getSelectedObjects().length !== 2) throw new Error('Shift+click không thêm object thứ 2');
+      click(b, { metaKey: true });
+      await sleep(40);
+      if (win.sceneManager.getSelectedObjects().length !== 1) throw new Error('Cmd+click không bỏ chọn object thứ 2');
+      click(b, { ctrlKey: true });
+      await sleep(40);
+      if (win.sceneManager.getSelectedObjects().length !== 2) throw new Error('Ctrl+click không thêm lại object thứ 2');
+      return 'Shift/Cmd/Ctrl+click chọn & bỏ chọn đúng';
+    });
+
+    await test('Phím 0 và Numpad 0 cùng vào/ra camera view', async (win) => {
+      await reset(win);
+      win.cameraManager.createCamera({ name: 'TestCam', position: { x: 6, y: 4, z: 8 }, target: { x: 0, y: 1, z: 0 } });
+      press(win, '0', 'Digit0');
+      await sleep(80);
+      if (!win.cameraManager.lookingThrough) throw new Error('phím 0 không vào camera view');
+      press(win, '0', 'Numpad0');
+      await sleep(80);
+      if (win.cameraManager.lookingThrough) throw new Error('Numpad0 không thoát camera view');
+      return '0 / Numpad0 toggle đúng';
+    });
+
+    await test('Edit Mode: Ctrl+Z xoá object thì thoát Edit Mode và dọn khung', async (win) => {
+      await reset(win);
+      const cube = await addCube(win, 24);
+      win.sceneManager.select(cube);
+      win.engine.toggleEditMode();
+      await sleep(120);
+      if (!win.editMode.isActive) throw new Error('không vào được Edit Mode');
+      if (!win.editMode.helperGroup.parent) throw new Error('khung Edit Mode không xuất hiện');
+
+      press(win, 'z', 'KeyZ', { ctrlKey: true });
+      await sleep(180);
+      if (win.editMode.isActive) throw new Error('Undo xoá object nhưng vẫn ở Edit Mode');
+      if (win.editMode.helperGroup.parent) throw new Error('khung Edit Mode còn sót lại');
+      if (win.sceneManager.getAllObjects().length !== 0) throw new Error('Undo không xoá object');
+      if (win.document.getElementById('viewport-mode')?.value !== 'object') {
+        throw new Error('UI vẫn hiển thị Edit Mode');
+      }
+
+      press(win, 'y', 'KeyY', { ctrlKey: true });
+      await sleep(180);
+      if (win.sceneManager.getAllObjects().length !== 1) throw new Error('Redo không khôi phục object');
+      if (win.editMode.isActive) throw new Error('Redo tự bật lại Edit Mode');
+      return 'Undo xoá object → thoát Edit Mode sạch; Redo khôi phục';
+    });
+
+    await test('Edit Mode: Ctrl+Z khôi phục hình học, giữ nguyên khung', async (win) => {
+      await reset(win);
+      const cube = await addCube(win, 25);
+      win.sceneManager.select(cube);
+      win.engine.toggleEditMode();
+      await sleep(120);
+      win.editMode.setMode('face');
+      win.editMode.toggleSelectAll();
+      const facesBefore = win.editMode.faces.length;
+      win.editMode.deleteSelection();
+      await sleep(150);
+      if (win.editMode.faces.length !== 0) throw new Error('xoá mặt không thay đổi topology');
+
+      press(win, 'z', 'KeyZ', { ctrlKey: true });
+      await sleep(200);
+      if (!win.editMode.isActive) throw new Error('Undo hình học làm thoát Edit Mode');
+      if (win.editMode.faces.length !== facesBefore) {
+        throw new Error(`khung không cập nhật: ${win.editMode.faces.length}/${facesBefore} mặt`);
+      }
+      if (!win.editMode.helperGroup.parent) throw new Error('khung bị gỡ sau Undo hình học');
+      win.engine.toggleEditMode();
+      return `Undo phục hồi ${facesBefore} mặt, vẫn trong Edit Mode`;
+    });
+
+    await test('Camera/Light: 1 dòng Outliner, helper tự động, không lọt project JSON', async (win) => {
+      await reset(win);
+      const cam = win.studio.addCamera({ x: 6, y: 4, z: 8, name: 'CamT' });
+      const lamp = win.studio.addLight({ type: 'point', x: 2, y: 5, z: 2, name: 'LampT' });
+      win.outliner.render();
+      await sleep(120);
+
+      const rows = [...win.document.querySelectorAll('#outliner-container .outliner-item-name')]
+        .map((el) => el.textContent);
+      if (!rows.includes('CamT') || !rows.includes('LampT')) throw new Error('thiếu camera/light trong Outliner');
+      if (rows.some((name) => /\.(Body|Lens|Aim|Gizmo|Data)$/.test(name))) {
+        throw new Error(`Outliner lộ mảnh nội bộ: ${rows.join(', ')}`);
+      }
+      const parts = cam.children.filter((child) => child.isMesh);
+      if (!parts.every((child) => child.userData.isHelper && child.userData.isCameraPart)) {
+        throw new Error('mảnh camera chưa được đánh dấu helper');
+      }
+      if (!lamp.userData.lightHelper) throw new Error('đèn chưa có gizmo tự động');
+
+      win.sceneManager.select(lamp);
+      await sleep(80);
+      if (!lamp.userData.lightHelper.visible) throw new Error('gizmo đèn không hiện khi chọn');
+      win.sceneManager.select(cam);
+      await sleep(80);
+      const entry = win.cameraManager.cameras.find((e) => e.group === cam);
+      if (!entry?.helper?.visible) throw new Error('frustum camera không hiện khi chọn');
+      if (lamp.userData.lightHelper.visible) throw new Error('gizmo đèn vẫn hiện sau khi bỏ chọn');
+
+      const data = JSON.parse(win.app.exporter.exportProjectJSON({ download: false }));
+      const leaked = [];
+      const walk = (node) => {
+        if (node.userData?.isLightHelper) leaked.push(node.name);
+        (node.children || []).forEach(walk);
+      };
+      walk(data.sceneGraph.object);
+      if (leaked.length) throw new Error(`project JSON chứa gizmo đèn: ${leaked.join(', ')}`);
+      return '1 dòng/object · gizmo theo selection · JSON sạch';
+    });
+
+    await test('Physics: trọng lực, reset và bake keyframe', async (win) => {
+      await reset(win);
+      const sim = win.simulationManager;
+      if (!sim) throw new Error('SimulationManager chưa khởi tạo');
+      await sim.ensureInit?.();
+      const cube = win.studio.addCube({ x: 0, y: 6, z: 0, name: 'PhysTest' });
+      win.sceneManager.select(cube);
+      sim.setConfig(cube, { body: 'dynamic' });
+
+      sim.play();
+      sim.stepFrames(60);
+      sim.pause();
+      if (cube.position.y >= 5.5) throw new Error(`object không rơi: y=${cube.position.y}`);
+
+      sim.reset();
+      if (Math.abs(cube.position.y - 6) > 1e-6) throw new Error(`reset sai: y=${cube.position.y}`);
+
+      win.timelineEngine.clearAllKeyframes();
+      const baked = sim.bake({ fps: 30, frames: 20 });
+      if (!baked || baked.frames !== 21 || baked.objects !== 1) throw new Error('bake không đủ frame/object');
+      if (!win.timelineEngine.hasKeyframe(cube, 0) || !win.timelineEngine.hasKeyframe(cube, 20)) {
+        throw new Error('bake không ghi keyframe lên timeline');
+      }
+      const last = win.timelineEngine.getKeyframe(cube, 20);
+      if (!last?.position || last.position.y >= 5.9) throw new Error('keyframe không ghi quỹ đạo rơi');
+      if (Math.abs(cube.position.y - 6) > 1e-6) throw new Error('bake không khôi phục trạng thái đầu');
+
+      win.document.querySelector('.dock-tab[data-pane="dock-physics"]').click();
+      await sleep(80);
+      if (!win.document.getElementById('phys-apply')) throw new Error('panel Physics không hiện editor object');
+      return `rơi → reset → bake 21 keyframe · panel OK`;
+    });
+
+    await test('Joints UI: tạo khớp, step/reset, undo/redo và xoá từ cả hai phía', async (win) => {
+      await reset(win);
+      const sim = win.simulationManager;
+      await sim?.ensureInit?.();
+      const sm = win.sceneManager;
+      const a = win.studio.addCube({ x: 0, y: 5, z: 0, name: 'HingeBase', width: 1, height: 1, depth: 1 });
+      const b = win.studio.addCube({ x: 1, y: 5, z: 0, name: 'HingeArm', width: 1, height: 1, depth: 1 });
+      sim.setConfig(a, { body: 'fixed' });
+      sm.setSelection([b, a]);
+      win.document.querySelector('.dock-tab[data-pane="dock-physics"]').click();
+      await sleep(100);
+      const button = (id) => win.document.getElementById(id);
+      if (button('phys-joint-create').disabled) throw new Error('2 mesh nhưng không tạo được joint');
+      button('phys-joint-create').click();
+      if (sim.jointCount !== 1 || sim.bodyCount !== 2) throw new Error('joint/body không được tạo');
+      button('phys-joint-create').click();
+      if (sim.jointCount !== 1) throw new Error('tạo joint trùng');
+      button('phys-step').click();
+      if (Math.abs(b.position.x - 1) < 0.05) throw new Error('khớp không xoay');
+      button('phys-reset').click();
+      if (Math.abs(b.position.x - 1) > 1e-6 || Math.abs(b.position.y - 5) > 1e-6) throw new Error('step/reset sai vị trí');
+      sm.undo();
+      if (sim.jointCount || sim.bodies.has(b)) throw new Error('undo tạo joint còn body tự thêm');
+      sm.redo();
+      if (sim.jointCount !== 1) throw new Error('redo không khôi phục joint');
+      sm.select(b);
+      const remove = win.document.querySelector('[data-joint-remove]');
+      if (!remove) throw new Error('không thấy joint từ phía target');
+      remove.click();
+      if (sim.jointCount) throw new Error('xoá joint không có hiệu lực');
+      sm.undo();
+      if (sim.jointCount !== 1) throw new Error('undo xoá joint thất bại');
+      return 'UI create → step/reset → undo/redo → remove từ target';
+    });
+
+    await test('Joints: group xoá/undo, project JSON và bake giữ liên kết', async (win) => {
+      await reset(win);
+      const sim = win.simulationManager;
+      await sim?.ensureInit?.();
+      const sm = win.sceneManager;
+      const a = win.studio.addCube({ x: 0, y: 6, z: 0, name: 'JointAnchor' });
+      const b = win.studio.addCube({ x: 2, y: 6, z: 0, name: 'JointWeld' });
+      b.rotation.set(0.3, 0.2, 0.4);
+      sim.setConfig(a, { body: 'fixed' });
+      sm.setSelection([b, a]);
+      win.document.querySelector('.dock-tab[data-pane="dock-physics"]').click();
+      await sleep(80);
+      const select = win.document.getElementById('phys-joint-type');
+      select.value = 'fixed';
+      select.dispatchEvent(new win.Event('change', { bubbles: true }));
+      if (!win.document.getElementById('phys-joint-axis').disabled) throw new Error('Fixed vẫn yêu cầu trục');
+      win.document.getElementById('phys-joint-create').click();
+      const group = sm.groupObjects([a, b], 'JointPair');
+      sm.removeObject(group);
+      if (sim.bodyCount || sim.jointCount) throw new Error('xoá group để lại vật lý mồ côi');
+      sm.undo();
+      if (sim.bodyCount !== 2 || sim.jointCount !== 1) throw new Error('undo group không khôi phục khớp');
+      const data = win.app.exporter.exportProjectJSON({ download: false });
+      await win.app.exporter.importProjectJSON(data, { clearExisting: true });
+      const restored = sm.rootContainer.getObjectByProperty('uuid', b.uuid);
+      if (!restored || sim.bodyCount !== 2 || sim.jointCount !== 1) throw new Error('JSON mất body/joint lồng group');
+      const pos = restored.getWorldPosition(restored.position.clone());
+      const quat = restored.getWorldQuaternion(restored.quaternion.clone());
+      sim.stepFrames(60);
+      if (pos.distanceTo(restored.getWorldPosition(pos.clone())) > 0.02) throw new Error('weld dịch sau import');
+      if (quat.angleTo(restored.getWorldQuaternion(quat.clone())) > 0.01) throw new Error('weld đổi góc sau import');
+      sim.reset();
+      const baked = sim.bake({ fps: 30, frames: 10 });
+      if (baked?.objects !== 2 || !win.timelineEngine.hasKeyframe(restored, 10) || sim.jointCount !== 1) throw new Error('bake mất dữ liệu');
+      return 'nested JSON + delete/undo + fixed pose + bake';
+    });
+
+    await test('Joints UI: kiểm tra selection, tên chứa HTML và không chiếm phím khi nhập', async (win) => {
+      await reset(win);
+      const sm = win.sceneManager;
+      const a = win.studio.addCube({ x: 0, y: 6, z: 0, name: '<img data-joint-probe>' });
+      const b = win.studio.addCube({ x: 2, y: 6, z: 0, name: '<b>Target</b>' });
+      sm.select(a);
+      win.document.querySelector('.dock-tab[data-pane="dock-physics"]').click();
+      await sleep(80);
+      const doc = win.document;
+      if (!doc.getElementById('phys-joint-create').disabled) throw new Error('1 mesh tạo được joint');
+      sm.setSelection([b, a]);
+      doc.getElementById('phys-joint-create').click();
+      if (doc.querySelector('#phys-editor img') || doc.querySelector('#phys-joint-list b')) throw new Error('tên object bị diễn giải thành HTML');
+      if (!doc.getElementById('phys-joint-list').textContent.includes('<b>Target</b>')) throw new Error('tên không hiển thị nguyên văn');
+      const count = win.simulationManager.jointCount;
+      const input = doc.getElementById('phys-mass');
+      input.focus();
+      press(win, 'Delete', 'Delete', { target: input });
+      press(win, 'g', 'KeyG', { target: input });
+      if (win.simulationManager.jointCount !== count || win.modalTransform?.isActive) throw new Error('form bị phím viewport chiếm');
+      input.blur();
+      const c = win.studio.addCube({ x: 4, y: 6, z: 0, name: 'Third' });
+      sm.setSelection([a, b, c]);
+      if (!doc.getElementById('phys-joint-create').disabled) throw new Error('3 mesh vẫn cho tạo joint mơ hồ');
+      return 'selection 1/2/3 · tên an toàn · phím trong input';
+    });
+
+    await test('Revolute motor UI: chế độ/giới hạn, step thật, undo/redo, input lỗi và góc trực tiếp', async (win) => {
+      await reset(win);
+      const sim = win.simulationManager, sm = win.sceneManager, panel = win.physicsPanel, doc = win.document;
+      await sim?.ensureInit?.();
+      const savedGravity = { ...sim.gravity }, savedGround = sim.groundEnabled, savedGroundY = sim.groundY;
+      const field = (key) => panel.container.querySelector(`[data-joint-field="${key}"]`);
+      const commit = (key, value) => {
+        const input = field(key);
+        if (!input) throw new Error(`thiếu trường joint ${key}`);
+        if (input.type === 'checkbox') input.checked = !!value;
+        else input.value = String(value);
+        input.dispatchEvent(new win.Event('change', { bubbles: true }));
+      };
+      const expectEnabled = (keys, enabled) => {
+        for (const key of keys) {
+          if (field(key).disabled !== !enabled) throw new Error(`${key} phải ${enabled ? 'bật' : 'tắt'}`);
+        }
+      };
+      try {
+        sim.setGravity(0, 0, 0);
+        sim.setGroundEnabled(false);
+        const a = win.studio.addCube({ x: 0, y: 5, z: 0, name: 'MotorBase', width: 1, height: 1, depth: 1 });
+        const b = win.studio.addCube({ x: 1, y: 5, z: 0, name: 'MotorArm', width: 1, height: 1, depth: 1 });
+        sim.setConfig(a, { body: 'fixed', angularDamping: 0, linearDamping: 0 });
+        sim.setConfig(b, { body: 'dynamic', angularDamping: 0, linearDamping: 0 });
+        sm.setSelection([b, a]);
+        doc.querySelector('.dock-tab[data-pane="dock-physics"]').click();
+        await frames(win, 2);
+        panel.refresh();
+        doc.getElementById('phys-joint-create').click();
+        const spec = sim.getJoints(a)[0];
+        if (!spec || sim.jointCount !== 1) throw new Error('không tạo được khớp motor UI');
+        if (panel.container.querySelectorAll('[data-joint-field]').length !== 9) throw new Error('thiếu 9 trường motor/giới hạn');
+        if (field('limitsEnabled').checked || field('motorMode').value !== 'off') throw new Error('motor/limits không mặc định tắt');
+        expectEnabled(['lower', 'upper', 'targetVelocity', 'targetAngle', 'stiffness', 'damping', 'maxTorque'], false);
+
+        commit('limitsEnabled', true);
+        expectEnabled(['lower', 'upper'], true);
+        commit('lower', -30); commit('upper', 40);
+        if (Number(field('lower').max) !== 40 || Number(field('upper').min) !== -30) throw new Error('min/max không đồng bộ theo giới hạn');
+        commit('motorMode', 'velocity');
+        expectEnabled(['targetVelocity', 'damping', 'maxTorque'], true);
+        expectEnabled(['targetAngle', 'stiffness'], false);
+        commit('targetVelocity', 120); commit('maxTorque', 1000); commit('damping', 0);
+        sim.reset(); sim.stepFrames(120);
+        const limited = sim.getJointAngle(a, spec);
+        if (!(limited > 38 && limited < 40.5)) throw new Error(`velocity không dừng ở giới hạn trên: ${limited}`);
+        await frames(win, 3);
+        const output = panel.container.querySelector('[data-joint-angle]');
+        if (!output || Math.abs(parseFloat(output.textContent) - limited) > 0.2) throw new Error('ô góc trực tiếp không cập nhật');
+
+        commit('motorMode', 'position');
+        expectEnabled(['targetAngle', 'stiffness', 'damping', 'maxTorque'], true);
+        expectEnabled(['targetVelocity'], false);
+        commit('targetAngle', 20); commit('stiffness', 200); commit('damping', 30);
+        sim.reset(); sim.stepFrames(180);
+        near(sim.getJointAngle(a, spec), 20, 'position UI hội tụ', 0.5);
+        commit('targetAngle', -15);
+        sim.reset(); sim.stepFrames(180);
+        near(sim.getJointAngle(a, spec), -15, 'position UI đổi đích', 0.5);
+        sm.undo(); panel.refresh();
+        if (Number(field('targetAngle').value) !== 20) throw new Error('undo không đồng bộ trường góc đích');
+        sim.reset(); sim.stepFrames(180);
+        near(sim.getJointAngle(a, spec), 20, 'undo khôi phục chuyển động thật', 0.5);
+        sm.redo(); panel.refresh();
+        if (Number(field('targetAngle').value) !== -15) throw new Error('redo không đồng bộ trường góc đích');
+        sim.reset(); sim.stepFrames(180);
+        near(sim.getJointAngle(a, spec), -15, 'redo khôi phục chuyển động thật', 0.5);
+
+        const historyBefore = sm.undoStack.length;
+        field('targetAngle').value = '';
+        field('targetAngle').dispatchEvent(new win.Event('change', { bubbles: true }));
+        if (Number(field('targetAngle').value) !== -15 || sm.undoStack.length !== historyBefore) throw new Error('input rỗng không được khôi phục');
+        if (!panel.statusEl.textContent.includes('Invalid')) throw new Error('thiếu phản hồi input lỗi');
+
+        commit('motorMode', 'servo');
+        expectEnabled(['targetVelocity', 'targetAngle', 'stiffness', 'damping', 'maxTorque'], true);
+        commit('targetAngle', 10); commit('targetVelocity', 0);
+        sim.reset(); sim.stepFrames(180);
+        near(sim.getJointAngle(a, spec), 10, 'servo UI hội tụ', 0.5);
+        commit('motorMode', 'off');
+        expectEnabled(['targetVelocity', 'targetAngle', 'stiffness', 'damping', 'maxTorque'], false);
+        commit('limitsEnabled', false);
+        expectEnabled(['lower', 'upper'], false);
+        commit('motorMode', 'velocity'); commit('targetVelocity', 120); commit('maxTorque', 0);
+        sim.reset(); sim.stepFrames(60);
+        near(sim.getJointAngle(a, spec), 0, 'maxTorque=0 không truyền động', 1e-3);
+        return '4 chế độ · giới hạn thật · undo/redo · input lỗi · góc trực tiếp · maxTorque=0';
+      } finally {
+        sim.pause();
+        sim.setGravity(savedGravity.x, savedGravity.y, savedGravity.z);
+        sim.setGroundEnabled(savedGround, savedGroundY);
+        sim.reset();
+        panel.refresh();
+      }
+    });
+
+    await test('Revolute motor: exporter/duplicate/bake, selection, DOM an toàn và dispose panel tạm', async (win) => {
+      await reset(win);
+      const sim = win.simulationManager, sm = win.sceneManager, panel = win.physicsPanel, doc = win.document;
+      await sim?.ensureInit?.();
+      const savedGravity = { ...sim.gravity }, savedGround = sim.groundEnabled, savedGroundY = sim.groundY;
+      let tempContainer = null, tempPanel = null, originalCancel = null;
+      const uniqueIds = (root) => {
+        const ids = [...root.querySelectorAll('[id]')].map((el) => el.id);
+        return new Set(ids).size === ids.length;
+      };
+      try {
+        sim.setGravity(0, 0, 0);
+        sim.setGroundEnabled(false);
+        const a = win.studio.addCube({ x: 0, y: 5, z: 0, name: '<img data-motor-probe>', width: 1, height: 1, depth: 1 });
+        const b = win.studio.addCube({ x: 1, y: 5, z: 0, name: '<b>MotorTarget</b>', width: 1, height: 1, depth: 1 });
+        sim.setConfig(a, { body: 'fixed', angularDamping: 0, linearDamping: 0 });
+        sim.setConfig(b, { body: 'dynamic', angularDamping: 0, linearDamping: 0 });
+        sm.setSelection([b, a]);
+        doc.querySelector('.dock-tab[data-pane="dock-physics"]').click();
+        await frames(win, 2);
+        panel.refresh();
+        doc.getElementById('phys-joint-create').click();
+        const spec = sim.getJoints(a)[0];
+        if (!spec) throw new Error('không tạo được khớp cho bài kiểm tra DOM/exporter');
+        sim.setJointConfig(a, spec, {
+          motorMode: 'position', targetAngle: 30, stiffness: 200, damping: 30, maxTorque: 1000,
+          limitsEnabled: true, lower: -40, upper: 40
+        }, false);
+        panel.refresh();
+
+        sm.select(a); panel.refresh();
+        if (panel.container.querySelectorAll('[data-joint-field]').length !== 9) throw new Error('phía owner thiếu điều khiển motor');
+        if (!doc.getElementById('phys-joint-create').disabled) throw new Error('1 object vẫn cho tạo joint');
+        sm.select(b); panel.refresh();
+        if (panel.container.querySelectorAll('[data-joint-field]').length !== 9) throw new Error('phía target thiếu điều khiển motor');
+        sm.setSelection([a, b]); panel.refresh();
+        if (doc.getElementById('phys-joint-create').disabled) throw new Error('2 mesh không cho tạo joint');
+        const list = doc.getElementById('phys-joint-list');
+        if (list.querySelector('img') || list.querySelector('b')) throw new Error('tên object bị diễn giải thành HTML');
+        if (!list.textContent.includes('<b>MotorTarget</b>')) throw new Error('tên không hiển thị nguyên văn');
+        if (!uniqueIds(panel.container)) throw new Error('panel Physics có id DOM trùng');
+
+        const input = panel.container.querySelector('[data-joint-field="targetAngle"]');
+        input.focus();
+        const historyBefore = sm.undoStack.length, jointCount = sim.jointCount;
+        press(win, 'g', 'KeyG', { target: input });
+        press(win, 'Delete', 'Delete', { target: input });
+        press(win, ' ', 'Space', { target: input });
+        press(win, 'z', 'KeyZ', { target: input, ctrlKey: true });
+        if (sim.jointCount !== jointCount || sm.undoStack.length !== historyBefore || win.modalTransform?.isActive || win.timelineEngine.isPlaying) {
+          throw new Error('phím trong input motor bị viewport chiếm');
+        }
+        input.blur();
+        const container = panel.container;
+        if (container.scrollWidth > container.clientWidth + 1) throw new Error('form motor tràn ngang ở iframe 900px');
+        const rect = container.getBoundingClientRect();
+        for (const el of container.querySelectorAll('[data-joint-field]')) {
+          const r = el.getBoundingClientRect();
+          if (r.right > rect.right + 1 || r.left < rect.left - 1) throw new Error('input motor nằm ngoài khung 900px');
+        }
+
+        const [ca, cb] = sm.duplicateObjects([a, b], { x: 0, y: 0, z: 4 });
+        const cspec = ca.userData.joints[0];
+        if (!cspec || cspec.targetUuid !== cb.uuid || sim.jointCount !== 2) throw new Error('duplicate không remap joint motor');
+        sim.setJointConfig(ca, cspec, { targetAngle: -20 }, false);
+        if (sim.getJointConfig(a, spec).targetAngle !== 30) throw new Error('sửa bản sao ảnh hưởng bản gốc');
+        const uuids = { a: a.uuid, b: b.uuid, ca: ca.uuid, cb: cb.uuid };
+        const json = win.app.exporter.exportProjectJSON({ download: false });
+        if (json.includes('angleReference')) throw new Error('project JSON chứa angleReference runtime');
+        await win.app.exporter.importProjectJSON(json, { clearExisting: true });
+        const ra = sm.rootContainer.getObjectByProperty('uuid', uuids.a);
+        const rb = sm.rootContainer.getObjectByProperty('uuid', uuids.b);
+        const rca = sm.rootContainer.getObjectByProperty('uuid', uuids.ca);
+        const rcb = sm.rootContainer.getObjectByProperty('uuid', uuids.cb);
+        if (!ra || !rb || !rca || !rcb || sim.bodyCount !== 4 || sim.jointCount !== 2) throw new Error('exporter roundtrip mất body/joint motor');
+        const rspec = sim.getJoints(ra)[0];
+        if (sim.getJointConfig(ra, rspec).targetAngle !== 30) throw new Error('roundtrip mất cấu hình motor');
+        sim.reset(); sim.stepFrames(180);
+        near(sim.getJointAngle(ra, rspec), 30, 'motor sau import vẫn truyền động', 0.5);
+        sim.reset();
+
+        sm.select(ra); panel.refresh();
+        doc.getElementById('phys-bake-frames').value = '20';
+        const poseBefore = rb.position.clone(), rotBefore = rb.quaternion.clone(), specBefore = JSON.stringify(rspec);
+        win.timelineEngine.clearAllKeyframes();
+        doc.getElementById('phys-bake').click();
+        if (!win.timelineEngine.hasKeyframe(rb, 0) || !win.timelineEngine.hasKeyframe(rb, 20)) throw new Error('nút Bake không ghi keyframe thật');
+        const keys = win.timelineEngine.getKeyframes(rb);
+        if (keys.length !== 21) throw new Error(`Bake ghi ${keys.length}/21 keyframe`);
+        const last = win.timelineEngine.getKeyframe(rb, 20);
+        if (Math.abs(last.rotation.z) < 0.1) throw new Error('Bake không ghi chuyển động motor');
+        if (rb.position.distanceTo(poseBefore) > 1e-4 || rb.quaternion.angleTo(rotBefore) > 1e-4) throw new Error('Bake không khôi phục transform nguồn');
+        if (JSON.stringify(rspec) !== specBefore) throw new Error('Bake sửa joint spec');
+        if (!panel.statusEl.textContent.includes('Baked')) throw new Error('thiếu phản hồi Bake');
+
+        const events = ['selectionChanged', 'historyChanged', 'objectAdded', 'objectRemoved', 'sceneCleared'];
+        const before = events.map((e) => sm._listeners.get(e)?.size || 0);
+        tempContainer = doc.createElement('div');
+        tempContainer.style.cssText = 'width:900px;height:420px;overflow:auto;background:#222;position:absolute;left:0;top:0;z-index:99999;';
+        doc.body.appendChild(tempContainer);
+        tempPanel = new (panel.constructor)(tempContainer, {
+          sceneManager: sm, simulationManager: sim, timelineEngine: win.timelineEngine
+        });
+        if (!uniqueIds(tempContainer)) throw new Error('panel tạm có id DOM trùng');
+        if (!tempContainer.innerHTML.trim()) throw new Error('panel tạm không render');
+        const after = events.map((e) => sm._listeners.get(e)?.size || 0);
+        if (after.some((n, i) => n !== before[i] + 1)) throw new Error('panel tạm không đăng ký callback');
+        const rafHandle = tempPanel._angleRaf;
+        if (rafHandle == null) throw new Error('panel tạm không schedule rAF góc');
+        const cancelled = [];
+        originalCancel = win.cancelAnimationFrame;
+        win.cancelAnimationFrame = (id) => { cancelled.push(id); return originalCancel.call(win, id); };
+        tempPanel.dispose();
+        if (!cancelled.includes(rafHandle)) throw new Error('dispose không cancel rAF góc');
+        if (tempPanel._angleRaf !== null || tempContainer.innerHTML !== '') throw new Error('dispose không dọn rAF/DOM');
+        const restored = events.map((e) => sm._listeners.get(e)?.size || 0);
+        if (restored.some((n, i) => n !== before[i])) throw new Error('dispose để lại callback');
+        sm.emit('selectionChanged', { selected: [ra], active: ra });
+        sm.emit('historyChanged', { canUndo: true, canRedo: false, lastAction: 'probe' });
+        if (tempContainer.innerHTML !== '') throw new Error('callback sau dispose resurrect DOM');
+        tempPanel = null;
+        return 'exporter roundtrip · duplicate độc lập · Bake 21 keyframe · selection/DOM/phím · dispose sạch';
+      } finally {
+        if (originalCancel) { win.cancelAnimationFrame = originalCancel; originalCancel = null; }
+        try { tempPanel?.dispose(); } catch (_) {}
+        tempContainer?.remove();
+        sim.pause();
+        sim.setGravity(savedGravity.x, savedGravity.y, savedGravity.z);
+        sim.setGroundEnabled(savedGround, savedGroundY);
+        sim.reset();
+        panel.refresh();
+      }
+    });
+
+    await test('Numpad trong Edit Mode: 1/3/7 đổi camera, Digit 1/2/3 đổi chế độ chọn', async (win) => {
+      await reset(win);
+      await addCube(win, 26);
+      win.engine.toggleEditMode();
+      await sleep(100);
+      win.editMode.setMode('vertex');
+      const originalPreset = win.engine.setCameraPreset;
+      const presets = [];
+      win.engine.setCameraPreset = (name) => { presets.push(name); };
+      try {
+        press(win, '1', 'Numpad1');
+        press(win, '3', 'Numpad3');
+        press(win, '7', 'Numpad7');
+        if (presets.join(',') !== 'front,right,top') {
+          throw new Error(`Numpad không đổi view: ${presets.join(',') || 'không'}`);
+        }
+        if (win.editMode.selectionMode !== 'vertex') throw new Error('Numpad1 đổi nhầm chế độ chọn');
+
+        press(win, '2', 'Digit2');
+        if (win.editMode.selectionMode !== 'edge') throw new Error('Digit2 không đổi sang Edge');
+        press(win, '3', 'Digit3');
+        if (win.editMode.selectionMode !== 'face') throw new Error('Digit3 không đổi sang Face');
+        if (presets.length !== 3) throw new Error('Digit đã gọi nhầm camera preset');
+      } finally {
+        win.engine.setCameraPreset = originalPreset;
+        win.engine.toggleEditMode();
+      }
+      return 'Numpad = camera; Digit = chế độ chọn';
+    });
+
+    await test('Numpad 4/6/8/2 orbit và +/- zoom', async (win) => {
+      await reset(win);
+      await addCube(win, 27);
+      const cam = win.engine.camera;
+      const before = cam.position.clone();
+      press(win, '6', 'Numpad6');
+      const afterYaw = cam.position.clone();
+      if (afterYaw.distanceTo(before) < 1e-4) throw new Error('Numpad6 không orbit');
+      press(win, '8', 'Numpad8');
+      if (cam.position.distanceTo(afterYaw) < 1e-4) throw new Error('Numpad8 không orbit');
+      const target = win.engine.controls.target;
+      const distBefore = cam.position.distanceTo(target);
+      press(win, '+', 'NumpadAdd');
+      const distAfter = cam.position.distanceTo(target);
+      if (!(distAfter < distBefore)) throw new Error(`NumpadAdd không zoom in: ${distBefore} → ${distAfter}`);
+      press(win, '-', 'NumpadSubtract');
+      if (!(cam.position.distanceTo(target) > distAfter)) throw new Error('NumpadSubtract không zoom out');
+      return 'orbit + zoom hoạt động';
+    });
+
+    await test('Cmd+N/T/H/X/F/Z và timeline không bị shortcut app chiếm', async (win) => {
+      await reset(win);
+      const cube = await addCube(win, 28);
+      const originalShading = win.app.setShadingMode;
+      const originalToggleN = win.modelingSuite.toggleNPanel;
+      const originalFocus = win.engine.focusOnObject;
+      const originalModal = win.timelineUI._showInsertModal;
+      let shadingCalls = 0;
+      let nCalls = 0;
+      let focusCalls = 0;
+      let modalCalls = 0;
+      win.app.setShadingMode = () => { shadingCalls += 1; };
+      win.modelingSuite.toggleNPanel = () => { nCalls += 1; };
+      win.engine.focusOnObject = () => { focusCalls += 1; };
+      win.timelineUI._showInsertModal = () => { modalCalls += 1; };
+      const toolbar = win.document.querySelector('.blender-toolbar');
+      const toolbarBefore = toolbar ? toolbar.style.display : '';
+      try {
+        const nEvent = press(win, 'n', 'KeyN', { metaKey: true });
+        const tEvent = press(win, 't', 'KeyT', { metaKey: true });
+        const hEvent = press(win, 'h', 'KeyH', { metaKey: true });
+        const xEvent = press(win, 'x', 'KeyX', { metaKey: true });
+        const fEvent = press(win, 'f', 'KeyF', { metaKey: true });
+        await sleep(60);
+        if (nCalls) throw new Error('Cmd+N mở N-panel');
+        if (toolbar && toolbar.style.display !== toolbarBefore) {
+          throw new Error('Cmd+T ẩn/hiện toolbar');
+        }
+        if (cube.visible === false) throw new Error('Cmd+H ẩn object');
+        if (!win.sceneManager.getAllObjects().includes(cube)) throw new Error('Cmd+X xoá object');
+        if (focusCalls) throw new Error('Cmd+F focus object');
+        for (const ev of [nEvent, tEvent, hEvent, xEvent, fEvent]) {
+          if (ev.defaultPrevented) throw new Error(`chặn nhầm ${ev.key} + Cmd/Ctrl`);
+        }
+
+        win.timelineEngine.seekToFrame(10);
+        const arrow = press(win, 'ArrowLeft', 'ArrowLeft', { metaKey: true });
+        await sleep(40);
+        if (win.timelineEngine.currentFrame !== 10) throw new Error('Cmd+ArrowLeft đổi frame');
+        if (arrow.defaultPrevented) throw new Error('chặn nhầm Cmd+ArrowLeft');
+
+        press(win, 'i', 'KeyI', { metaKey: true });
+        await sleep(40);
+        if (modalCalls) throw new Error('Cmd+I mở keyframe picker');
+
+        press(win, 'z', 'KeyZ', { metaKey: true });
+        await sleep(80);
+        if (shadingCalls) throw new Error('Cmd+Z đổi shading mode');
+      } finally {
+        win.app.setShadingMode = originalShading;
+        win.modelingSuite.toggleNPanel = originalToggleN;
+        win.engine.focusOnObject = originalFocus;
+        win.timelineUI._showInsertModal = originalModal;
+      }
+      return 'Cmd+N/T/H/X/F/I/Z + Arrow đều không bị chiếm';
+    });
+
+    await test('Edit Mode ẩn đỉnh bị mặt trước che (depthTest)', async (win) => {
+      await reset(win);
+      await addCube(win, 29);
+      win.engine.toggleEditMode();
+      await sleep(100);
+      const material = win.editMode.vertexPoints?.material;
+      if (!material) throw new Error('không có vertex overlay');
+      if (material.depthTest !== true) throw new Error('vertex vẫn xuyên qua mesh');
+      if (material.depthWrite !== false) throw new Error('vertex ghi depth, che cạnh/mặt');
+      win.engine.toggleEditMode();
+      return 'đỉnh phía sau bị mesh che';
+    });
+
+    await test('Sculpt toolbar: không đè chữ, brush/symmetry/slider hoạt động', async (win) => {
+      await reset(win);
+      const cube = await addCube(win, 30);
+      win.sceneManager.select(cube);
+      win.sculptMode.enter(cube);
+      await sleep(120);
+      const group = win.document.getElementById('sculpt-mode-selector-group');
+      if (!group || getComputedStyle(group).display === 'none') throw new Error('toolbar Sculpt không hiện');
+
+      const buttons = [...group.querySelectorAll('.sculpt-brush-btn')];
+      if (buttons.length < 8) throw new Error(`thiếu brush: ${buttons.length}/8`);
+      const rects = buttons.map((btn) => btn.getBoundingClientRect());
+      for (let i = 0; i < rects.length; i += 1) {
+        if (rects[i].width < 30) throw new Error(`nút "${buttons[i].textContent.trim()}" chỉ rộng ${rects[i].width}px`);
+        if (i > 0 && rects[i].left < rects[i - 1].right - 1) {
+          throw new Error(`nút "${buttons[i].textContent.trim()}" đè lên nút trước`);
+        }
+      }
+
+      for (const btn of buttons) {
+        btn.click();
+        await sleep(20);
+        if (win.sculptMode.brushType !== btn.dataset.brush) {
+          throw new Error(`click ${btn.dataset.brush} không đổi brush (${win.sculptMode.brushType})`);
+        }
+      }
+
+      const beforeSymmetry = win.sculptMode.symmetryX;
+      win.document.getElementById('btn-sculpt-symmetry').click();
+      if (win.sculptMode.symmetryX === beforeSymmetry) throw new Error('nút symmetry không đổi trạng thái');
+
+      const radius = win.document.getElementById('slider-sculpt-radius');
+      radius.value = '1.25';
+      radius.dispatchEvent(new win.Event('input', { bubbles: true }));
+      if (Math.abs(win.sculptMode.radius - 1.25) > 1e-6) throw new Error('slider radius không cập nhật');
+
+      win.sculptMode.exit();
+      return '8 brush click được + symmetry + radius';
+    });
+
+    // Camera regressions use live Three.js cameras, controls, geometry and DOM events.
+    function near(actual, expected, label, tolerance = 1e-6) {
+      if (!Number.isFinite(actual) || Math.abs(actual - expected) > tolerance) {
+        throw new Error(`${label}: ${actual} != ${expected}`);
+      }
+    }
+
+    function viewState(engine) {
+      return {
+        camera: engine.camera,
+        position: engine.camera.position.clone(),
+        quaternion: engine.camera.quaternion.clone(),
+        target: engine.controls.target.clone(),
+        zoom: engine.camera.zoom,
+        projection: engine.camera.projectionMatrix.clone()
+      };
+    }
+
+    function unchangedView(engine, before, label) {
+      if (engine.camera !== before.camera) throw new Error(`${label}: đổi camera`);
+      near(engine.camera.position.distanceTo(before.position), 0, `${label}: position`);
+      near(engine.camera.quaternion.angleTo(before.quaternion), 0, `${label}: quaternion`);
+      near(engine.controls.target.distanceTo(before.target), 0, `${label}: target`);
+      near(engine.camera.zoom, before.zoom, `${label}: zoom`);
+      engine.camera.projectionMatrix.elements.forEach((value, i) => {
+        near(value, before.projection.elements[i], `${label}: projection[${i}]`);
+      });
+    }
+
+    function testView(win, orthographic = false) {
+      const engine = win.app.engine;
+      win.cameraManager.exitCameraView();
+      if (engine.camera.isOrthographicCamera) engine.toggleProjection();
+      engine.controls.target.set(0, 1, 0);
+      engine.camera.position.set(8, 6, 10);
+      engine.camera.zoom = 1;
+      engine.camera.lookAt(engine.controls.target);
+      engine.camera.updateProjectionMatrix();
+      engine.controls.update();
+      if (orthographic) engine.toggleProjection();
+      engine._render();
+    }
+
+    async function withCamera(win, run) {
+      await reset(win);
+      win.sculptMode?.exit();
+      win.cameraManager.exitCameraView();
+      win.document.activeElement?.blur();
+      const engine = win.app.engine;
+      const originalCamera = engine.camera;
+      const copies = [engine.perspectiveCamera, engine.orthographicCamera].map((camera) => [camera, camera.clone()]);
+      const target = engine.controls.target.clone();
+      const { enabled, enableDamping, autoRotate } = engine.controls;
+      const gizmoEnabled = engine.transformControls.enabled;
+      const transformMode = engine.currentTransformMode;
+      try {
+        engine.controls.enableDamping = false;
+        engine.controls.autoRotate = false;
+        engine.controls.enabled = true;
+        engine.controls.update(); // Drain any OrbitControls deltas from earlier pointer tests.
+        testView(win);
+        return await run(engine);
+      } finally {
+        win.app.modalTransform?.cancel();
+        win.shareDialog?.close();
+        if (win.editMode.isActive) win.editMode.exit();
+        win.cameraManager.exitCameraView();
+        win.document.activeElement?.blur();
+        if (engine.camera !== originalCamera) engine.toggleProjection();
+        copies.forEach(([camera, copy]) => camera.copy(copy, false));
+        engine.controls.target.copy(target);
+        engine.controls.update();
+        engine.controls.enabled = enabled;
+        engine.controls.enableDamping = enableDamping;
+        engine.controls.autoRotate = autoRotate;
+        engine.transformControls.enabled = gizmoEnabled;
+        engine.setTransformMode(transformMode);
+        engine.onResize();
+        engine._render();
+      }
+    }
+
+    async function editCameraFixture(win) {
+      const cube = await addCube(win, 2);
+      const parent = new win.THREE.Group();
+      parent.name = 'CameraBoundsParent';
+      parent.position.set(3, -2, 1);
+      parent.rotation.set(0.35, -0.55, 0.7);
+      parent.scale.set(2.25, 0.6, 1.4);
+      win.sceneManager.addObject(parent, null, false);
+      parent.add(cube);
+      cube.rotation.set(0.2, 0.4, -0.15);
+      cube.scale.set(0.8, 1.3, 0.9);
+      win.sceneManager.select(cube);
+      if (!win.editMode.enter(cube)) throw new Error('không vào Edit Mode cho fixture');
+      return cube;
+    }
+
+    function editWorldPoints(win, indices) {
+      // Independent local -> world oracle; do not use focusSelection's vertex-index helper.
+      return indices.map((index) => {
+        const point = win.editMode.vertices[index].clone();
+        for (let node = win.editMode.targetMesh; node; node = node.parent) {
+          point.multiply(node.scale).applyQuaternion(node.quaternion).add(node.position);
+        }
+        return point;
+      });
+    }
+
+    function assertFramed(win, points, label) {
+      const engine = win.app.engine;
+      const center = new win.THREE.Box3().setFromPoints(points).getCenter(new win.THREE.Vector3());
+      near(engine.controls.target.distanceTo(center), 0, `${label}: world bounds center`);
+      engine._render();
+      for (const point of points) {
+        const ndc = point.clone().project(engine.camera);
+        if (![ndc.x, ndc.y, ndc.z].every(Number.isFinite) || Math.max(Math.abs(ndc.x), Math.abs(ndc.y), Math.abs(ndc.z)) > 1.000001) {
+          throw new Error(`${label}: selected point nằm ngoài frustum: ${ndc.toArray()}`);
+        }
+      }
+    }
+
+    function viewHalfHeight(engine) {
+      const camera = engine.camera;
+      return camera.isOrthographicCamera
+        ? (camera.top - camera.bottom) / (2 * camera.zoom)
+        : camera.position.distanceTo(engine.controls.target) * Math.tan(camera.getEffectiveFOV() * Math.PI / 360);
+    }
+
+    await test('Projection: roundtrip giữ target/quaternion và scale trên target plane', (win) => withCamera(win, async (engine) => {
+      await addCube(win);
+      engine.perspectiveCamera.zoom = 1.35; // Exercise effective FOV, not just camera.fov.
+      engine.perspectiveCamera.updateProjectionMatrix();
+      engine._render();
+      const original = viewState(engine);
+      const distance = engine.camera.position.distanceTo(original.target);
+      const tangent = Math.tan(engine.camera.getEffectiveFOV() * Math.PI / 360);
+      const right = new win.THREE.Vector3(1, 0, 0).applyQuaternion(original.quaternion);
+      const up = new win.THREE.Vector3(0, 1, 0).applyQuaternion(original.quaternion);
+      const forward = engine.camera.getWorldDirection(new win.THREE.Vector3());
+      const probe = original.target.clone().add(right).addScaledVector(up, 0.5);
+      const deeper = probe.clone().addScaledVector(forward, distance);
+      const expectedX = 1 / (distance * tangent * engine.perspectiveCamera.aspect);
+      const expectedY = 0.5 / (distance * tangent);
+      const pixelWidth = engine.domElement.getBoundingClientRect().width;
+      const perspectiveProbe = probe.clone().project(engine.camera);
+      near(perspectiveProbe.x, expectedX, 'perspective NDC x');
+      near(perspectiveProbe.y, expectedY, 'perspective NDC y');
+      near(deeper.clone().project(engine.camera).x, expectedX / 2, 'perspective depth falloff');
+      for (let round = 0; round < 3; round += 1) {
+        engine.toggleProjection();
+        engine._render();
+        if (engine.camera !== engine.orthographicCamera || !engine.camera.isOrthographicCamera) throw new Error('không dùng OrthographicCamera thật');
+        near(engine.controls.target.distanceTo(original.target), 0, 'ortho target');
+        near(engine.camera.quaternion.angleTo(original.quaternion), 0, 'ortho quaternion');
+        const projected = probe.clone().project(engine.camera);
+        near(projected.x, expectedX, 'ortho NDC x');
+        near(projected.y, expectedY, 'ortho NDC y');
+        near(projected.x * pixelWidth / 2, perspectiveProbe.x * pixelWidth / 2, 'rendered pixel scale');
+        near(deeper.clone().project(engine.camera).x, expectedX, 'ortho không perspective foreshortening');
+        near(engine.camera.projectionMatrix.elements[15], 1, 'ortho homogeneous projection');
+        engine.toggleProjection();
+        engine._render();
+        unchangedView(engine, original, `roundtrip ${round + 1}`);
+      }
+      engine.toggleProjection();
+      engine.camera.near = 0;
+      engine.camera.far = 0.05;
+      engine.camera.updateProjectionMatrix();
+      engine.toggleProjection();
+      if (!(engine.camera.near > 0 && engine.camera.near < engine.camera.far) || !engine.camera.projectionMatrixInverse.elements.every(Number.isFinite)) throw new Error('ortho near=0 làm hỏng perspective');
+      return '3 roundtrip · effective FOV · NDC/pixel scale · depth invariance · near=0';
+    }));
+
+    await test('Projection: controls/gizmo và ViewHelper theo camera mới sau render; menu toggle thật', (win) => withCamera(win, async (engine) => {
+      const cube = await addCube(win);
+      const menuItem = win.modelingSuite._getViewMenuItems().find((item) => item.label === 'Perspective / Orthographic');
+      if (!menuItem || menuItem.shortcut !== 'Numpad 5') throw new Error('thiếu View menu projection/shortcut');
+      for (const preset of ['right', 'top']) {
+        const oldHelper = engine.viewHelper;
+        const oldCamera = engine.camera;
+        const oldQuaternion = oldCamera.quaternion.clone();
+        menuItem.action();
+        if (engine.controls.object !== engine.camera || engine.transformControls.camera !== engine.camera) throw new Error('controls/gizmo giữ camera cũ');
+        if (engine.transformControls.object !== cube) throw new Error('đổi projection làm rơi gizmo selection');
+        if (!engine.viewHelper?.isViewHelper || engine.viewHelper === oldHelper) throw new Error('ViewHelper không được rebuild');
+        engine.setCameraPreset(preset);
+        engine._render();
+        near(engine.viewHelper.quaternion.angleTo(engine.camera.quaternion.clone().invert()), 0, `ViewHelper ${preset}`);
+        near(engine.viewHelper.center.distanceTo(engine.controls.target), 0, 'ViewHelper center');
+        near(oldCamera.quaternion.angleTo(oldQuaternion), 0, 'camera không active bị controls đổi góc');
+        if (engine.camera.quaternion.angleTo(oldQuaternion) < 0.01) throw new Error('preset không đổi góc camera mới');
+      }
+      return '2 camera swaps · menu action · OrbitControls/TransformControls refs · rendered ViewHelper';
+    }));
+
+    await test('Orthographic: Numpad +/- đổi zoom; resize cả hai viewport camera kể cả scene view', (win) => withCamera(win, async (engine) => {
+      await addCube(win);
+      testView(win, true);
+      const camera = engine.camera;
+      const before = viewState(engine);
+      const halfHeight = viewHalfHeight(engine);
+      press(win, '+', 'NumpadAdd');
+      if (!(camera.zoom > before.zoom && viewHalfHeight(engine) < halfHeight)) throw new Error('ortho + không zoom in');
+      near(camera.projectionMatrix.elements[5], 2 * camera.zoom / (camera.top - camera.bottom), 'zoom cập nhật projection matrix');
+      const zoomIn = camera.zoom;
+      press(win, '-', 'NumpadSubtract');
+      if (!(camera.zoom < zoomIn)) throw new Error('ortho - không zoom out');
+      near(camera.position.distanceTo(before.position), 0, 'ortho dolly không di chuyển camera');
+      near(engine.controls.target.distanceTo(before.target), 0, 'ortho dolly giữ target');
+      const span = viewHalfHeight(engine);
+      const zoom = camera.zoom;
+      const style = engine.container.style.cssText;
+      const sceneObject = win.cameraManager.createCamera({ name: 'ResizeSceneCam', fov: 37 });
+      try {
+        for (const [width, height, sceneView] of [[600, 300, false], [300, 500, true]]) {
+          if (sceneView && !win.cameraManager.enterCameraView(sceneObject)) throw new Error('không vào scene camera view');
+          engine.container.style.cssText += `;position:fixed!important;left:0!important;top:0!important;right:auto!important;bottom:auto!important;width:${width}px!important;height:${height}px!important;min-width:0!important;min-height:0!important;max-width:none!important;max-height:none!important;flex:none!important;`;
+          engine.onResize();
+          const w = engine.container.clientWidth;
+          const h = engine.container.clientHeight;
+          near(w, width, 'temporary container width', 1);
+          near(h, height, 'temporary container height', 1);
+          const aspect = w / h;
+          near(engine.perspectiveCamera.aspect, aspect, 'inactive perspective aspect');
+          near(engine.perspectiveCamera.projectionMatrix.elements[5] / engine.perspectiveCamera.projectionMatrix.elements[0], aspect, 'perspective matrix aspect');
+          near((camera.right - camera.left) / (camera.top - camera.bottom), aspect, 'ortho frustum aspect');
+          near(camera.projectionMatrix.elements[5] / camera.projectionMatrix.elements[0], aspect, 'ortho matrix aspect');
+          near(camera.zoom, zoom, 'resize giữ zoom');
+          near((camera.top - camera.bottom) / (2 * camera.zoom), span, 'resize giữ vertical scale');
+          const rendererSize = engine.renderer.getSize(new win.THREE.Vector2());
+          near(rendererSize.x, w, 'renderer width');
+          near(rendererSize.y, h, 'renderer height');
+          if (sceneView) near(engine.camera.aspect, aspect, 'active scene camera aspect');
+          engine._render();
+        }
+      } finally {
+        win.cameraManager.exitCameraView();
+        engine.container.style.cssText = style;
+        engine.onResize();
+      }
+      return 'ortho zoom matrix · landscape/portrait resize · active & inactive cameras · styles restored';
+    }));
+
+    await test('Camera view: enter/exit từ ortho và toggle không sửa transform/FOV camera cảnh', (win) => withCamera(win, async (engine) => {
+      const group = win.cameraManager.createCamera({ name: 'ProjectionSceneCam', position: { x: -6, y: 3, z: 7 }, fov: 33 });
+      const sceneCamera = win.cameraManager.getCameraEntry(group).camera;
+      const sceneState = () => {
+        group.updateWorldMatrix(true, true);
+        return JSON.stringify([group.position.toArray(), group.quaternion.toArray(), group.scale.toArray(), sceneCamera.position.toArray(), sceneCamera.quaternion.toArray(), sceneCamera.scale.toArray(), sceneCamera.matrixWorld.toArray(), sceneCamera.fov, sceneCamera.near, sceneCamera.far, sceneCamera.zoom]);
+      };
+      const savedScene = sceneState();
+      testView(win, true);
+      engine.dollyCamera(0.7);
+      const original = viewState(engine);
+      const span = viewHalfHeight(engine);
+      if (!win.cameraManager.enterCameraView(group)) throw new Error('enter camera view thất bại');
+      if (engine.camera !== sceneCamera || engine.controls.enabled || engine.viewHelper.visible || engine.transformControls.camera !== sceneCamera) throw new Error('scene view không chuyển camera/controls/helpers');
+      engine._render();
+      win.cameraManager.exitCameraView();
+      unchangedView(engine, original, 'exit về ortho');
+      if (!engine.controls.enabled || !engine.viewHelper.visible || engine.controls.object !== original.camera || engine.transformControls.camera !== original.camera) throw new Error('exit không khôi phục controls/helpers');
+      win.cameraManager.enterCameraView(group);
+      press(win, 'Clear', 'Numpad5');
+      engine._render();
+      if (win.cameraManager.lookingThrough || engine.camera !== engine.perspectiveCamera) throw new Error('toggle phải thoát scene view rồi đổi ortho → perspective');
+      near(engine.controls.target.distanceTo(original.target), 0, 'toggle từ scene view giữ viewport target');
+      near(engine.camera.quaternion.angleTo(original.quaternion), 0, 'toggle từ scene view giữ viewport orientation');
+      near(viewHalfHeight(engine), span, 'toggle từ ortho đã zoom giữ scale');
+      if (sceneState() !== savedScene) throw new Error('scene camera transform/FOV bị navigation sửa');
+      return 'scene view → ortho restore · NumLock-off 5 → perspective · scene camera data nguyên vẹn';
+    }));
+
+    await test('Frame Selected: vertex bounds qua parent rotation/nonuniform scale ở cả hai projection', (win) => withCamera(win, async (engine) => {
+      const cube = await editCameraFixture(win);
+      const edit = win.editMode;
+      const indices = edit.faces[0].verts.slice(0, 2);
+      for (const orthographic of [false, true]) {
+        testView(win, orthographic);
+        engine.focusOnObject(cube);
+        const fullSpan = viewHalfHeight(engine);
+        edit.deselectAll();
+        indices.forEach((index) => edit.selectedVertices.add(index));
+        edit.setMode('vertex');
+        // Change the parent after helper matrices were built; focus must update matrixWorld.
+        cube.parent.position.x += 0.75;
+        cube.parent.rotation.y += 0.15;
+        const points = editWorldPoints(win, indices);
+        const orientation = engine.camera.quaternion.clone();
+        engine.focusSelection();
+        assertFramed(win, points, orthographic ? 'ortho vertices' : 'perspective vertices');
+        near(engine.camera.quaternion.angleTo(orientation), 0, 'framing giữ orientation');
+        if (!(viewHalfHeight(engine) < fullSpan)) throw new Error('frame vertices vẫn dùng toàn bộ mesh');
+      }
+      return 'selected vertices only · transformed/stale parent matrix · world center & frustum';
+    }));
+
+    await test('Frame Selected: edge/face bounds qua parent transform; View menu frame và Edit F vẫn poke', (win) => withCamera(win, async (engine) => {
+      const cube = await editCameraFixture(win);
+      const edit = win.editMode;
+      const frameItem = win.modelingSuite._getViewMenuItems().find((item) => item.label === 'Frame Selected');
+      if (!frameItem || frameItem.shortcut !== 'Numpad .') throw new Error('thiếu Frame Selected trong View menu');
+      for (const orthographic of [false, true]) {
+        for (const mode of ['edge', 'face']) {
+          testView(win, orthographic);
+          engine.focusOnObject(cube);
+          const fullSpan = viewHalfHeight(engine);
+          edit.deselectAll();
+          const indices = mode === 'edge' ? [edit.edges[0].v0, edit.edges[0].v1] : [...edit.faces[0].verts];
+          // A stale vertex selection must not override the active edge/face selection.
+          edit.selectedVertices.add(edit.vertices.findIndex((_, index) => !indices.includes(index)));
+          (mode === 'edge' ? edit.selectedEdges : edit.selectedFaces).add(0);
+          edit.setMode(mode);
+          frameItem.action();
+          assertFramed(win, editWorldPoints(win, indices), `${orthographic ? 'ortho' : 'perspective'} ${mode}`);
+          if (!(viewHalfHeight(engine) < fullSpan)) throw new Error(`${mode}: frame vẫn dùng bounds toàn mesh`);
+        }
+      }
+      const before = viewState(engine);
+      const verticesBefore = edit.vertices.length;
+      const triangleCount = () => (cube.geometry.index?.count ?? cube.geometry.attributes.position.count) / 3;
+      const trianglesBefore = triangleCount();
+      const corners = edit.faces[0].verts;
+      const center = corners.reduce((point, index) => point.add(edit.vertices[index]), new win.THREE.Vector3()).divideScalar(corners.length);
+      press(win, 'f', 'KeyF');
+      // The topology rebuild may merge coplanar fan triangles into logical quads;
+      // assert the actual geometry and center vertex rather than logical face count.
+      if (edit.vertices.length !== verticesBefore + 1 || triangleCount() !== trianglesBefore + 2 || !edit.vertices.some((point) => point.distanceTo(center) < 1e-4)) throw new Error('Edit F không poke mặt thật');
+      unchangedView(engine, before, 'Edit F không frame camera');
+      return 'edge/face selected vertices · menu action · cả hai projection · F tạo center vertex/fan faces';
+    }));
+
+    await test('Frame Selected: empty selection no-op; một vertex giữ distance/scale', (win) => withCamera(win, async (engine) => {
+      const cube = await editCameraFixture(win);
+      const edit = win.editMode;
+      for (const orthographic of [false, true]) {
+        testView(win, orthographic);
+        edit.deselectAll();
+        for (const mode of ['vertex', 'edge', 'face']) {
+          edit.setMode(mode);
+          const empty = viewState(engine);
+          engine.focusSelection();
+          unchangedView(engine, empty, `empty ${mode}`);
+        }
+        edit.selectedVertices.add(0);
+        edit.setMode('vertex');
+        const before = viewState(engine);
+        const distance = engine.camera.position.distanceTo(before.target);
+        const scale = viewHalfHeight(engine);
+        engine.focusSelection();
+        assertFramed(win, editWorldPoints(win, [0]), 'single vertex');
+        near(engine.camera.position.distanceTo(engine.controls.target), distance, 'single vertex giữ distance');
+        near(viewHalfHeight(engine), scale, 'single vertex giữ projected scale');
+        near(engine.camera.zoom, before.zoom, 'single vertex giữ zoom');
+        near(engine.camera.quaternion.angleTo(before.quaternion), 0, 'single vertex giữ orientation');
+      }
+      edit.exit();
+      win.sceneManager.clearSelection();
+      const emptyObject = viewState(engine);
+      engine.focusSelection();
+      unchangedView(engine, emptyObject, 'empty Object Mode');
+      if (!cube.parent) throw new Error('empty selection đã xoá mesh');
+      return 'empty vertex/edge/face/object · single vertex chỉ pan, không đổi distance/scale';
+    }));
+
+    await test('Numpad Decimal/5: NumLock-off không Delete; modifiers và Digit5 không kích hoạt shortcuts', (win) => withCamera(win, async (engine) => {
+      const cube = await addCube(win, 4);
+      for (const editActive of [false, true]) {
+        testView(win);
+        if (editActive) {
+          win.editMode.enter(cube);
+          win.editMode.selectedFaces.add(0);
+          win.editMode.setMode('face');
+        }
+        const edit = win.editMode;
+        const topology = () => JSON.stringify([cube.geometry.attributes.position.count, editActive ? edit.vertices.map((point) => point.toArray()) : [], editActive ? edit.faces.map((face) => face.verts) : []]);
+        const beforeTopology = topology();
+        const event = press(win, 'Delete', 'NumpadDecimal');
+        if (!event.defaultPrevented) throw new Error('NumpadDecimal không được route theo code');
+        if (!win.sceneManager.getAllObjects().includes(cube) || topology() !== beforeTopology) throw new Error('NumLock-off Decimal đã xoá object/geometry');
+        const points = editActive ? editWorldPoints(win, edit.faces[0].verts) : [new win.THREE.Box3().setFromObject(cube).getCenter(new win.THREE.Vector3())];
+        assertFramed(win, points, editActive ? 'Decimal faces' : 'Decimal object');
+        const toggle = press(win, 'Clear', 'Numpad5');
+        if (!toggle.defaultPrevented || engine.camera !== engine.orthographicCamera) throw new Error('NumLock-off 5 không toggle projection');
+        const guarded = viewState(engine);
+        press(win, '5', 'Digit5');
+        unchangedView(engine, guarded, 'Digit5');
+        for (const modifier of ['ctrlKey', 'metaKey', 'altKey', 'shiftKey']) {
+          for (const [key, code] of [['Delete', 'NumpadDecimal'], ['Clear', 'Numpad5']]) {
+            const guardedEvent = press(win, key, code, { [modifier]: true });
+            if (guardedEvent.defaultPrevented) throw new Error(`${modifier}+${code} bị chiếm`);
+            unchangedView(engine, guarded, `${modifier}+${code}`);
+          }
+        }
+        if (!win.sceneManager.getAllObjects().includes(cube) || topology() !== beforeTopology) throw new Error('modifier + Decimal đã xoá geometry');
+        if (editActive && (!edit.isActive || edit.selectionMode !== 'face' || !edit.selectedFaces.has(0))) throw new Error('numpad đổi edit selection/mode');
+      }
+      return 'Object/Edit · key=Delete/Clear · Ctrl/Cmd/Alt/Shift guards · Digit5 độc lập';
+    }));
+
+    await test('Camera shortcuts: input/contenteditable/dialog chặn; G modal giữ numpad nhập số', (win) => withCamera(win, async (engine) => {
+      const cube = await addCube(win, 4);
+      const sendCameraKeys = (target) => {
+        press(win, 'Delete', 'NumpadDecimal', { target });
+        press(win, 'Clear', 'Numpad5', { target });
+      };
+      for (const tag of ['input', 'textarea', 'span']) {
+        const input = win.document.createElement(tag);
+        if (tag === 'span') { input.contentEditable = 'true'; input.tabIndex = 0; }
+        win.document.body.appendChild(input);
+        try {
+          input.focus();
+          if (win.document.activeElement !== input) throw new Error(`không focus được ${tag}`);
+          const before = viewState(engine);
+          sendCameraKeys(input);
+          unchangedView(engine, before, `typing ${tag}`);
+          if (!win.sceneManager.getAllObjects().includes(cube)) throw new Error(`typing ${tag} xoá object`);
+        } finally {
+          input.remove();
+        }
+      }
+      win.document.activeElement?.blur();
+      const shareDialog = win.shareDialog || (await win.app._ensureShareDialog?.());
+      shareDialog.open();
+      await sleep(80);
+      if (!win.document.querySelector('.ss-backdrop:not([hidden])')) throw new Error('dialog không mở');
+      const dialogView = viewState(engine);
+      sendCameraKeys(win.document.body);
+      unchangedView(engine, dialogView, 'share dialog');
+      shareDialog.close();
+      win.document.activeElement?.blur();
+      const position = cube.position.clone();
+      press(win, 'g', 'KeyG');
+      if (!win.app.modalTransform.isActive) throw new Error('G không mở modal');
+      const modalView = viewState(engine);
+      press(win, 'Clear', 'Numpad5');
+      press(win, 'Delete', 'NumpadDecimal');
+      unchangedView(engine, modalView, 'G modal');
+      if (!win.sceneManager.getAllObjects().includes(cube) || !win.app.modalTransform.isActive) throw new Error('numpad xoá object/thoát modal');
+      if (win.app.modalTransform.numericInput !== '5.') throw new Error('G modal không sở hữu numpad numeric input');
+      press(win, 'Escape', 'Escape');
+      if (win.app.modalTransform.isActive) throw new Error('Escape không đóng G modal');
+      near(cube.position.distanceTo(position), 0, 'Escape khôi phục transform');
+      return 'input/textarea/contenteditable · share dialog · G nhập 5. rồi Escape rollback';
+    }));
+
+    await test('Orthographic: raycast click/Shift-click và pointer G transform + undo/redo thật', (win) => withCamera(win, async (engine) => {
+      const a = await addCube(win, -2);
+      const b = await addCube(win, 2);
+      testView(win, true);
+      engine.setCameraPreset('front');
+      engine._render();
+      win.sceneManager.clearSelection();
+      const canvas = engine.domElement;
+      const click = (object, modifiers = {}) => {
+        engine._render();
+        const rect = canvas.getBoundingClientRect();
+        const point = new win.THREE.Box3().setFromObject(object).getCenter(new win.THREE.Vector3()).project(engine.camera);
+        if (Math.abs(point.x) >= 0.8 || Math.abs(point.y) >= 0.8) throw new Error('pick fixture ngoài vùng viewport an toàn');
+        const coordinates = { clientX: rect.left + (point.x + 1) * rect.width / 2, clientY: rect.top + (1 - point.y) * rect.height / 2, bubbles: true, cancelable: true, pointerId: 41, pointerType: 'mouse', button: 0, ...modifiers };
+        // Synthetic DOM pointers cannot acquire native pointer capture. Disable only
+        // orbit/gizmo gestures while dispatching; Engine's real picking still runs.
+        const orbitEnabled = engine.controls.enabled;
+        const gizmoEnabled = engine.transformControls.enabled;
+        try {
+          engine.controls.enabled = false;
+          engine.transformControls.enabled = false;
+          canvas.dispatchEvent(new win.PointerEvent('pointerdown', { ...coordinates, buttons: 1 }));
+          canvas.dispatchEvent(new win.PointerEvent('pointerup', { ...coordinates, buttons: 0 }));
+        } finally {
+          engine.controls.enabled = orbitEnabled;
+          engine.transformControls.enabled = gizmoEnabled;
+        }
+      };
+      click(a);
+      if (win.sceneManager.getActiveObject() !== a) throw new Error('ortho click không raycast đúng object A');
+      click(b, { shiftKey: true });
+      if (win.sceneManager.getSelectedObjects().length !== 2 || !win.sceneManager.isSelected(b)) throw new Error('ortho Shift-click không thêm B');
+      click(a);
+      if (win.sceneManager.getSelectedObjects().length !== 1 || engine.transformControls.object !== a) throw new Error('ortho click không attach gizmo vào A');
+      const before = a.position.clone();
+      const viewBefore = viewState(engine);
+      press(win, 'g', 'KeyG');
+      const modal = win.app.modalTransform;
+      if (!modal.isActive) throw new Error('ortho G không start');
+      const rect = canvas.getBoundingClientRect();
+      const deltaPixels = 1.5 * engine.camera.zoom * rect.width / (engine.camera.right - engine.camera.left);
+      win.dispatchEvent(new win.PointerEvent('pointermove', { clientX: modal.startMousePos.x + deltaPixels, clientY: modal.startMousePos.y, pointerId: 41, pointerType: 'mouse', bubbles: true }));
+      const moved = before.clone().add(new win.THREE.Vector3(1.5, 0, 0));
+      near(a.position.distanceTo(moved), 0, 'ortho ray/plane pointer translation', 1e-5);
+      press(win, 'Enter', 'Enter');
+      if (modal.isActive) throw new Error('Enter không commit G');
+      press(win, 'z', 'KeyZ', { ctrlKey: true });
+      near(a.position.distanceTo(before), 0, 'undo transform');
+      if (!win.sceneManager.getAllObjects().includes(a)) throw new Error('undo xoá object thay vì transform');
+      press(win, 'y', 'KeyY', { ctrlKey: true });
+      near(a.position.distanceTo(moved), 0, 'redo transform', 1e-5);
+      unchangedView(engine, viewBefore, 'picking/transform không đổi ortho view');
+      return 'real raycast selection · G pointer ray/plane +1.5m · Enter · Ctrl+Z/Ctrl+Y';
+    }));
+
+    await test('STEM guided: thao tác thật tick bước + tự chuyển; Edit Mode extrude được nhận diện', (win) => withCamera(win, async (engine) => {
+      const tutor = win.stemTutor;
+      tutor.startLesson(1, { loadStarter: false, speak: false, guided: true });
+      engine.controls.dispatchEvent({ type: 'start' });
+      if (tutor.activeStepIndex !== 1 || !tutor._stepDone.has(0)) throw new Error('navigate_view không tick bước 1');
+      const a = await addCube(win, 0);
+      if (tutor.activeStepIndex !== 2 || !tutor._stepDone.has(1)) throw new Error('add_mesh không tick bước 2');
+      press(win, 'g', 'KeyG');
+      if (!win.app.modalTransform.isActive) throw new Error('G không mở modal');
+      win.dispatchEvent(new win.PointerEvent('pointermove', {
+        clientX: win.app.modalTransform.startMousePos.x + 60,
+        clientY: win.app.modalTransform.startMousePos.y,
+        pointerId: 71, pointerType: 'mouse', bubbles: true
+      }));
+      press(win, 'Enter', 'Enter');
+      if (tutor.activeStepIndex !== 3 || !tutor._stepDone.has(2)) throw new Error('transform thật không tick bước 3');
+      await addCube(win, 3);
+      if (!tutor._stepDone.has(3)) throw new Error('duplicate/add thứ hai không tick bước 4');
+      const doneRows = win.document.querySelectorAll('#dock-stem .stem-step-item.done').length;
+      if (doneRows !== 4) throw new Error(`dock phải hiện 4 bước ✓, thấy ${doneRows}`);
+
+      tutor.startLesson(2, { loadStarter: false, speak: false, guided: true });
+      win.editMode.enter(a);
+      if (tutor.activeStepIndex !== 1 || !tutor._stepDone.has(0)) throw new Error('enter_edit_mode không tick bước 1 bài 2');
+      win.editMode.setMode('face');
+      win.editMode.selectedFaces.add(0);
+      win.editMode.extrude(0.3);
+      if (!tutor._stepDone.has(1)) throw new Error('extrude thật không tick edit_topology');
+      win.editMode.exit();
+      tutor.guidedActive = false;
+      return 'navigate/add/G-commit/add tick đủ 4 bước ✓ · Tab+Extrude tick bài 2';
+    }));
+
+    await test('STEM grader: chỉ chấm mã đã thực thi, không chấm chữ gõ trong editor', (win) => withCamera(win, async (engine) => {
+      const tutor = win.stemTutor;
+      tutor.startLesson(2, { loadStarter: false, speak: false, guided: false });
+      const cube = await addCube(win, 0);
+      cube.material.color.set(0xf1c40f);
+      cube.material.metalness = 0.9;
+      cube.material.roughness = 0.15;
+      win.app.codeEditor.setCode('studio.addLight({ type: "point", x: 2, y: 4, z: 2 });');
+      let report = tutor.gradeCurrentLesson({ speak: false });
+      if (report.criteria.find((c) => c.id === 'has-scene-light').passed) throw new Error('chấm chữ addLight chưa chạy');
+      await win.app.codeEditor.execute();
+      report = tutor.gradeCurrentLesson({ speak: false });
+      if (!report.criteria.find((c) => c.id === 'has-scene-light').passed || !report.passed) throw new Error('mã đã chạy + PBR phải đạt 100');
+      tutor.guidedActive = false;
+      return 'editor chưa chạy bị từ chối · execute thật → đạt 100/100';
+    }));
+
+    await test('Screen 2 & Fullscreen: Workspace Viewport (không thanh dưới), Alt+Space, Ctrl+\\, Ctrl+Alt+Space', async (win) => {
+      await reset(win);
+      const layoutTab = win.document.querySelector('.workspace-tab[data-workspace="layout"]');
+      const vpTab = win.document.querySelector('.workspace-tab[data-workspace="viewport"]');
+      const body = win.document.body;
+      const bottomDock = win.document.getElementById('bottom-dock');
+      const canvas = win.app.engine.domElement;
+      if (!layoutTab || !vpTab || !bottomDock) throw new Error('Thiếu UI tab Viewport/BottomDock');
+
+      layoutTab.click();
+      await frames(win, 2);
+      const layoutCanvasH = canvas.getBoundingClientRect().height;
+
+      vpTab.click();
+      await frames(win, 2);
+      if (!body.classList.contains('app-no-bottom-dock')) throw new Error('Tab Viewport không kích hoạt app-no-bottom-dock');
+      if (win.getComputedStyle(bottomDock).display !== 'none') throw new Error('#bottom-dock vẫn hiển thị ở Screen 2');
+      const screen2CanvasH = canvas.getBoundingClientRect().height;
+      if (screen2CanvasH <= layoutCanvasH + 50) throw new Error(`Canvas chưa mở rộng khi ẩn bottom dock (${layoutCanvasH} -> ${screen2CanvasH})`);
+
+      press(win, ' ', 'Space', { altKey: true });
+      await frames(win, 2);
+      if (body.classList.contains('app-no-bottom-dock')) throw new Error('Alt+Space không mở lại bottom dock');
+
+      press(win, '\\', 'Backslash', { ctrlKey: true });
+      await frames(win, 2);
+      if (!body.classList.contains('app-no-bottom-dock')) throw new Error('Ctrl+\\ không ẩn bottom dock');
+
+      press(win, ' ', 'Space', { ctrlKey: true, altKey: true });
+      await frames(win, 2);
+      if (!body.classList.contains('app-fullscreen-viewport')) throw new Error('Ctrl+Alt+Space không bật viewport fullscreen');
+      const restoreBtn = win.document.getElementById('viewport-fullscreen-restore');
+      if (!restoreBtn || win.getComputedStyle(restoreBtn).display === 'none') throw new Error('Nút thoát fullscreen không hiển thị');
+      restoreBtn.click();
+      await frames(win, 2);
+      if (body.classList.contains('app-fullscreen-viewport')) throw new Error('Nút restore không thoát fullscreen');
+
+      layoutTab.click();
+      await frames(win, 2);
+      if (body.classList.contains('app-no-bottom-dock')) throw new Error('Click Layout không khôi phục bottom dock');
+      return `Screen 2 canvas ${Math.round(layoutCanvasH)}px -> ${Math.round(screen2CanvasH)}px · Alt+Space · Ctrl+\\ · Fullscreen OK`;
+    });
+
+    await test('Blender Pro Keymap: MMB Orbit, Alt+LMB Emulate, LMB Marquee Box Select & chuyển Web Orbit', async (win) => {
+      await reset(win);
+      const engine = win.app.engine;
+      const pro = win.blenderProTools;
+      if (!pro || engine.keymapPreset !== 'blender-pro') throw new Error(`Preset mặc định phải là blender-pro, thấy ${engine.keymapPreset}`);
+      if (engine.controls.mouseButtons.LEFT !== null || engine.controls.mouseButtons.MIDDLE !== win.THREE.MOUSE.ROTATE || engine.controls.mouseButtons.RIGHT !== null) {
+        throw new Error('Chuột Blender Pro phải map MMB=ROTATE và giải phóng LMB/RMB');
+      }
+
+      const canvas = engine.domElement;
+      const rect = canvas.getBoundingClientRect();
+      const origSetCap = canvas.setPointerCapture;
+      const origRelCap = canvas.releasePointerCapture;
+      canvas.setPointerCapture = () => {};
+      canvas.releasePointerCapture = () => {};
+      try {
+        // Test Alt+LMB emulate 3-button mouse
+        canvas.dispatchEvent(new win.PointerEvent('pointerdown', {
+          clientX: rect.left + 120, clientY: rect.top + 120, button: 0, buttons: 1, altKey: true, pointerId: 91, pointerType: 'mouse', bubbles: true
+        }));
+        if (engine.controls.mouseButtons.LEFT !== win.THREE.MOUSE.ROTATE) throw new Error('Alt+LMB không bật Emulate 3-Button Orbit');
+        win.dispatchEvent(new win.PointerEvent('pointerup', {
+          clientX: rect.left + 120, clientY: rect.top + 120, button: 0, buttons: 0, pointerId: 91, pointerType: 'mouse', bubbles: true
+        }));
+        if (engine.controls.mouseButtons.LEFT !== null) throw new Error('pointerup sau Alt+LMB không trả LEFT về null');
+
+        // Test LMB drag >5px triggers marquee box select
+        canvas.dispatchEvent(new win.PointerEvent('pointerdown', {
+          clientX: rect.left + 140, clientY: rect.top + 140, button: 0, buttons: 1, pointerId: 92, pointerType: 'mouse', bubbles: true
+        }));
+        win.dispatchEvent(new win.PointerEvent('pointermove', {
+          clientX: rect.left + 260, clientY: rect.top + 230, button: 0, buttons: 1, pointerId: 92, pointerType: 'mouse', bubbles: true
+        }));
+        const marquee = win.document.querySelector('.blender-marquee-box');
+        if (!marquee || marquee.style.display === 'none') throw new Error('Kéo LMB trên vùng trống không mở Box Select marquee');
+        win.dispatchEvent(new win.PointerEvent('pointerup', {
+          clientX: rect.left + 260, clientY: rect.top + 230, button: 0, buttons: 0, pointerId: 92, pointerType: 'mouse', bubbles: true
+        }));
+      } finally {
+        canvas.setPointerCapture = origSetCap;
+        canvas.releasePointerCapture = origRelCap;
+      }
+
+      // Toggle keymap button -> Web Orbit -> back to Blender Pro
+      const btnKeymap = win.document.getElementById('btn-keymap-preset');
+      btnKeymap.click();
+      if (engine.keymapPreset !== 'web' || engine.controls.mouseButtons.LEFT !== win.THREE.MOUSE.ROTATE) {
+        throw new Error('Không chuyển được sang keymap web');
+      }
+      btnKeymap.click();
+      if (engine.keymapPreset !== 'blender-pro') throw new Error('Không chuyển lại được sang blender-pro');
+      return 'MMB Orbit · Alt+LMB Emulate · LMB Drag Box Select · Toggle Web/Pro';
+    });
+
+    await test('Viewport Pro Shortcuts: B/C, / Local View, Shift+Tab Snap, Pies (Shift+S/./`), Alt+G/R/S, Ctrl+P/Alt+P, Alt+D, Help', async (win) => {
+      await reset(win);
+      const a = await addCube(win, -2);
+      const b = await addCube(win, 2);
+      win.sceneManager.select(a);
+
+      // Local View /
+      press(win, '/', 'Slash');
+      const localBadge = win.document.getElementById('viewport-local-view-badge');
+      if (b.visible || !a.visible) throw new Error('/ Local View không cô lập object A');
+      if (!localBadge || win.getComputedStyle(localBadge).display === 'none') throw new Error('Local View badge không hiện');
+      press(win, '/', 'Slash');
+      if (!b.visible || win.getComputedStyle(localBadge).display !== 'none') throw new Error('/ lần 2 không khôi phục cảnh');
+
+      // Box Select B & Circle Select C
+      press(win, 'b', 'KeyB');
+      if (!win.blenderProTools?._boxState?.armed) throw new Error('B không bật chế độ Box Select');
+      press(win, 'Escape', 'Escape');
+      press(win, 'c', 'KeyC');
+      if (!win.document.querySelector('.blender-circle-cursor')) throw new Error('C không bật vòng chọn Circle Select');
+      press(win, 'Escape', 'Escape');
+
+      // Shift+Tab Snap & Pie Menus (Shift+S, `, .)
+      const prevSnap = Boolean(win.app.engine.snapEnabled);
+      press(win, 'Tab', 'Tab', { shiftKey: true });
+      if (Boolean(win.app.engine.snapEnabled) === prevSnap) throw new Error('Shift+Tab không toggle Snap');
+      press(win, 'Tab', 'Tab', { shiftKey: true });
+
+      for (const [k, c, opts] of [['S', 'KeyS', { shiftKey: true }], ['`', 'Backquote', {}], ['.', 'Period', {}]]) {
+        press(win, k, c, opts);
+        if (!win.document.querySelector('.blender-pie-menu')) throw new Error(`Phím ${c} không mở Pie Menu`);
+        press(win, 'Escape', 'Escape');
+      }
+
+      // Alt+G / Alt+R / Alt+S
+      a.position.set(3, 2, 1);
+      a.rotation.set(0.5, 0.2, 0.1);
+      a.scale.set(2, 2, 2);
+      press(win, 'g', 'KeyG', { altKey: true });
+      press(win, 'r', 'KeyR', { altKey: true });
+      press(win, 's', 'KeyS', { altKey: true });
+      if (a.position.length() > 1e-4 || a.scale.distanceTo(new win.THREE.Vector3(1, 1, 1)) > 1e-4) {
+        throw new Error('Alt+G/R/S không reset transform');
+      }
+
+      // Ctrl+P / Alt+P Keep Transform
+      win.sceneManager.select(b, false);
+      win.sceneManager.select(a, true); // a is active, b is child selected
+      b.position.set(4, 1, 0);
+      a.position.set(1, 0, 0);
+      const bWorldBefore = b.getWorldPosition(new win.THREE.Vector3());
+      press(win, 'p', 'KeyP', { ctrlKey: true });
+      if (b.parent !== a) throw new Error('Ctrl+P không gắn parent B -> A');
+      if (b.getWorldPosition(new win.THREE.Vector3()).distanceTo(bWorldBefore) > 1e-3) {
+        throw new Error('Ctrl+P làm nhảy vị trí world của child');
+      }
+      win.sceneManager.select(b, false);
+      press(win, 'p', 'KeyP', { altKey: true });
+      if (b.parent === a) throw new Error('Alt+P không gỡ parent của B');
+      if (b.getWorldPosition(new win.THREE.Vector3()).distanceTo(bWorldBefore) > 1e-3) {
+        throw new Error('Alt+P làm nhảy vị trí world sau unparent');
+      }
+
+      // Alt+D Duplicate Linked
+      const countBefore = win.sceneManager.getAllObjects().length;
+      win.sceneManager.select(a, false);
+      press(win, 'd', 'KeyD', { altKey: true });
+      press(win, 'Escape', 'Escape');
+      const objs = win.sceneManager.getAllObjects();
+      if (objs.length !== countBefore + 1) throw new Error('Alt+D không nhân bản');
+      if (objs[objs.length - 1].geometry !== a.geometry) throw new Error('Alt+D phải dùng chung geometry tham chiếu (linked)');
+
+      // Searchable Help Dialog
+      win.document.getElementById('btn-help-shortcuts')?.click();
+      const helpDlg = win.document.getElementById('shortcuts-help-dialog');
+      if (!helpDlg || helpDlg.hidden) throw new Error('#shortcuts-help-dialog không mở');
+      const searchInput = helpDlg.querySelector('#b-shortcuts-search');
+      searchInput.value = 'Knife';
+      searchInput.dispatchEvent(new win.Event('input', { bubbles: true }));
+      const visibleItems = Array.from(helpDlg.querySelectorAll('.b-shortcuts-row')).filter(r => r.style.display !== 'none');
+      if (visibleItems.length === 0) throw new Error('Tìm kiếm "Knife" trong bảng phím tắt không ra kết quả');
+      win.document.getElementById('b-shortcuts-close')?.click();
+      return 'Local View · B/C Select · Shift+Tab · Pies · Alt+G/R/S · Ctrl+P/Alt+P · Alt+D · Help OK';
+    });
+
+    await test('Edit Mode Pro: E Vertex, X Menu vs Delete, F Make Face, GG Slide, K Knife, P Separate', async (win) => {
+      await reset(win);
+      const cube = await addCube(win, 0);
+      win.app.engine.toggleEditMode();
+      await sleep(80);
+      const em = win.editMode;
+      if (!em.isActive) throw new Error('Không vào được Edit Mode');
+
+      // Vertex Extrude (E)
+      em.setMode('vertex');
+      em.selectedVertices.clear();
+      em.selectedVertices.add(0);
+      em.extrude(0.4);
+      if (em.looseEdges.length !== 1) throw new Error('Vertex Extrude phải sinh 1 looseEdge');
+      win.sceneManager.undo();
+
+      // X opens delete menu without deleting; Delete deletes immediately
+      em.setMode('face');
+      em.selectedFaces.clear();
+      em.selectedFaces.add(0);
+      const holeVertPos = em.faces[0].verts.map(vi => em.vertices[vi].clone());
+      press(win, 'x', 'KeyX');
+      if (!win.document.querySelector('.blender-pie-menu')) throw new Error('X trong Edit Mode phải mở Menu Xoá');
+      press(win, 'Escape', 'Escape');
+      if (em.faces.length !== 6) throw new Error('Escape khỏi menu X không được xóa mặt');
+
+      press(win, 'Delete', 'Delete');
+      if (em.faces.length !== 5) throw new Error('Delete phải xóa trực tiếp mặt đang chọn');
+
+      // F fills missing quad face back
+      em.setMode('vertex');
+      em.selectedVertices.clear();
+      holeVertPos.forEach(p => {
+        const idx = em.vertices.findIndex(v => v.distanceTo(p) < 1e-4);
+        if (idx >= 0) em.selectedVertices.add(idx);
+      });
+      press(win, 'f', 'KeyF');
+      if (em.faces.length !== 6) throw new Error('F phải lấp lại mặt thứ 6');
+
+      // K starts interactive Knife mode and Escape cancels cleanly
+      press(win, 'k', 'KeyK');
+      if (!em._knifeSession) throw new Error('K không bật Knife mode');
+      press(win, 'Escape', 'Escape');
+      if (em._knifeSession) throw new Error('Escape không thoát Knife mode');
+
+      // G -> G activates Edge/Vertex Slide
+      em.setMode('edge');
+      em.selectedEdges.clear();
+      em.selectedEdges.add(0);
+      press(win, 'g', 'KeyG');
+      press(win, 'g', 'KeyG');
+      if (!win.app.modalTransform.isSlideMode) throw new Error('G -> G không kích hoạt Slide Mode');
+      press(win, 'Escape', 'Escape');
+
+      // P separates selected face into new object
+      em.setMode('face');
+      em.selectedFaces.clear();
+      em.selectedFaces.add(0);
+      const objBeforeSep = win.sceneManager.getAllObjects().length;
+      press(win, 'p', 'KeyP');
+      if (win.sceneManager.getAllObjects().length !== objBeforeSep + 1) throw new Error('P không tách mặt thành object mới');
+
+      em.exit();
+      return 'E Vertex · X Menu/Delete · F Fill · K Knife · GG Slide · P Separate OK';
+    });
+
+    await test('Corner-Drag Split & Join Areas: Kéo góc chia 2 Viewport 3D song song, UV Editor, Quad View & Join', async (win) => {
+      await reset(win);
+      const areaMgr = win.app.areaManager;
+      const engine = win.app.engine;
+      if (!areaMgr) throw new Error('WorkspaceAreaManager chưa được khởi tạo');
+
+      // Always start clean with single viewport
+      areaMgr.resetToSingleViewport();
+      await frames(win, 2);
+
+      const corners = win.document.querySelectorAll('#viewport-canvas-host .area-corner-handle');
+      if (corners.length !== 4) throw new Error(`Kỳ vọng 4 góc kéo, tìm thấy ${corners.length}`);
+
+      const cube = await addCube(win, 0);
+      await frames(win, 2);
+
+      // 1. Simulate corner drag from top-right corner inward left -> Split Vertical (2 screens side by side)
+      const tr = win.document.querySelector('.area-corner-handle.area-corner-tr[data-area-id="area-main"]');
+      const hostRect = win.document.getElementById('viewport-canvas-host').getBoundingClientRect();
+      tr.dispatchEvent(new win.PointerEvent('pointerdown', {
+        clientX: hostRect.right - 4, clientY: hostRect.top + 4, button: 0, buttons: 1, pointerId: 101, pointerType: 'mouse', bubbles: true
+      }));
+      win.dispatchEvent(new win.PointerEvent('pointermove', {
+        clientX: hostRect.left + hostRect.width * 0.55, clientY: hostRect.top + 20, button: 0, buttons: 1, pointerId: 101, pointerType: 'mouse', bubbles: true
+      }));
+      const splitGuide = win.document.querySelector('.area-split-guide');
+      if (!splitGuide || splitGuide.style.display === 'none') throw new Error('Kéo từ góc không hiện đường guide Split');
+      win.dispatchEvent(new win.PointerEvent('pointerup', {
+        clientX: hostRect.left + hostRect.width * 0.55, clientY: hostRect.top + 20, button: 0, buttons: 0, pointerId: 101, pointerType: 'mouse', bubbles: true
+      }));
+      await frames(win, 3);
+
+      const panes = areaMgr.getViewportPanes();
+      if (panes.length !== 2) throw new Error(`Kỳ vọng 2 Viewport song song sau khi kéo góc, có ${panes.length}`);
+      const r0 = panes[0].viewportEl.getBoundingClientRect();
+      const r1 = panes[1].viewportEl.getBoundingClientRect();
+      if (r0.width < 80 || r1.width < 80) throw new Error(`Kích thước 2 pane không hợp lệ: ${r0.width} vs ${r1.width}`);
+
+      // Set Right pane to Front Orthographic while keeping Left pane Perspective
+      areaMgr.applyPaneCameraPreset(panes[1].id, 'front', true);
+      await frames(win, 4);
+      if (!panes[1].camera.isOrthographicCamera) throw new Error('Pane 2 không chuyển sang Orthographic độc lập');
+      if (!panes[0].camera.isPerspectiveCamera) throw new Error('Pane 1 bị ảnh hưởng sai khi đổi Pane 2 sang Ortho');
+
+      // Check WebGL pixels in BOTH left and right halves contain rendered geometry
+      const glCanvas = engine.domElement;
+      const gl = glCanvas.getContext('webgl2') || glCanvas.getContext('webgl');
+      if (gl) {
+        const pxL = new Uint8Array(4);
+        const pxR = new Uint8Array(4);
+        const midY = Math.floor(glCanvas.height * 0.5);
+        gl.readPixels(Math.floor(glCanvas.width * 0.27), midY, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pxL);
+        gl.readPixels(Math.floor(glCanvas.width * 0.77), midY, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pxR);
+        if (pxL[3] === 0 || pxR[3] === 0) throw new Error('Multi-viewport không render pixel sang cả 2 nửa canvas');
+      }
+
+      // 2. Switch Pane 2 to UV Editor & verify live DOM reparent + restore
+      areaMgr.setLeafEditorType(panes[1].id, 'uv-editor');
+      await frames(win, 2);
+      const mountedUv = win.document.querySelector('.area-dom-content #uv-editor');
+      if (!mountedUv) throw new Error('Không nhúng được UV Editor vào khung split');
+      areaMgr.setLeafEditorType(panes[1].id, 'viewport3d');
+      await frames(win, 2);
+      if (!win.document.querySelector('#dock-uv-editor #uv-editor')) throw new Error('Không trả #uv-editor về #dock-uv-editor khi chuyển lại 3D View');
+
+      // 3. Drag corner of Pane 2 leftward into Pane 1 -> Join Areas back to 1 viewport
+      const pane2Corner = win.document.querySelector(`.area-corner-handle.area-corner-tl[data-area-id="${panes[1].id}"]`);
+      const c2r = pane2Corner.getBoundingClientRect();
+      pane2Corner.dispatchEvent(new win.PointerEvent('pointerdown', {
+        clientX: c2r.left + 4, clientY: c2r.top + 4, button: 0, buttons: 1, pointerId: 102, pointerType: 'mouse', bubbles: true
+      }));
+      win.dispatchEvent(new win.PointerEvent('pointermove', {
+        clientX: r0.left + r0.width * 0.5, clientY: r0.top + r0.height * 0.5, button: 0, buttons: 1, pointerId: 102, pointerType: 'mouse', bubbles: true
+      }));
+      const joinOverlay = win.document.querySelector('.area-join-overlay');
+      if (!joinOverlay || joinOverlay.style.display === 'none') throw new Error('Kéo ra sang khung cạnh không hiện Join Overlay mũi tên');
+      win.dispatchEvent(new win.PointerEvent('pointerup', {
+        clientX: r0.left + r0.width * 0.5, clientY: r0.top + r0.height * 0.5, button: 0, buttons: 0, pointerId: 102, pointerType: 'mouse', bubbles: true
+      }));
+      await frames(win, 2);
+      if (!areaMgr.isSingleFullViewport()) throw new Error('Join Areas bằng kéo góc không gộp lại thành 1 viewport');
+
+      // 4. Ctrl+Alt+Q Quad View -> 4 viewports -> Ctrl+Alt+Q restores single viewport
+      press(win, 'q', 'KeyQ', { ctrlKey: true, altKey: true });
+      await frames(win, 3);
+      if (areaMgr.getViewportPanes().length !== 4) throw new Error(`Ctrl+Alt+Q phải tạo 4 Viewport, có ${areaMgr.getViewportPanes().length}`);
+      press(win, 'q', 'KeyQ', { ctrlKey: true, altKey: true });
+      await frames(win, 2);
+      if (!areaMgr.isSingleFullViewport()) throw new Error('Bấm Ctrl+Alt+Q lần 2 không thoát Quad View');
+
+      areaMgr.resetToSingleViewport();
+      return 'Corner-drag Split · Dual Camera/Ortho · UV Reparent · Corner Join · Ctrl+Alt+Q Quad View OK';
+    });
+
+    await test('Blender UV Pipeline & English UI: Seam, U Unwrap (LSCM), Split UV Editor, Modal G+Undo, Checker 3D & Stretch', async (win) => {
+      await reset(win);
+      const areaMgr = win.app.areaManager;
+      const uvEditor = win.uvEditor || win.app.uvEditor;
+      const em = win.editMode;
+      if (!uvEditor) throw new Error('UVEditorUI not initialized');
+      areaMgr.resetToSingleViewport();
+      await frames(win, 2);
+
+      // 1. Verify full English toolbar & controls inside #uv-editor
+      const uvTitle = win.document.querySelector('#uv-editor .uv-editor-title')?.textContent?.trim();
+      const unwrapLabel = win.document.getElementById('btn-uv-unwrap')?.textContent?.trim();
+      const markSeamLabel = win.document.getElementById('btn-uv-mark-seam')?.textContent?.trim();
+      const checkerLabel = win.document.getElementById('btn-uv-checker-3d')?.textContent?.trim();
+      if (uvTitle !== 'UV Editor' || unwrapLabel !== 'Unwrap' || markSeamLabel !== 'Mark Seam' || checkerLabel !== 'Checker 3D') {
+        throw new Error(`Expected English UV Editor UI labels, got: ${uvTitle} / ${unwrapLabel} / ${markSeamLabel} / ${checkerLabel}`);
+      }
+
+      // 2. Add Cube, enter Edit Mode, Mark Seam on boundary edges
+      const cube = await addCube(win, 0);
+      win.sceneManager.select(cube);
+      win.engine.toggleEditMode();
+      await frames(win, 2);
+      if (!em.isActive) throw new Error('Failed to enter Edit Mode');
+      em.setMode('edge');
+      em.selectedEdges.clear();
+      em.selectedEdges.add(0);
+      em.selectedEdges.add(1);
+      em.selectedEdges.add(2);
+      if (!em.markSeam(false)) throw new Error('Mark Seam failed');
+      if (em.uvSeams.size !== 3) throw new Error(`Expected 3 UV seams, got ${em.uvSeams.size}`);
+
+      // 3. Press U to open UV Mapping pie/context menu, then run Unwrap (LSCM)
+      press(win, 'u', 'KeyU');
+      await frames(win, 2);
+      const pieTitle = win.document.querySelector('.blender-pie-title')?.textContent || '';
+      if (!pieTitle.includes('UV Mapping')) {
+        throw new Error(`Expected UV Mapping (U) menu to open, got: "${pieTitle}"`);
+      }
+      const lscmBtn = Array.from(win.document.querySelectorAll('.blender-pie-item')).find(
+        (el) => el.textContent?.includes('Unwrap (LSCM)')
+      );
+      if (!lscmBtn) throw new Error('Missing Unwrap (LSCM) item in U menu');
+      lscmBtn.click();
+      await frames(win, 2);
+      const uvAttr = cube.geometry.attributes.uv;
+      if (!uvAttr || uvAttr.count === 0) throw new Error('Missing UV attribute after LSCM unwrap');
+
+      // 4. Split Viewport to mount UV Editor side-by-side & verify live sync
+      areaMgr.splitLeaf('area-main', 'vertical', 0.5);
+      await frames(win, 2);
+      const panes = areaMgr.getViewportPanes();
+      areaMgr.setLeafEditorType(panes[1].id, 'uv-editor');
+      await frames(win, 3);
+      if (!win.document.querySelector('.area-dom-content #uv-editor')) {
+        throw new Error('Failed to mount #uv-editor inside split area');
+      }
+
+      // 5. Select All UVs & perform Modal Grab (G -> 0.15 -> X -> Enter) + Undo
+      const uvEl = win.document.getElementById('uv-editor');
+      uvEl.focus();
+      const firstU0 = cube.geometry.attributes.uv.getX(0);
+      const firstV0 = cube.geometry.attributes.uv.getY(0);
+      press(win, 'a', 'KeyA', { target: uvEl });
+      await frames(win, 1);
+      press(win, 'g', 'KeyG', { target: uvEl });
+      press(win, 'x', 'KeyX', { target: uvEl });
+      press(win, '0', 'Digit0', { target: uvEl });
+      press(win, '.', 'Period', { target: uvEl });
+      press(win, '1', 'Digit1', { target: uvEl });
+      press(win, '5', 'Digit5', { target: uvEl });
+      press(win, 'Enter', 'Enter', { target: uvEl });
+      await frames(win, 2);
+      const shiftedU = cube.geometry.attributes.uv.getX(0);
+      const shiftedV = cube.geometry.attributes.uv.getY(0);
+      if (Math.abs((shiftedU - firstU0) - 0.15) > 1e-3 || Math.abs(shiftedV - firstV0) > 1e-3) {
+        throw new Error(`Modal UV Grab+X+0.15 expected (${firstU0 + 0.15}, ${firstV0}), got (${shiftedU}, ${shiftedV})`);
+      }
+
+      win.sceneManager.undo();
+      await frames(win, 2);
+      const undoneU = cube.geometry.attributes.uv.getX(0);
+      if (Math.abs(undoneU - firstU0) > 1e-3) {
+        throw new Error(`Undo after modal UV Grab expected U=${firstU0}, got ${undoneU}`);
+      }
+
+      // 6. Toggle 3D Checker Preview ON & restore OFF cleanly
+      const preCheckerMap = cube.material.map;
+      win.document.getElementById('btn-uv-checker-3d').click();
+      await frames(win, 2);
+      if (!uvEditor.checker3DEnabled || !cube.material.map || cube.material.map === preCheckerMap) {
+        throw new Error('3D Checker Preview did not apply checker map onto 3D mesh material');
+      }
+      win.document.getElementById('btn-uv-checker-3d').click();
+      await frames(win, 2);
+      if (uvEditor.checker3DEnabled || cube.material.map !== preCheckerMap) {
+        throw new Error('Disabling 3D Checker Preview did not restore original material map');
+      }
+
+      // 7. Display Stretch Angle mode & reset cleanly
+      const stretchSel = win.document.getElementById('uv-stretch-mode');
+      stretchSel.value = 'angle';
+      stretchSel.dispatchEvent(new win.Event('change', { bubbles: true }));
+      await frames(win, 2);
+      if (uvEditor.stretchMode !== 'angle' || win.document.getElementById('uv-stretch-legend').hidden) {
+        throw new Error('Display Stretch Angle legend failed to appear');
+      }
+      stretchSel.value = 'off';
+      stretchSel.dispatchEvent(new win.Event('change', { bubbles: true }));
+
+      em.exit();
+      areaMgr.resetToSingleViewport();
+      return 'UV English UI · Mark Seam · U->LSCM · Split UV · Modal G+X+0.15+Undo · Checker 3D · Stretch OK';
+    });
+
+    await test('Hard-Surface Stack & BoolTool: Live Cutter Sync, Decimate, Screw, Weighted Normal & English Inspector UI', async (win) => {
+      await reset(win);
+      const pro = win.blenderProTools || win.app?.blenderProTools;
+      if (!pro) throw new Error('BlenderProTools missing');
+
+      const hasLocalInteriorVert = (geom, limit = 0.49) => {
+        const pos = geom?.attributes?.position;
+        if (!pos) return false;
+        for (let i = 0; i < pos.count; i++) {
+          if (Math.max(Math.abs(pos.getX(i)), Math.abs(pos.getY(i)), Math.abs(pos.getZ(i))) < limit) {
+            return true;
+          }
+        }
+        return false;
+      };
+
+      const assertFiniteGeom = (geom, label) => {
+        const pos = geom?.attributes?.position;
+        if (!pos || pos.count === 0) throw new Error(`${label}: empty geometry`);
+        for (let i = 0; i < pos.array.length; i++) {
+          if (!Number.isFinite(pos.array[i])) throw new Error(`${label}: non-finite position`);
+        }
+      };
+
+      // 1. Ctrl+Shift+B quick pie menu opens in English and Esc closes cleanly
+      press(win, 'B', 'KeyB', { ctrlKey: true, shiftKey: true });
+      await frames(win, 2);
+      const boolPieTitle = win.document.querySelector('.blender-pie-title')?.textContent || '';
+      if (!boolPieTitle.includes('Hard-Surface & Boolean')) {
+        throw new Error(`Expected Hard-Surface & Boolean menu on Ctrl+Shift+B, got: "${boolPieTitle}"`);
+      }
+      press(win, 'Escape', 'Escape');
+      await frames(win, 1);
+
+      // 2. Multi-select cutter + host -> applyQuickBoolean('difference') -> live wireframe cutter
+      const host = await addCube(win, 0);
+      host.name = 'HardSurfaceHost';
+      const cutter = await addCube(win, 0);
+      cutter.name = 'HardSurfaceCutter';
+      cutter.position.set(0.4, 1.35, 0.4);
+      cutter.updateMatrixWorld(true);
+
+      win.sceneManager.select(cutter, false);
+      win.sceneManager.select(host, true);
+      const qRes = await pro.applyQuickBoolean('difference');
+      if (!qRes || qRes.host !== host) throw new Error('applyQuickBoolean did not resolve host/cutter');
+      if (cutter.userData.__boolDisplayMode !== 'wire' || !cutter.material?.wireframe) {
+        throw new Error(`Expected wireframe cutter display, got ${cutter.userData.__boolDisplayMode}`);
+      }
+      if (!hasLocalInteriorVert(host.geometry, 0.49)) {
+        throw new Error('Expected live boolean difference to carve interior vertices in host');
+      }
+
+      // 3. Live Cutter Modal Transform (G -> X -> 6 -> Enter) updates host via Web Worker, Undo restores cut
+      win.sceneManager.select(cutter, false);
+      win.document.activeElement?.blur?.();
+      await frames(win, 2);
+      press(win, 'g', 'KeyG');
+      press(win, 'x', 'KeyX');
+      press(win, '6', 'Digit6');
+      press(win, 'Enter', 'Enter');
+      await waitUntil(
+        () => cutter.position.x > 5 && !hasLocalInteriorVert(host.geometry, 0.49),
+        15000,
+        'live boolean sync on modal cutter move'
+      );
+
+      win.sceneManager.undo();
+      await waitUntil(
+        () => cutter.position.x < 1 && hasLocalInteriorVert(host.geometry, 0.49),
+        15000,
+        'live boolean restore on undo'
+      );
+
+      // 4. applyHardSurfacePolish (Bevel + Weighted Normal) + Inspector English modifier cards
+      await pro.applyHardSurfacePolish(host);
+      const stackTypes = (host.userData.modifierStack || []).map((m) => m.type);
+      if (stackTypes.join(',') !== 'boolean,bevel,weighted_normal') {
+        throw new Error(`Expected stack boolean,bevel,weighted_normal, got ${stackTypes.join(',')}`);
+      }
+      assertFiniteGeom(host.geometry, 'polished hard-surface host');
+
+      win.sceneManager.select(host, false);
+      win.document.querySelector('[data-tab="modifier"]')?.click();
+      await frames(win, 3);
+      const addSel = win.document.getElementById('modifier-add-select');
+      const optVals = Array.from(addSel?.options || []).map((o) => o.value);
+      for (const req of ['boolean', 'decimate', 'screw', 'weighted_normal']) {
+        if (!optVals.includes(req)) throw new Error(`Missing "${req}" option in #modifier-add-select`);
+      }
+      const cardTitles = Array.from(win.document.querySelectorAll('.modifier-card-title-group')).map((el) => el.textContent.trim());
+      for (const title of ['Boolean', 'Bevel', 'Weighted Normal']) {
+        if (!cardTitles.some((t) => t.includes(title))) {
+          throw new Error(`Missing Inspector card "${title}", got: ${JSON.stringify(cardTitles)}`);
+        }
+      }
+
+      // 5. Add Decimate & Screw via Inspector dropdown & verify Web Worker evaluation
+      const testMesh = await addCube(win, 3);
+      win.sceneManager.select(testMesh, false);
+      win.document.querySelector('[data-tab="modifier"]')?.click();
+      await frames(win, 2);
+
+      const sel1 = win.document.getElementById('modifier-add-select');
+      sel1.value = 'decimate';
+      sel1.dispatchEvent(new win.Event('change', { bubbles: true }));
+      await waitUntil(() => (testMesh.userData.modifierStack || []).some((m) => m.type === 'decimate') && testMesh.geometry.attributes.position.count > 0, 15000, 'decimate worker eval');
+
+      const sel2 = win.document.getElementById('modifier-add-select');
+      sel2.value = 'screw';
+      sel2.dispatchEvent(new win.Event('change', { bubbles: true }));
+      await waitUntil(() => (testMesh.userData.modifierStack || []).some((m) => m.type === 'screw') && testMesh.geometry.attributes.position.count > 48, 15000, 'screw worker eval');
+      assertFiniteGeom(testMesh.geometry, 'decimate+screw worker geometry');
+
+      return 'Ctrl+Shift+B · BoolTool Wireframe · Modal G Live Sync+Undo · Bevel+WeightedNormal · Decimate · Screw Worker OK';
+    });
+
+    await test('Sculpt Mode 2.0: 10 WASM brushes · Mask invert/clear · Voxel Remesh & Undo', async (win) => {
+      await reset(win);
+      const cube = await addCube(win, 30);
+      win.sceneManager.select(cube);
+      win.sculptMode.enter(cube);
+      if (win.sculptMode._wasmInitPromise) {
+        await win.sculptMode._wasmInitPromise;
+      }
+      await sleep(100);
+
+      const group = win.document.getElementById('sculpt-mode-selector-group');
+      if (!group || getComputedStyle(group).display === 'none') throw new Error('Sculpt toolbar hidden');
+
+      const snakeHookBtn = win.document.getElementById('btn-sculpt-snake-hook');
+      const maskBtn = win.document.getElementById('btn-sculpt-mask');
+      const invertBtn = win.document.getElementById('btn-sculpt-mask-invert');
+      const clearBtn = win.document.getElementById('btn-sculpt-mask-clear');
+      const voxelInput = win.document.getElementById('input-sculpt-voxel-size');
+      const remeshBtn = win.document.getElementById('btn-sculpt-remesh');
+      if (!snakeHookBtn || !maskBtn || !invertBtn || !clearBtn || !voxelInput || !remeshBtn) {
+        throw new Error('Missing Sculpt Mode 2.0 toolbar controls');
+      }
+
+      snakeHookBtn.click();
+      if (win.sculptMode.brushType !== 'snake_hook') throw new Error('Snake Hook brush button failed');
+
+      maskBtn.click();
+      if (win.sculptMode.brushType !== 'mask') throw new Error('Mask brush button failed');
+
+      win.sculptMode.setSymmetry(false);
+      win.sculptMode.setRadius(0.6);
+      win.sculptMode.setStrength(0.8);
+      cube.updateMatrixWorld(true);
+      const v0World = new win.THREE.Vector3()
+        .fromBufferAttribute(cube.geometry.attributes.position, 0)
+        .applyMatrix4(cube.matrixWorld);
+      win.sculptMode.applyStroke({
+        point: v0World,
+        face: { normal: new win.THREE.Vector3(0, 1, 0) },
+        object: cube
+      }, { recordUndo: true });
+      const paintedMax = Math.max(...(cube.userData.sculptMask || [0]));
+      if (!(paintedMax > 0.1)) throw new Error(`Mask brush failed to paint vertices (${paintedMax})`);
+
+      invertBtn.click();
+      if (cube.userData.sculptMask[0] < 0.01 && Math.max(...cube.userData.sculptMask) < 0.99) {
+        throw new Error('Invert Mask button failed');
+      }
+      clearBtn.click();
+      if (Math.max(...cube.userData.sculptMask) !== 0) throw new Error('Clear Mask button failed');
+
+      const origTris = cube.geometry.index ? cube.geometry.index.count / 3 : cube.geometry.attributes.position.count / 3;
+      voxelInput.value = '0.25';
+      voxelInput.dispatchEvent(new win.Event('change', { bubbles: true }));
+      remeshBtn.click();
+      await waitUntil(() => (cube.geometry.index ? cube.geometry.index.count / 3 : cube.geometry.attributes.position.count / 3) > origTris, 5000, 'voxel remesh');
+
+      const remeshedTris = cube.geometry.index.count / 3;
+      if (!(remeshedTris > 100)) throw new Error(`Expected Voxel Remesh > 100 tris, got ${remeshedTris}`);
+
+      win.sceneManager.undo();
+      const undoneTris = cube.geometry.index ? cube.geometry.index.count / 3 : cube.geometry.attributes.position.count / 3;
+      if (undoneTris !== origTris) throw new Error(`Undo remesh failed: ${undoneTris} != ${origTris}`);
+
+      win.sculptMode.exit();
+      return `10 brushes · Mask ${paintedMax.toFixed(2)} -> Invert/Clear · Remesh ${origTris}->${remeshedTris} tris + Undo OK`;
+    });
+
+    updateSummary();
+    window.__INTERACTION_DONE__ = true;
+    if (results.some((r) => r.status === 'fail')) {
+      window.__INTERACTION_FAILED__ = true;
+    }
+  </script>
+</body>
+</html>

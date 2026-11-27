@@ -1,0 +1,96 @@
+{
+  "version": 2,
+  "skills": {
+    "blender-cameras": {
+      "source": "RobLe3/cc-blender-skill",
+      "commit": "a2634b588e80265e796aa53f8ab178d75105c2af",
+      "sourceType": "github",
+      "skillPath": "plugin/skills/blender-cameras/SKILL.md",
+      "computedHash": "2ab59deed827579d045e16a42b0b49bf49712f0f0aa442bcc3366277a5dc868a"
+    },
+    "blender-export": {
+      "source": "RobLe3/cc-blender-skill",
+      "commit": "a2634b588e80265e796aa53f8ab178d75105c2af",
+      "sourceType": "github",
+      "skillPath": "plugin/skills/blender-export/SKILL.md",
+      "computedHash": "70681ceed0e40faf55bb3c603ad1c41972e3deed35aa1c3285aa4dc307fd9bec"
+    },
+    "blender-lighting": {
+      "source": "RobLe3/cc-blender-skill",
+      "commit": "a2634b588e80265e796aa53f8ab178d75105c2af",
+      "sourceType": "github",
+      "skillPath": "plugin/skills/blender-lighting/SKILL.md",
+      "computedHash": "5b0f7d2eba9696fd62456f2c9502d487865790215567e10165acc8abf76044ac"
+    },
+    "blender-materials": {
+      "source": "RobLe3/cc-blender-skill",
+      "commit": "a2634b588e80265e796aa53f8ab178d75105c2af",
+      "sourceType": "github",
+      "skillPath": "plugin/skills/blender-materials/SKILL.md",
+      "computedHash": "0e2b8347d3b30222a90646c19930846ec1ae40082830c06da4c8924812ebe444"
+    },
+    "blender-modeling": {
+      "source": "RobLe3/cc-blender-skill",
+      "commit": "a2634b588e80265e796aa53f8ab178d75105c2af",
+      "sourceType": "github",
+      "skillPath": "plugin/skills/blender-modeling/SKILL.md",
+      "computedHash": "f3586d7918fc2f3795aaec3b7e4bc2704df0a6a755dd0659104626dc7dd75cbd"
+    },
+    "blender-pro-workflow": {
+      "source": "RobLe3/cc-blender-skill",
+      "commit": "a2634b588e80265e796aa53f8ab178d75105c2af",
+      "sourceType": "github",
+      "skillPath": "plugin/skills/blender-pro-workflow/SKILL.md",
+      "computedHash": "78865d15d4e94ba5e018f473374a916c8b51e84673a9afbe7669487cebb4b8fd"
+    },
+    "blender-rendering": {
+      "source": "RobLe3/cc-blender-skill",
+      "commit": "a2634b588e80265e796aa53f8ab178d75105c2af",
+      "sourceType": "github",
+      "skillPath": "plugin/skills/blender-rendering/SKILL.md",
+      "computedHash": "9290a6537a268ab8c3f6e54800dd3075e928867974e6a1a21584418acc28f28d"
+    },
+    "blender-uv-texturing": {
+      "source": "RobLe3/cc-blender-skill",
+      "commit": "a2634b588e80265e796aa53f8ab178d75105c2af",
+      "sourceType": "github",
+      "skillPath": "plugin/skills/blender-uv-texturing/SKILL.md",
+      "computedHash": "9aa72eb0872157cb210d11acd70ab09aea39cfee454e9b145a7357dffb84fc18"
+    },
+    "blender-web-pipeline": {
+      "source": "freshtechbro/claudedesignskills",
+      "commit": "1da73febff0c3e1dfefc07f8a5ef8f7d1dfdb6cd",
+      "sourceType": "github",
+      "skillPath": ".claude/skills/blender-web-pipeline/SKILL.md",
+      "computedHash": "a9e57513f74a0883f590a456d4fd4d1ecbb1420331188ee883500bf8dbd3f8b8"
+    },
+    "closed-surface-uv-coverage": {
+      "source": "RobLe3/cc-blender-skill",
+      "commit": "a2634b588e80265e796aa53f8ab178d75105c2af",
+      "sourceType": "github",
+      "skillPath": "plugin/skills/closed-surface-uv-coverage/SKILL.md",
+      "computedHash": "5f9a55ae1ff0aa0b2e400f47dbbaa713a7de8dd465d7bef5dc48e4efe958ba41"
+    },
+    "quality-refinement-autoloop": {
+      "source": "RobLe3/cc-blender-skill",
+      "commit": "a2634b588e80265e796aa53f8ab178d75105c2af",
+      "sourceType": "github",
+      "skillPath": "plugin/skills/quality-refinement-autoloop/SKILL.md",
+      "computedHash": "79cb5658cfea31dd4367b97114105cffeafe0e2021d6bdd2f5cbde934913378e"
+    },
+    "reference-look-calibration": {
+      "source": "RobLe3/cc-blender-skill",
+      "commit": "a2634b588e80265e796aa53f8ab178d75105c2af",
+      "sourceType": "github",
+      "skillPath": "plugin/skills/reference-look-calibration/SKILL.md",
+      "computedHash": "11a40005075cce2c9b20da8d5e2872cd839fffbc006029c0821bd24ab983e87e"
+    },
+    "reference-to-3d": {
+      "source": "RobLe3/cc-blender-skill",
+      "commit": "a2634b588e80265e796aa53f8ab178d75105c2af",
+      "sourceType": "github",
+      "skillPath": "plugin/skills/reference-to-3d/SKILL.md",
+      "computedHash": "551dd35c4565982ad3044bb48ed244f5c5a30aaf9cdbc9daa1d984d9bbbef410"
+    }
+  }
+}

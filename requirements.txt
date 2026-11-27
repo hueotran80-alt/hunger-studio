@@ -1,0 +1,18 @@
+# Core (required) - HTTP + WebSocket bridge
+# 14+ is required: the server uses the process_request hook for Origin/token checks.
+websockets>=14.0
+
+# MCP Server (optional - studio_mcp.py)
+mcp>=2.0
+
+# Image-to-3D (optional) - "Image to 3D" / Hunyuan3D panel
+# Without it the panel stays disabled, the rest of the studio still runs.
+gradio_client>=1.0
+
+# Mocap AI (required for the "Video Mocap (AI)" panel).
+# mediapipe has no wheel for Python 3.13 — use Python 3.11:
+#   python3.11 -m venv .venv
+#   .venv/bin/pip install -r requirements.txt
+opencv-python-headless>=4.8
+mediapipe>=0.10
+numpy>=1.24

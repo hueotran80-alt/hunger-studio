@@ -1,0 +1,105 @@
+{
+  "version": 2,
+  "note": "Filter for the PUBLIC commercial build (npm run build -> dist/). Only CC0-1.0 and attributed CC-BY-3.0/4.0 assets ship to dist/. Non-commercial (CC-BY-NC*), Mixamo, Ready Player Me, and unverified assets remain dev-only on disk unless STUDIO_SHIP_ALL=1.",
+  "library": {
+    "maxAssetMB": 5,
+    "requireCommercialSafe": true,
+    "include": [
+      "/models/Mannequin_CC0.glb",
+      "/models/Bot_CC0.glb",
+      "/models/LeePerrySmith.glb",
+      "/assets/characters/CesiumMan.glb",
+      "/assets/characters/nemetona.glb",
+      "/assets/environments/Southwark_Stained_Glass.glb"
+    ],
+    "exclude": [
+      "/models/Michelle.glb",
+      "/models/Soldier.glb",
+      "/models/Soldier_Human_Rigged.glb",
+      "/assets/environments/Church_Pew_Bench.glb",
+      "/assets/environments/Church_Environment.glb",
+      "/assets/environments/Cathedral_Altar_Props.glb",
+      "/assets/environments/Catholic_Cathedral_Sanctuary.glb",
+      "/assets/environments/Grand_Piano_Concert.glb",
+      "/assets/characters/readyplayer.me.glb",
+      "/assets/characters/Congregation_Male.glb",
+      "/assets/characters/Congregation_Male_Animated.glb",
+      "/assets/characters/test_brunette.glb",
+      "/assets/characters/Mary_Statue.glb",
+      "/assets/characters/Mary_Statue_Lourdes.glb",
+      "/assets/characters/Mary_Statue_159.glb",
+      "/assets/characters/Mary_Statue_NotreDame.glb",
+      "/assets/characters/Mary_Statue_Sorrows.glb",
+      "/assets/characters/kira.glb"
+    ]
+  },
+  "models": {
+    "excludeDirs": [
+      "hunyuan_inputs",
+      "hunyuan_outputs"
+    ],
+    "excludeFiles": [
+      "pose_landmarker_heavy.task",
+      "Michelle.glb",
+      "Soldier.glb",
+      "Soldier_Human_Rigged.glb",
+      "uploaded_mocap.png"
+    ],
+    "excludePrefixes": [
+      "uploaded_mocap_"
+    ]
+  },
+  "vendor": {
+    "excludeDirs": [
+      "mp4-muxer",
+      "rapier",
+      "three-bvh-csg",
+      "three-gpu-pathtracer",
+      "three-mesh-bvh",
+      "wasm",
+      "three/addons/animation",
+      "three/addons/cameras",
+      "three/addons/controls",
+      "three/addons/curves",
+      "three/addons/csm",
+      "three/addons/effects",
+      "three/addons/environments",
+      "three/addons/exporters",
+      "three/addons/geometries",
+      "three/addons/helpers",
+      "three/addons/interactive",
+      "three/addons/lines",
+      "three/addons/loaders",
+      "three/addons/materials",
+      "three/addons/math",
+      "three/addons/misc",
+      "three/addons/modifiers",
+      "three/addons/nodes",
+      "three/addons/objects",
+      "three/addons/physics",
+      "three/addons/postprocessing",
+      "three/addons/renderers",
+      "three/addons/shaders",
+      "three/addons/textures",
+      "three/addons/transpiler",
+      "three/addons/utils",
+      "three/addons/webxr",
+      "three/addons/libs/Ammo",
+      "three/addons/libs/ecsy",
+      "three/addons/libs/lottie_canvas",
+      "three/addons/libs/mikktspace",
+      "three/addons/libs/morphgons",
+      "three/addons/libs/motion-controllers",
+      "three/addons/libs/potpack",
+      "three/addons/libs/stats",
+      "three/addons/libs/tween"
+    ],
+    "excludeFiles": [
+      ".DS_Store",
+      "rapier/rapier.mjs"
+    ]
+  },
+  "host": {
+    "maxFileMB": 25
+  }
+}

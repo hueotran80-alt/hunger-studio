@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <title>Web Blender Studio — Chaos UI &amp; Mode Transition Suite</title>
+  <style>
+    :root { color-scheme: dark; }
+    body { margin: 0; background: #141414; color: #e6e6e6; font: 13px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; padding: 16px 20px; }
+    header { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+    h1 { font-size: 15px; margin: 0; }
+    #summary { padding: 3px 10px; border-radius: 999px; background: #2a2a2a; border: 1px solid #3d3d3d; font-variant-numeric: tabular-nums; }
+    #summary.pass { background: #12351f; border-color: #2ecc71; color: #8ef0b0; }
+    #summary.fail { background: #3a1414; border-color: #e74c3c; color: #ff9b90; }
+    ol { list-style: none; padding: 0; margin: 0 0 14px; display: flex; flex-direction: column; gap: 8px; }
+    li { border: 1px solid #2f2f2f; border-radius: 6px; padding: 9px 11px; background: #1b1b1b; }
+    li.pass { border-color: #245c39; }
+    li.fail { border-color: #7a2e2a; background: #221515; }
+    .detail { color: #9aa0a6; margin-top: 2px; white-space: pre-wrap; font-size: 12px; }
+    iframe { width: 1280px; height: 760px; border: 1px solid #333; border-radius: 6px; background: #111; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Chaos UI, Multi-Mode Transition &amp; Leak Integrity Suite</h1>
+    <span id="summary">Đang chạy…</span>
+  </header>
+  <ol id="results"></ol>
+  <iframe id="studio-frame" src="../index.html" title="Studio under Chaos UI test"></iframe>
+
+  <script type="module">
+    const resultsEl = document.getElementById('results');
+    const summaryEl = document.getElementById('summary');
+    const frame = document.getElementById('studio-frame');
+    const items = [];
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+    function assert(cond, msg) {
+      if (!cond) throw new Error(msg || 'Assertion failed');
+    }
+
+    async function waitFor(check, timeoutMs = 20000, label = 'condition') {
+      const t0 = Date.now();
+      while (Date.now() - t0 < timeoutMs) {
+        try {
+          const val = await check();
+          if (val) return val;
+        } catch (_) {}
+        await sleep(80);
+      }
+      throw new Error(`Timeout waiting for ${label}`);
+    }
+
+    async function test(name, fn) {
+      const li = document.createElement('li');
+      li.innerHTML = '<div class="name"></div><div class="detail">Đang chạy…</div>';
+      li.querySelector('.name').textContent = name;
+      resultsEl.appendChild(li);
+      const entry = { name, status: 'running', detail: '' };
+      items.push(entry);
+      try {
+        const detail = await fn();
+        entry.status = 'pass';
+        entry.detail = detail || '';
+        li.className = 'pass';
+        li.querySelector('.detail').textContent = `PASS · ${entry.detail}`;
+      } catch (err) {
+        entry.status = 'fail';
+        entry.detail = err && err.stack ? err.stack : String(err);
+        li.className = 'fail';
+        li.querySelector('.detail').textContent = `FAIL · ${entry.detail}`;
+        console.error('[chaos-ui-suite]', name, err);
+      }
+    }
+
+    const requiredGlobals = [
+      'app', 'sceneManager', 'studio', 'outliner', 'inspector', 'uvEditor',
+      'shaderEditor', 'paintMode', 'rigSystem', 'poseShelf', 'physicsPanel',
+      'simulationManager', 'editMode', 'sculptMode', 'exporter', 'engine',
+    ];
+    const w = await waitFor(
+      () => {
+        const win = frame.contentWindow;
+        return win && requiredGlobals.every((key) => Boolean(win[key])) ? win : null;
+      },
+      25000,
+      'Studio subsystems boot'
+    );
+    await sleep(300);
+
+    // 1. Outliner + Inspector bidirectional UI sync
+    await test('Outliner & Inspector: đồng bộ hai chiều khi tạo, lọc tìm kiếm, ẩn/khóa và sửa Transform', async () => {
+      w.studio.clearScene();
+      const box = w.studio.addCube({ name: 'ChaosHeroBox' });
+      const sph = w.studio.addSphere({ name: 'ChaosOrb' });
+      w.sceneManager.setSelection([box]);
+      w.outliner.render();
+      w.inspector.setTargetObject(box);
+      w.inspector.render();
+
+      const nodes = w.outliner.getSceneNodes();
+      assert(nodes.some((n) => n.name === 'ChaosHeroBox' || (n.children || []).some((c) => c.name === 'ChaosHeroBox')), 'Outliner thiếu ChaosHeroBox');
+      const heroNode = nodes.find((n) => n.name === 'ChaosHeroBox') || { name: 'ChaosHeroBox', object: box };
+      assert(w.outliner.nodeMatchesSearch(heroNode, 'hero'), 'Outliner search không khớp ChaosHeroBox');
+      assert(!w.outliner.nodeMatchesSearch(heroNode, 'nonexistent_xyz'), 'Outliner search khớp sai');
+
+      w.inspector.applyPropValue('pos', 'x', 4.25);
+      w.inspector.applyPropValue('scale', 'y', 1.75);
+      assert(Math.abs(box.position.x - 4.25) < 1e-4, `position.x=${box.position.x}`);
+      assert(Math.abs(box.scale.y - 1.75) < 1e-4, `scale.y=${box.scale.y}`);
+      assert(Math.abs(w.inspector.getCurrentPropValue('pos', 'x') - 4.25) < 1e-4, 'Inspector đọc sai position.x');
+
+      // Undo transform via SceneManager
+      w.sceneManager.setSelection([sph]);
+      w.inspector.setTargetObject(sph);
+      w.inspector.render();
+      return `Outliner ${nodes.length} root nodes · Inspector transform sync OK`;
+    });
+
+    // 2. UV Editor UI: selection modes, pan/scale UV + Undo, 3D checker material restore
+    await test('UVEditorUI: chọn Vertex/Edge/Face/Island, biến đổi UV có Undo và khôi phục Checker 3D không rò rỉ material', async () => {
+      assert(w.uvEditor, 'window.uvEditor không tồn tại');
+      const mesh = w.studio.addCube({ name: 'UVTestCube' });
+      const origMat = mesh.material;
+      w.sceneManager.setSelection([mesh]);
+
+      for (const m of ['vertex', 'edge', 'face', 'island']) {
+        w.uvEditor.setSelectionMode(m);
+        assert(w.uvEditor.selectionMode === m, `selectionMode=${w.uvEditor.selectionMode} != ${m}`);
+      }
+      w.uvEditor.setSelectionMode('face');
+      w.uvEditor.selectAll();
+
+      const uvAttr = mesh.geometry.attributes.uv;
+      const u0Before = uvAttr.getX(0);
+      w.uvEditor.panUV(0.25, -0.15, true);
+      const u0Moved = mesh.geometry.attributes.uv.getX(0);
+      assert(Math.abs(u0Moved - (u0Before + 0.25)) < 1e-4, `UV không dịch chuyển: ${u0Before} -> ${u0Moved}`);
+
+      w.uvEditor.scaleUV(0.5, true);
+      w.uvEditor.setStretchMode('angle');
+      w.uvEditor.setStretchMode('none');
+
+      // Toggle 3D UV checker on & off — original material MUST be restored cleanly
+      w.uvEditor.toggleChecker3D(true);
+      w.uvEditor.restoreChecker3DMaterial();
+      w.uvEditor.toggleChecker3D(false);
+      assert(mesh.material === origMat, 'Checker 3D không trả lại material gốc cho mesh');
+      return `UV pan (${u0Before.toFixed(2)} -> ${u0Moved.toFixed(2)}) · Checker 3D restored`;
+    });
+
+    // 3. Shader Node Editor UI: preset node graphs compile & bind to active mesh material
+    await test('ShaderNodeEditorUI: áp dụng đồ thị nút Procedural Stone & Fresnel Rim không lỗi biên dịch shader', async () => {
+      assert(w.shaderEditor, 'window.shaderEditor không tồn tại');
+      const mesh = w.studio.addSphere({ name: 'ShaderBall' });
+      w.sceneManager.setSelection([mesh]);
+      w.shaderEditor.syncFromSelection();
+      w.shaderEditor.ensureGraphOnSelection();
+
+      w.shaderEditor.applyPresetGraph('procedural_stone');
+      const stoneNodes = w.shaderEditor.graph?.nodes?.size || 0;
+      assert(stoneNodes >= 5, `procedural_stone quá ít nút: ${stoneNodes}`);
+
+      w.shaderEditor.applyPresetGraph('fresnel_rim');
+      const rimNodes = w.shaderEditor.graph?.nodes?.size || 0;
+      assert(rimNodes >= 4, `fresnel_rim quá ít nút: ${rimNodes}`);
+
+      // Render a real WebGL frame to verify compiled onBeforeCompile/material shader does not throw GL error
+      w.engine.renderer.render(w.engine.scene, w.engine.camera);
+      return `Stone (${stoneNodes} nodes) & Fresnel Rim (${rimNodes} nodes) rendered cleanly`;
+    });
+
+    // 4. PaintMode (Vertex Paint + 2D/3D Texture Paint + Undo)
+    await test('PaintMode: chuyển đổi Vertex Paint ↔ Texture Paint, tô màu, Dirty Vertex Colors & hoàn tác sạch', async () => {
+      assert(w.paintMode, 'window.paintMode không tồn tại');
+      const mesh = w.studio.addCube({ name: 'PaintCube' });
+      w.sceneManager.setSelection([mesh]);
+
+      w.paintMode.enter(mesh, 'vertex-paint');
+      w.paintMode.fillVertexColor('#ff3366', mesh);
+      assert(Boolean(mesh.geometry.attributes.color), 'Vertex Paint không tạo attribute color');
+      w.paintMode.dirtyVertexColors({ blurIterations: 1 }, mesh);
+      w.paintMode.exit();
+
+      w.paintMode.enter(mesh, 'texture-paint', { width: 256, height: 256 });
+      const activeSlot = w.paintMode.activeSlot;
+      const slotInfo = w.paintMode.ensureMaterialAndSlot(mesh, activeSlot, 256, 256);
+      const layer = slotInfo?.stack?.getActiveLayer(activeSlot);
+      assert(Boolean(layer), `Texture Paint không khởi tạo được active layer cho slot ${activeSlot}`);
+      w.paintMode.setColor('#22c55e');
+      w.paintMode.paint2DAtUV(0.5, 0.5, { radiusPx: 12 });
+      w.paintMode.commitTextureStroke(mesh, 'Chaos Texture Dot');
+      const rgba = w.paintMode.sampleRgbaAtUV(layer, 0.5, 0.5);
+      assert(Array.isArray(rgba) && rgba.every((v) => Number.isFinite(v)), 'sampleRgbaAtUV không trả dữ liệu pixel hợp lệ');
+      w.paintMode.exit();
+      assert(!w.paintMode.isActive, 'PaintMode chưa thoát hẳn sau exit()');
+      return `Vertex Paint + Texture Paint 256×256 (${activeSlot}, RGBA=${rgba.join(',')}) + exit sạch`;
+    });
+
+    // 5. RigSystem + PoseShelf + Weight Paint + Edit Bones full character cycle
+    await test('RigSystem & PoseShelf: tạo Mannequin, đổi Pose, Mirror, Weight Paint, Edit Bones và thoát sạch không rò helper', async () => {
+      assert(w.rigSystem && w.poseShelf, 'Thiếu rigSystem hoặc poseShelf');
+      w.studio.clearScene();
+      const rigBundle = w.rigSystem.createRiggedMannequin(1.8, { name: 'ChaosMannequin' });
+      const char = rigBundle.armatureGroup;
+      assert(Boolean(char?.isObject3D), 'createRiggedMannequin thiếu armatureGroup Object3D');
+      w.sceneManager.setSelection([char]);
+
+      const presets = Object.keys(w.rigSystem.getPosePresets() || {});
+      assert(presets.length >= 10, `Chỉ có ${presets.length} pose presets`);
+
+      // Verify both wrapper bundle and Object3D root work without SkeletonHelper crash
+      w.rigSystem.setPoseMode(true, rigBundle);
+      w.poseShelf.applySelectedPose(presets[1]);
+      w.rigSystem.mirrorPose(char, 'left_to_right');
+      w.rigSystem.resetPose(char);
+      w.rigSystem.setPoseMode(false, char);
+
+      w.rigSystem.enableWeightPaintMode(char);
+      w.rigSystem.disableWeightPaintMode();
+
+      // Also verify passing Skeleton directly into enterEditBoneMode does not crash SkeletonHelper
+      w.rigSystem.enterEditBoneMode(rigBundle.skeleton);
+      w.rigSystem.exitEditBoneMode();
+
+      w.engine.renderer.render(w.engine.scene, w.engine.camera);
+      return `${presets.length} presets · Pose -> Mirror -> Reset -> WeightPaint -> EditBones(Skeleton) OK`;
+    });
+
+    // 6. PhysicsPanel + SimulationManager UI sync
+    await test('PhysicsPanel: gắn RigidBody, đồng bộ Inspector/Dock UI, chạy mô phỏng rồi Reset deterministic', async () => {
+      assert(w.physicsPanel && w.simulationManager, 'Thiếu physicsPanel hoặc simulationManager');
+      w.studio.clearScene();
+      const b = w.studio.addCube({ name: 'PhysChaosBox' });
+      b.position.set(0, 4, 0);
+      b.updateMatrixWorld(true);
+      w.sceneManager.setSelection([b]);
+
+      await w.simulationManager.init();
+      w.simulationManager.setConfig(b, { body: 'dynamic', mass: 3.0, restitution: 0.4 });
+      w.physicsPanel.refresh();
+      w.physicsPanel.refreshStatus();
+
+      w.simulationManager.stepFrames(20);
+      const droppedY = b.position.y;
+      assert(droppedY < 3.9, `Hộp không rơi: y=${droppedY}`);
+
+      w.simulationManager.reset();
+      assert(Math.abs(b.position.y - 4.0) < 1e-4, `Reset không trả đúng vị trí đầu: y=${b.position.y}`);
+      return `y=4.00 -> ${droppedY.toFixed(2)} -> reset 4.00 OK`;
+    });
+
+    // 7. HIGH-STRESS CHAOS LOOP: 12 rapid mode switches + 20 Undo/Redo operations + .wbs ZIP round-trip + Scene Leak Check
+    await test('Chaos Stress Loop: 12 vòng chuyển Mode liên hoàn + 20 bước Undo/Redo + .wbs ZIP round-trip (0 rò rỉ Scene/Helper)', async () => {
+      w.studio.clearScene();
+      const baseSceneChildrenBefore = w.engine.scene.children.length;
+
+      const hero = w.studio.addCube({ name: 'ChaosSurvivor' });
+      w.sceneManager.setSelection([hero]);
+
+      // Rapid mode cycling: Object -> Edit -> Sculpt -> VertexPaint -> TexturePaint -> Object (x12 transitions)
+      for (let cycle = 0; cycle < 3; cycle++) {
+        w.editMode.enter(hero);
+        w.editMode.setSelectionMode(cycle % 2 === 0 ? 'face' : 'edge');
+        w.editMode.exit();
+
+        w.sculptMode.enter(hero);
+        w.sculptMode.exit();
+
+        w.paintMode.enter(hero, 'vertex-paint');
+        w.paintMode.exit();
+
+        w.paintMode.enter(hero, 'texture-paint');
+        w.paintMode.exit();
+      }
+
+      assert(!w.editMode.isActive && !w.sculptMode.isActive && !w.paintMode.isActive, 'Còn mode kẹt isActive sau vòng xoáy chuyển mode');
+
+      // Check zero leaked transient helpers in engine.scene (allowing at most persistent grid/lights)
+      const baseSceneChildrenAfterModes = w.engine.scene.children.length;
+      const deltaHelpers = baseSceneChildrenAfterModes - baseSceneChildrenBefore;
+      assert(deltaHelpers <= 2, `Rò rỉ ${deltaHelpers} node trực tiếp trên engine.scene sau 12 lần đổi mode`);
+
+      // Record 20 undoable commands via studio/sceneManager and bounce Undo x20 -> Redo x20
+      const createdNames = [];
+      for (let i = 0; i < 20; i++) {
+        const nm = `UndoProbe_${i}`;
+        createdNames.push(nm);
+        const obj = w.studio.addCube({ name: nm });
+        obj.position.set(i * 0.5, 0.5, 0);
+      }
+      const countAtPeak = w.sceneManager.objects.size;
+      assert(countAtPeak >= 21, `Thiếu vật thể sau khi tạo 20 khối: ${countAtPeak}`);
+
+      for (let i = 0; i < 20; i++) w.sceneManager.undo();
+      const countAfterUndo = w.sceneManager.objects.size;
+      assert(countAfterUndo === countAtPeak - 20, `Undo 20 bước lệch số lượng: ${countAfterUndo} != ${countAtPeak - 20}`);
+
+      for (let i = 0; i < 20; i++) w.sceneManager.redo();
+      const countAfterRedo = w.sceneManager.objects.size;
+      assert(countAfterRedo === countAtPeak, `Redo 20 bước lệch số lượng: ${countAfterRedo} != ${countAtPeak}`);
+
+      // Full .wbs ZIP round-trip of the 21-object scene
+      const pkg = await w.exporter.exportProjectPackage({ download: false });
+      const file = new w.File([pkg.blob], 'chaos-roundtrip.wbs', { type: 'application/octet-stream' });
+      await w.exporter.importProjectJSON(file);
+      await sleep(250);
+
+      const countRestored = w.sceneManager.objects.size;
+      assert(countRestored === countAtPeak, `Mất vật thể sau .wbs round-trip: ${countRestored} != ${countAtPeak}`);
+      w.engine.renderer.render(w.engine.scene, w.engine.camera);
+
+      return `12 mode transitions (Δscene=${deltaHelpers}) · 20× Undo/Redo exact (${countAtPeak}->${countAfterUndo}->${countAfterRedo}) · .wbs ${pkg.blob.size} B restored ${countRestored} objects`;
+    });
+
+    const passed = items.filter((i) => i.status === 'pass').length;
+    const failed = items.filter((i) => i.status === 'fail').length;
+    window.__CHAOS_UI_SUITE_RESULTS__ = { passed, failed, items };
+    summaryEl.textContent = `${passed} passed · ${failed} failed`;
+    summaryEl.className = failed ? 'fail' : 'pass';
+    console.log(`[chaos-ui-suite] ${passed} passed, ${failed} failed`);
+  </script>
+</body>
+</html>

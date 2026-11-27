@@ -1,0 +1,432 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <title>Web Blender Studio — WebCodecs Sequential Decode Suite</title>
+  <style>
+    :root { color-scheme: dark; }
+    body { margin: 0; background: #141414; color: #e6e6e6; font: 13px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    header { padding: 16px 20px; border-bottom: 1px solid #2f2f2f; display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+    h1 { font-size: 15px; margin: 0; font-weight: 600; }
+    #summary { padding: 3px 10px; border-radius: 999px; background: #2a2a2a; border: 1px solid #3d3d3d; font-variant-numeric: tabular-nums; }
+    #summary.pass { background: #12351f; border-color: #2ecc71; color: #8ef0b0; }
+    #summary.fail { background: #3a1414; border-color: #e74c3c; color: #ff9b90; }
+    main { padding: 16px 20px; max-width: 980px; }
+    ol { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 8px; }
+    li { border: 1px solid #2f2f2f; border-radius: 6px; padding: 9px 11px; background: #1b1b1b; }
+    li.pass { border-color: #245c39; }
+    li.fail { border-color: #7a2e2a; background: #221515; }
+    li.running { border-color: #4a4a2a; }
+    .name { font-weight: 600; }
+    .detail { color: #9aa0a6; margin-top: 2px; white-space: pre-wrap; word-break: break-word; }
+    .badge { float: right; font-size: 11px; padding: 1px 7px; border-radius: 999px; background: #2a2a2a; }
+    li.pass .badge { background: #1d4d30; color: #8ef0b0; }
+    li.fail .badge { background: #5a1f1c; color: #ffb4ab; }
+    code { color: #8ab4f8; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>WebCodecs — Sequential VideoDecoder cho Mocap</h1>
+    <span id="summary">Đang chạy…</span>
+    <span class="detail">Kết quả: <code>window.__WEBCODECS_SUITE_RESULTS__</code>. Video mẫu: <code>models/sample_human_motion.webm</code> (VP8) + <code>models/shuffle_dance.mp4</code> (H.264).</span>
+  </header>
+  <main><ol id="results"></ol></main>
+
+  <script type="module">
+    import { BrowserMocapEngine } from '../js/animation/browser-mocap.js';
+    import {
+      isWebCodecsSupported, sniffContainer, demuxWebM, demuxMp4, loadMp4Box, openVideoFrameStream,
+    } from '../js/animation/video-decoder.js';
+
+    const WEBM_URL = '../models/sample_human_motion.webm';
+    const MP4_URL = '../models/shuffle_dance.mp4';
+    const resultsEl = document.getElementById('results');
+    const summaryEl = document.getElementById('summary');
+    const results = [];
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    // Headless chỉ decode frame của <video> paused khi compositor còn hoạt động;
+    // giữ một vòng rAF nền để các test seek/processVideo có frame thật.
+    (function pump() { requestAnimationFrame(pump); })();
+    const hasWebCodecs = isWebCodecsSupported();
+    const skipNote = 'SKIP — trình duyệt không có WebCodecs (đường seek là mặc định).';
+
+    function addItem(name) {
+      const li = document.createElement('li');
+      li.className = 'running';
+      li.innerHTML = '<span class="badge">…</span><div class="name"></div><div class="detail"></div>';
+      li.querySelector('.name').textContent = name;
+      resultsEl.appendChild(li);
+      return li;
+    }
+    function finishItem(li, ok, detail) {
+      li.className = ok ? 'pass' : 'fail';
+      li.querySelector('.badge').textContent = ok ? 'PASS' : 'FAIL';
+      li.querySelector('.detail').textContent = detail || '';
+    }
+    function withTimeout(promise, ms, label) {
+      return Promise.race([
+        promise,
+        sleep(ms).then(() => { throw new Error(`Timeout ${ms}ms: ${label}`); }),
+      ]);
+    }
+    async function loadVideo(url) {
+      const video = document.createElement('video');
+      video.muted = true;
+      video.preload = 'auto';
+      video.playsInline = true;
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error(`Không tải được ${url} trong 20s`)), 20000);
+        video.addEventListener('loadedmetadata', () => { clearTimeout(timer); resolve(); }, { once: true });
+        video.addEventListener('error', () => { clearTimeout(timer); reject(new Error(`MediaError ${video.error ? video.error.code : '?'}: ${url}`)); }, { once: true });
+        video.src = url;
+        video.load();
+      });
+      return video;
+    }
+    async function seekTo(video, t) {
+      await new Promise((resolve) => {
+        let done = false;
+        const finish = () => { if (!done) { done = true; video.removeEventListener('seeked', finish); resolve(); } };
+        video.addEventListener('seeked', finish, { once: true });
+        video.currentTime = Math.min(t, Math.max(0, video.duration - 0.001));
+        setTimeout(finish, 1500);
+      });
+      await sleep(30);
+    }
+    function thumb(canvas, source, w = 32, h = 18) {
+      canvas.width = w; canvas.height = h;
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      ctx.drawImage(source, 0, 0, w, h);
+      return ctx.getImageData(0, 0, w, h).data;
+    }
+    function meanAbsDiff(a, b) {
+      let sum = 0;
+      for (let i = 0; i < a.length; i += 4) {
+        sum += Math.abs(a[i] - b[i]) + Math.abs(a[i + 1] - b[i + 1]) + Math.abs(a[i + 2] - b[i + 2]);
+      }
+      return sum / ((a.length / 4) * 3);
+    }
+    /** Deterministic stub landmarker: constant visible pose, no WASM needed. */
+    async function stubLandmarkerFactory() {
+      const lm = Array.from({ length: 33 }, (_, i) => ({
+        x: 0.5 + 0.2 * Math.sin(i), y: 0.2 + 0.02 * i, z: 0, visibility: 0.95,
+      }));
+      return {
+        detectForVideo: () => ({ worldLandmarks: [lm], landmarks: [lm] }),
+        close() {},
+      };
+    }
+
+    let webmBytes = null;
+    let webmDemux = null;
+    let mp4Demux = null;
+    let sampleVideo = null;
+
+    const tests = [
+      {
+        name: 'Sniff container + demux WebM mẫu (VP8): đủ frame, timestamp đơn điệu',
+        async run() {
+          webmBytes = new Uint8Array(await (await fetch(WEBM_URL)).arrayBuffer());
+          if (sniffContainer(webmBytes) !== 'webm') throw new Error('sniff != webm');
+          webmDemux = demuxWebM(webmBytes);
+          const d = webmDemux;
+          if (d.frameCount < 100) throw new Error(`chỉ ${d.frameCount} frame`);
+          if (!d.codec.startsWith('vp8') && !d.codec.startsWith('vp09') && !d.codec.startsWith('av01')) throw new Error(`codec lạ: ${d.codec}`);
+          for (let i = 1; i < d.samples.length; i++) {
+            if (d.samples[i].timestampUs <= d.samples[i - 1].timestampUs) throw new Error(`timestamp không đơn điệu tại ${i}`);
+          }
+          if (Math.abs(d.samples[0].timestampUs) > 1000) throw new Error('frame đầu không ở ~0s');
+          if (!d.samples.some((s) => s.keyframe)) throw new Error('không có keyframe');
+          sampleVideo = await loadVideo(WEBM_URL);
+          if (Math.abs(d.durationSec - sampleVideo.duration) > 0.25) throw new Error(`duration lệch: demux ${d.durationSec.toFixed(3)} vs video ${sampleVideo.duration.toFixed(3)}`);
+          const expected = Math.round(sampleVideo.duration * d.fps);
+          if (Math.abs(d.frameCount - expected) > 2) throw new Error(`frameCount ${d.frameCount} vs ${expected} từ <video>`);
+          return `${d.frameCount} frames · ${d.codec} · ${d.codedWidth}×${d.codedHeight} · ${d.fps.toFixed(2)} fps · ${d.durationSec.toFixed(2)}s (khớp <video> ±2 frame)`;
+        },
+      },
+      {
+        name: 'Demux MP4 (mp4box vendored): avc1 + avcC description, sample decode-order',
+        async run() {
+          const bytes = new Uint8Array(await (await fetch(MP4_URL)).arrayBuffer());
+          if (sniffContainer(bytes) !== 'mp4') throw new Error('sniff != mp4');
+          const lib = await loadMp4Box();
+          mp4Demux = demuxMp4(bytes, lib);
+          const d = mp4Demux;
+          if (d.frameCount < 100) throw new Error(`chỉ ${d.frameCount} sample`);
+          if (!d.samples[0].keyframe) throw new Error('sample đầu không phải keyframe');
+          if (d.codec.startsWith('avc1') && (!d.description || d.description.length < 7)) throw new Error('thiếu avcC description');
+          if (!d.samples.every((s) => s.data && s.data.length > 0)) throw new Error('sample rỗng');
+          return `${d.frameCount} samples · ${d.codec} · description ${d.description ? d.description.length : 0} B · ${d.fps.toFixed(2)} fps`;
+        },
+      },
+      {
+        name: 'VideoDecoder tuần tự (WebM): timestamp khớp demux chính xác từng µs',
+        async run() {
+          if (!hasWebCodecs) return skipNote;
+          const stream = await openVideoFrameStream(webmBytes, { maxBuffered: 6 });
+          const N = 40;
+          let count = 0;
+          let lastTs = -1;
+          try {
+            let item;
+            while (count < N && (item = await stream.next())) {
+              const expected = webmDemux.samples[count].timestampUs;
+              if (item.timestampUs !== expected) throw new Error(`frame ${count}: ts ${item.timestampUs} != demux ${expected}`);
+              if (item.timestampUs <= lastTs) throw new Error('output không theo thứ tự presentation');
+              lastTs = item.timestampUs;
+              if (!item.frame.displayWidth || !item.frame.displayHeight) throw new Error('VideoFrame thiếu kích thước');
+              item.frame.close();
+              count++;
+            }
+          } finally {
+            stream.cancel();
+          }
+          if (count !== N) throw new Error(`chỉ giải được ${count}/${N} frame`);
+          return `${count} frames giải tuần tự · timestamp khớp demux 100% · ${stream.codec}`;
+        },
+      },
+      {
+        name: 'VideoDecoder tuần tự (MP4 H.264 B-frame + edit list): output đúng thứ tự presentation',
+        async run() {
+          if (!hasWebCodecs) return skipNote;
+          const bytes = new Uint8Array(await (await fetch(MP4_URL)).arrayBuffer());
+          const stream = await openVideoFrameStream(bytes, { maxBuffered: 6 });
+          const shift = mp4Demux.hasEditList ? ((mp4Demux.presDelayUs || 0) - (mp4Demux.editStartUs || 0)) : 0;
+          const sorted = [...mp4Demux.samples]
+            .filter((s) => !mp4Demux.hasEditList || (s.timestampUs >= (mp4Demux.editStartUs || 0) - 1000 && s.timestampUs < (mp4Demux.editEndUs ?? Infinity) + 1000))
+            .sort((a, b) => a.timestampUs - b.timestampUs)
+            .map((s) => Math.max(0, s.timestampUs + shift));
+          let count = 0;
+          try {
+            let item;
+            while (count < 20 && (item = await stream.next())) {
+              if (item.timestampUs !== sorted[count]) throw new Error(`frame ${count}: ts ${item.timestampUs} != ${sorted[count]} (reorder/elst sai)`);
+              item.frame.close();
+              count++;
+            }
+          } finally {
+            stream.cancel();
+          }
+          if (count !== 20) throw new Error(`chỉ giải được ${count}/20 frame`);
+          return `20 frames H.264 · presentation order chuẩn (cts reorder${mp4Demux.hasEditList ? ' + elst' : ''}) · ${stream.codec}`;
+        },
+      },
+      {
+        name: 'Parity processVideo: WebCodecs vs seek — cùng numFrames/times/schema',
+        async run() {
+          if (!hasWebCodecs) return skipNote;
+          const video = sampleVideo || await loadVideo(WEBM_URL);
+          const common = { maxFrames: 20, frameStep: 10, videoFps: 25, footLock: true, landmarkerFactory: stubLandmarkerFactory };
+          const fastEngine = new BrowserMocapEngine();
+          const fast = await withTimeout(fastEngine.processVideo(video, common), 30000, 'webcodecs processVideo');
+          fastEngine.dispose();
+          if (fast.decodePath !== 'webcodecs') throw new Error(`decodePath = ${fast.decodePath} (không chạy WebCodecs)`);
+          const seekEngine = new BrowserMocapEngine();
+          const slow = await withTimeout(seekEngine.processVideo(video, { ...common, webCodecs: false }), 60000, 'seek processVideo');
+          seekEngine.dispose();
+          if (slow.decodePath !== 'seek') throw new Error('webCodecs:false vẫn chạy WebCodecs');
+          if (fast.numFrames !== slow.numFrames) throw new Error(`numFrames ${fast.numFrames} != ${slow.numFrames}`);
+          const keys = (o) => Object.keys(o).sort().join(',');
+          if (keys(fast.mocapFrames[0]) !== keys(slow.mocapFrames[0])) throw new Error('schema mocapFrames lệch');
+          for (let i = 0; i < fast.numFrames; i++) {
+            if (Math.abs(fast.mocapFrames[i].time - slow.mocapFrames[i].time) > 1e-5) throw new Error(`time lệch tại frame ${i}`);
+          }
+          if (fast.fps !== slow.fps || fast.videoFps !== slow.videoFps || fast.frameStep !== slow.frameStep) throw new Error('fps/frameStep lệch');
+          if (fast.detectedFrames !== slow.detectedFrames) throw new Error('detectedFrames lệch');
+          const topKeys = Object.keys(slow).every((k) => k in fast);
+          if (!topKeys) throw new Error('output thiếu khoá so với đường seek');
+          return `${fast.numFrames} frames · times khớp 1e-5 · schema giữ nguyên · webcodecs/seek đều PASS`;
+        },
+      },
+      {
+        name: 'Parity pixel: frame giải mã WebCodecs khớp frame seek của <video>',
+        async run() {
+          if (!hasWebCodecs) return skipNote;
+          const video = sampleVideo || await loadVideo(WEBM_URL);
+          const targets = [0.5, 2.0, 5.0];
+          const canvas = document.createElement('canvas');
+          // Thumbnails of decoded frames within ±1 frame of each target.
+          const wanted = new Map(targets.map((t) => [t, []]));
+          const stream = await openVideoFrameStream(webmBytes, { maxBuffered: 6 });
+          try {
+            let item;
+            while ((item = await stream.next())) {
+              let near = false;
+              for (const t of targets) {
+                if (Math.abs(item.timeSec - t) <= 1.01 / webmDemux.fps) {
+                  wanted.get(t).push(thumb(canvas, item.frame));
+                  near = true;
+                }
+              }
+              item.frame.close();
+              if (!near && item.timeSec > Math.max(...targets) + 0.2) break;
+            }
+          } finally {
+            stream.cancel();
+          }
+          const reports = [];
+          for (const t of targets) {
+            const candidates = wanted.get(t);
+            if (!candidates.length) throw new Error(`không có frame giải mã gần ${t}s`);
+            await seekTo(video, t);
+            const seeked = thumb(canvas, video);
+            const best = Math.min(...candidates.map((c) => meanAbsDiff(seeked, c)));
+            if (best > 12) throw new Error(`MAD ${best.toFixed(1)} tại ${t}s (>12): lệch frame`);
+            reports.push(`${t}s: MAD ${best.toFixed(2)}`);
+          }
+          return reports.join(' · ');
+        },
+      },
+      {
+        name: 'Parity pixel MP4 (elst edit list): WebCodecs khớp <video> tại t=0/2/5s',
+        async run() {
+          if (!hasWebCodecs) return skipNote;
+          const mp4Bytes = new Uint8Array(await (await fetch(MP4_URL)).arrayBuffer());
+          const mp4Video = await loadVideo(MP4_URL);
+          const targets = [0.05, 2.0, 5.0];
+          const canvas = document.createElement('canvas');
+          const wanted = new Map(targets.map((t) => [t, []]));
+          const stream = await openVideoFrameStream(mp4Bytes, { maxBuffered: 6 });
+          try {
+            let item;
+            while ((item = await stream.next())) {
+              let near = false;
+              for (const t of targets) {
+                if (Math.abs(item.timeSec - t) <= 1.2 / mp4Demux.fps) {
+                  wanted.get(t).push(thumb(canvas, item.frame));
+                  near = true;
+                }
+              }
+              item.frame.close();
+              if (!near && item.timeSec > Math.max(...targets) + 0.25) break;
+            }
+          } finally {
+            stream.cancel();
+          }
+          const reports = [];
+          for (const t of targets) {
+            const candidates = wanted.get(t);
+            if (!candidates.length) throw new Error(`MP4 thiếu frame gần ${t}s`);
+            await seekTo(mp4Video, t);
+            const seeked = thumb(canvas, mp4Video);
+            const best = Math.min(...candidates.map((c) => meanAbsDiff(seeked, c)));
+            if (best > 14) throw new Error(`MP4 MAD ${best.toFixed(1)} tại ${t}s (>14): elst lệch frame`);
+            reports.push(`${t}s: MAD ${best.toFixed(2)}`);
+          }
+          return reports.join(' · ');
+        },
+      },
+      {
+        name: 'Fallback khi KHÔNG có WebCodecs: processVideo tự chạy đường seek',
+        async run() {
+          const video = sampleVideo || await loadVideo(WEBM_URL);
+          const saved = window.VideoDecoder;
+          const savedChunk = window.EncodedVideoChunk;
+          try {
+            delete window.VideoDecoder;
+            delete window.EncodedVideoChunk;
+            if (isWebCodecsSupported()) throw new Error('isSupported vẫn true khi đã xoá VideoDecoder');
+            const engine = new BrowserMocapEngine();
+            const out = await withTimeout(engine.processVideo(video, {
+              maxFrames: 6, frameStep: 40, videoFps: 25, landmarkerFactory: stubLandmarkerFactory,
+            }), 30000, 'fallback processVideo');
+            engine.dispose();
+            if (engine.lastDecodePath !== 'seek' || out.decodePath !== 'seek') throw new Error(`decodePath = ${out.decodePath}`);
+            if (out.numFrames !== 6) throw new Error(`numFrames ${out.numFrames} != 6`);
+            return `VideoDecoder bị ẩn → seek fallback · ${out.numFrames} frames · schema OK`;
+          } finally {
+            if (saved) window.VideoDecoder = saved;
+            if (savedChunk) window.EncodedVideoChunk = savedChunk;
+          }
+        },
+      },
+      {
+        name: 'Fallback khi demux hỏng (bytes rác): không vỡ pipeline, về seek',
+        async run() {
+          if (!hasWebCodecs) return skipNote;
+          const video = sampleVideo || await loadVideo(WEBM_URL);
+          const engine = new BrowserMocapEngine();
+          const out = await withTimeout(engine.processVideo(video, {
+            maxFrames: 6, frameStep: 40, videoFps: 25,
+            videoSource: new ArrayBuffer(64), // không phải MP4/WebM
+            landmarkerFactory: stubLandmarkerFactory,
+          }), 30000, 'garbage-source fallback');
+          engine.dispose();
+          if (engine.lastDecodePath !== 'seek') throw new Error(`decodePath = ${engine.lastDecodePath}`);
+          if (out.numFrames !== 6) throw new Error(`numFrames ${out.numFrames}`);
+          return 'videoSource rác → demux ném lỗi → seek vẫn ra 6 frames';
+        },
+      },
+      {
+        name: 'AbortController giữa chừng đường WebCodecs ném AbortError (không treo)',
+        async run() {
+          if (!hasWebCodecs) return skipNote;
+          const video = sampleVideo || await loadVideo(WEBM_URL);
+          const engine = new BrowserMocapEngine();
+          const controller = new AbortController();
+          try {
+            await withTimeout(engine.processVideo(video, {
+              maxFrames: 60, frameStep: 2, videoFps: 25, signal: controller.signal,
+              landmarkerFactory: stubLandmarkerFactory,
+              onProgress: (p) => { if (p.processed === 3) controller.abort(); },
+            }), 20000, 'abort webcodecs');
+          } catch (err) {
+            if (err.name !== 'AbortError') throw new Error(`sai loại lỗi: ${err.name} (${err.message})`);
+            return 'AbortError sau 3 frame · stream đã đóng';
+          } finally {
+            engine.dispose();
+          }
+          throw new Error('không ném lỗi khi huỷ');
+        },
+      },
+      {
+        name: 'Đo tốc độ: decode tuần tự 60 frame vs seek 60 frame (tham khảo)',
+        async run() {
+          if (!hasWebCodecs) return skipNote;
+          const video = sampleVideo || await loadVideo(WEBM_URL);
+          const N = 60;
+          const t0 = performance.now();
+          const stream = await openVideoFrameStream(webmBytes, { maxBuffered: 8 });
+          let decoded = 0;
+          try {
+            let item;
+            while (decoded < N && (item = await stream.next())) { item.frame.close(); decoded++; }
+          } finally {
+            stream.cancel();
+          }
+          const decodeMs = performance.now() - t0;
+          const t1 = performance.now();
+          for (let i = 0; i < N; i++) await seekTo(video, i / webmDemux.fps);
+          const seekMs = performance.now() - t1;
+          if (decoded !== N) throw new Error(`decode thiếu: ${decoded}/${N}`);
+          const decodeFps = (N / decodeMs) * 1000;
+          const seekFps = (N / seekMs) * 1000;
+          return `decode-only ${decodeFps.toFixed(1)} fps (${decodeMs.toFixed(0)}ms) vs seek ${seekFps.toFixed(1)} fps (${seekMs.toFixed(0)}ms) · ${(decodeFps / Math.max(0.01, seekFps)).toFixed(1)}× (chưa gồm MediaPipe)`;
+        },
+      },
+    ];
+
+    (async () => {
+      for (const test of tests) {
+        const li = addItem(test.name);
+        try {
+          const detail = await test.run();
+          results.push({ name: test.name, ok: true, detail });
+          finishItem(li, true, detail);
+        } catch (err) {
+          results.push({ name: test.name, ok: false, detail: err.message });
+          finishItem(li, false, err.message);
+          console.error('[webcodecs-suite]', test.name, err);
+        }
+      }
+      if (sampleVideo) { sampleVideo.removeAttribute('src'); sampleVideo.load(); }
+      const failed = results.filter((r) => !r.ok).length;
+      summaryEl.textContent = `${results.length - failed}/${results.length} PASS`;
+      summaryEl.className = failed ? 'fail' : 'pass';
+      window.__WEBCODECS_SUITE_RESULTS__ = { passed: results.length - failed, failed, results };
+      console.log('[webcodecs-suite]', window.__WEBCODECS_SUITE_RESULTS__);
+    })();
+  </script>
+</body>
+</html>

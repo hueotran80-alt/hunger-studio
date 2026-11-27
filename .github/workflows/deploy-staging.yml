@@ -1,0 +1,34 @@
+name: Deploy Staging (Cloudflare Edge + R2 + Supabase)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  deploy-staging:
+    name: Deploy hunger-studio-staging
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Deploy Cloudflare Staging Worker (CDN R2 offload)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          STUDIO_R2_CDN: "1"
+          HUNGER_ENV: "staging"
+        run: npx cf deploy -m staging --force
+
+      - name: Smoke-check staging healthz & Motion landing
+        run: |
+          curl -sf https://hunger-studio-staging.hunger-studio-vn.workers.dev/healthz | grep -q '"ok":true'
+          curl -sf https://hunger-studio-staging.hunger-studio-vn.workers.dev/motion | grep -q 'Hunger Motion'

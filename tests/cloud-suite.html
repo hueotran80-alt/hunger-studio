@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <title>Web Blender Studio — Cloud Suite</title>
+  <style>
+    :root { color-scheme: dark; }
+    body { margin: 0; background: #141414; color: #e6e6e6; font: 13px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    header { padding: 16px 20px; border-bottom: 1px solid #2f2f2f; display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+    h1 { font-size: 15px; margin: 0; font-weight: 600; }
+    #summary { padding: 3px 10px; border-radius: 999px; background: #2a2a2a; border: 1px solid #3d3d3d; font-variant-numeric: tabular-nums; }
+    #summary.pass { background: #12351f; border-color: #2ecc71; color: #8ef0b0; }
+    #summary.fail { background: #3a1414; border-color: #e74c3c; color: #ff9b90; }
+    #summary.skip { background: #3a3214; border-color: #d6a83a; color: #f0d58e; }
+    main { max-width: 980px; padding: 16px 20px; }
+    ol { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 8px; }
+    li { border: 1px solid #2f2f2f; border-radius: 6px; padding: 9px 11px; background: #1b1b1b; }
+    li.pass { border-color: #245c39; }
+    li.fail { border-color: #7a2e2a; background: #221515; }
+    li.skip { border-color: #5c4a24; background: #211d13; }
+    li.running { border-color: #4a4a2a; }
+    .name { font-weight: 600; }
+    .detail { color: #9aa0a6; margin-top: 2px; white-space: pre-wrap; word-break: break-word; font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .badge { float: right; font-size: 11px; padding: 1px 7px; border-radius: 999px; background: #2a2a2a; }
+    li.pass .badge { background: #1d4d30; color: #8ef0b0; }
+    li.fail .badge { background: #5a1f1c; color: #ffb4ab; }
+    li.skip .badge { background: #4d3f1d; color: #f0d58e; }
+    code { color: #8ab4f8; }
+    .hint { color: #9aa0a6; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Cloud Auth / Library / Billing — Browser Suite</h1>
+    <span id="summary">Đang chạy…</span>
+    <span class="hint">Kết quả: <code>window.__CLOUD_SUITE_RESULTS__</code>. Cần server có <code>cloud_config.json</code> provider local + dev login.</span>
+  </header>
+
+  <main>
+    <ol id="results"></ol>
+  </main>
+
+  <script type="module">
+    import { CloudClient } from '../js/cloud/cloud-client.js?v=20261102_cloud1';
+    import { CloudPanel } from '../js/ui/cloud-panel.js?v=20261102_cloud1';
+
+    const resultsEl = document.getElementById('results');
+    const summaryEl = document.getElementById('summary');
+    const results = [];
+    window.__CLOUD_SUITE_RESULTS__ = results;
+    const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+    function assert(cond, message) {
+      if (!cond) throw new Error(message);
+    }
+
+    function memoryStorage() {
+      const map = new Map();
+      return {
+        getItem: (key) => (map.has(key) ? map.get(key) : null),
+        setItem: (key, value) => map.set(key, String(value)),
+        removeItem: (key) => map.delete(key),
+        dump: () => Object.fromEntries(map)
+      };
+    }
+
+    function addItem(name) {
+      const li = document.createElement('li');
+      li.className = 'running';
+      li.innerHTML = '<span class="badge">…</span><div class="name"></div><div class="detail"></div>';
+      li.querySelector('.name').textContent = name;
+      resultsEl.appendChild(li);
+      return li;
+    }
+
+    function updateSummary() {
+      const failed = results.filter((r) => r.status === 'fail').length;
+      const skipped = results.filter((r) => r.status === 'skip').length;
+      const passed = results.filter((r) => r.status === 'pass').length;
+      if (!results.length || results.some((r) => r.status === 'running')) {
+        summaryEl.textContent = `${passed} / ${results.length} · đang chạy…`;
+        summaryEl.className = '';
+        return;
+      }
+      summaryEl.textContent = skipped && !failed ? `SKIP (${skipped})` : `${passed} / ${results.length - skipped} PASS · ${failed} FAIL`;
+      summaryEl.className = failed ? 'fail' : (skipped && !passed ? 'skip' : 'pass');
+    }
+
+    async function test(name, fn) {
+      const item = addItem(name);
+      const entry = { name, status: 'running', detail: '' };
+      results.push(entry);
+      try {
+        const detail = await fn();
+        entry.status = 'pass';
+        entry.detail = typeof detail === 'string' ? detail : '';
+        item.className = 'pass';
+        item.querySelector('.badge').textContent = 'PASS';
+      } catch (error) {
+        entry.status = 'fail';
+        entry.detail = error && error.stack ? error.stack : String(error);
+        item.className = 'fail';
+        item.querySelector('.badge').textContent = 'FAIL';
+      }
+      item.querySelector('.detail').textContent = entry.detail;
+      updateSummary();
+    }
+
+    function skip(name, detail) {
+      const item = addItem(name);
+      results.push({ name, status: 'skip', detail });
+      item.className = 'skip';
+      item.querySelector('.badge').textContent = 'SKIP';
+      item.querySelector('.detail').textContent = detail;
+      updateSummary();
+    }
+
+    async function waitFor(check, timeoutMs, label) {
+      const started = Date.now();
+      while (Date.now() - started < timeoutMs) {
+        try {
+          const value = check();
+          if (value) return value;
+        } catch (_) { /* not ready */ }
+        await sleep(60);
+      }
+      throw new Error(`Timeout: ${label}`);
+    }
+
+    const stamp = Date.now();
+    const storageA = memoryStorage();
+    const storageB = memoryStorage();
+    const clientA = new CloudClient({ storage: storageA });
+    const clientB = new CloudClient({ storage: storageB });
+    const emailA = `cloud-suite-${stamp}@example.com`;
+    const emailB = `cloud-suite-other-${stamp}@example.com`;
+    const projectData = {
+      meta: { format: 'web-blender-studio-project', version: '1.0.0', schemaVersion: 2 },
+      scene: { objects: [{ name: 'SuiteCube', type: 'Mesh' }] }
+    };
+    const glbBytes = new Uint8Array([0x67, 0x6c, 0x54, 0x46, 0x02, 0x00, 0x00, 0x00, 0x0c, 0x00, 0x00, 0x00]);
+
+    let status = null;
+    let projectId = '';
+    let asset = null;
+    let paymentCode = '';
+
+    await test('Cloud status is reachable', async () => {
+      status = await clientA.status();
+      assert(status && typeof status.enabled === 'boolean', 'status missing enabled');
+      return `provider=${status.provider || '?'} · enabled=${status.enabled}`;
+    });
+
+    await test('Community showcase feed is reachable anonymously', async () => {
+      if (!status?.enabled) return 'cloud disabled';
+      const comm = await clientA.listCommunity({ limit: 12 });
+      assert(comm && Array.isArray(comm.items), 'community missing items array');
+      return `${comm.items.length} public items (${status.provider})`;
+    });
+
+    if (!status?.enabled) {
+      skip('Cloud tests', status?.error || 'Cloud chưa bật: thiếu cloud_config.json hoặc provider không hợp lệ.');
+      updateSummary();
+    } else if (!status.devLogin) {
+      skip('Cloud tests', 'Suite cần dev login; đặt allow_dev_login=true với provider local.');
+      updateSummary();
+    } else {
+      await test('Dev login persists a local session', async () => {
+        await clientA.devLogin(emailA);
+        assert(clientA.isSignedIn(), 'client A not signed in');
+        assert(JSON.parse(storageA.getItem('wbs_cloud_session_v1')).accessToken, 'session not saved');
+        return emailA;
+      });
+
+      await test('New account receives 100 free credits', async () => {
+        const me = await clientA.me();
+        assert(me.user.credits === 100, `credits=${me.user.credits}`);
+        return `credits=${me.user.credits}`;
+      });
+
+      await test('Save project charges 1 credit per save (including upsert)', async () => {
+        const first = await clientA.saveProject('Cloud Suite Project', projectData);
+        projectId = first.project.id;
+        assert(first.project.credits === 99, `after save=${first.project.credits}`);
+        const second = await clientA.saveProject('Cloud Suite Project', projectData, projectId);
+        assert(second.project.credits === 98, `upsert balance=${second.project.credits}`);
+        return `id=${projectId} · credits=${second.project.credits}`;
+      });
+
+      await test('Project data round-trips and other users cannot read it', async () => {
+        const loaded = await clientA.getProject(projectId);
+        assert(loaded.project.data.scene.objects[0].name === 'SuiteCube', 'data mismatch');
+        await clientB.devLogin(emailB);
+        let denied = false;
+        try {
+          await clientB.getProject(projectId);
+        } catch (error) {
+          denied = error.status === 404 || error.status === 403;
+        }
+        assert(denied, 'user B could read user A project');
+        return `round-trip ok · user B denied · size=${loaded.project.sizeBytes} B`;
+      });
+
+      await test('GLB upload charges 5 credits and serves a public CORS URL', async () => {
+        const uploaded = await clientA.uploadAsset(glbBytes, 'cloud-suite.glb');
+        asset = uploaded.asset;
+        assert(asset && asset.url, 'asset missing url');
+        assert(asset.credits === 93, `credits after upload=${asset.credits}`);
+        const url = clientA.absoluteUrl(asset.url);
+        assert(/^https?:\/\//.test(url), `relative public URL: ${url}`);
+        const response = await fetch(url);
+        assert(response.ok, `public fetch HTTP ${response.status}`);
+        assert(response.headers.get('access-control-allow-origin') === '*', 'missing CORS header');
+        assert((response.headers.get('content-security-policy') || '').includes('sandbox'), 'missing sandbox CSP');
+        const bytes = new Uint8Array(await response.arrayBuffer());
+        assert(bytes.length === glbBytes.length && bytes[0] === 0x67, 'public bytes mismatch');
+        return `${url} · ${bytes.length} B · CORS *`;
+      });
+
+      await test('Deleting an asset revokes the public URL', async () => {
+        const url = clientA.absoluteUrl(asset.url);
+        await clientA.deleteAsset(asset.id);
+        const response = await fetch(url);
+        assert(response.status === 404, `public URL still ${response.status}`);
+        const list = await clientA.listAssets();
+        assert(!list.assets.some((item) => item.id === asset.id), 'asset still listed');
+        return 'public 404 · removed from library';
+      });
+
+      await test('SePay checkout + webhook simulation credits the account', async () => {
+        const checkout = await clientA.checkout('starter', 'sepay');
+        paymentCode = checkout.payment.code;
+        assert(checkout.checkout?.qrUrl?.includes('vietqr'), 'missing VietQR URL');
+        const paid = await clientA.simulatePayment(paymentCode);
+        assert(paid.payment.status === 'paid', `status=${paid.payment.status}`);
+        assert(paid.credits === 393, `credits=${paid.credits}`);
+        const replay = await clientA.simulatePayment(paymentCode);
+        assert(replay.applied === false, 'payment applied twice');
+        return `${paymentCode} · +300 credit · replay ignored`;
+      });
+
+      await test('Cloud panel renders signed-in account and plan buttons', async () => {
+        const panel = new CloudPanel({
+          cloud: clientA,
+          exporter: { showToast() {} },
+          sceneManager: {},
+          matcapStudio: null
+        });
+        try {
+          panel.open('account');
+          await waitFor(
+            () => document.querySelector('#cp-account-email')?.textContent,
+            6000,
+            'account render'
+          );
+          assert(document.querySelector('#cp-account-email').textContent === emailA, 'wrong email');
+          assert(document.querySelector('#cp-account-credits').textContent === '393', 'wrong balance');
+          assert(document.querySelector('#cp-auth').hidden, 'auth form still visible');
+          panel.open('credits');
+          await waitFor(() => document.querySelector('button[data-buy-plan=starter]'), 4000, 'plans');
+          assert(document.querySelectorAll('button[data-buy-plan]').length === 3, 'plan buttons');
+          return 'account 393 credit · 3 plan buttons';
+        } finally {
+          panel.destroy();
+        }
+      });
+
+      await test('Delete project and logout clear server + local state', async () => {
+        await clientA.deleteProject(projectId);
+        let gone = false;
+        try {
+          await clientA.getProject(projectId);
+        } catch (error) {
+          gone = error.status === 404;
+        }
+        assert(gone, 'project still readable after delete');
+        clientA.logout();
+        assert(!clientA.isSignedIn(), 'session still active');
+        assert(storageA.getItem('wbs_cloud_session_v1') === null, 'localStorage session left behind');
+        return 'project 404 · session cleared';
+      });
+
+      updateSummary();
+    }
+  </script>
+</body>
+</html>
