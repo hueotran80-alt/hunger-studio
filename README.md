@@ -22,7 +22,7 @@ Studio 3D/AI và Video-to-3D Motion Capture chạy 100% trên trình duyệt the
 | Build CDN R2 (`npm run build:cdn`) | `dist/` **14,6 MB / 104 file** (`STUDIO_R2_CDN=1`, giảm **81,7%** — `models/`, `vendor/mediapipe/`, studio GLB phục vụ trực tiếp từ Cloudflare R2 `hunger-assets` kèm Range 206 + ETag 304) |
 | Đo KPI độc lập trên Staging (4G, tắt cache) | **Standard 4G (4 Mbps / 100 ms RTT):** Landing `/motion` **852 ms** (8,3 KB), Motion Workspace interactive **2.583 ms** (`__STUDIO_INTERACTIVE_MS__`: 835 ms, 828,7 KB, `advLoaded: false`) · **Slow 4G (1,6 Mbps / 150 ms RTT):** Motion Workspace interactive **4.741 ms** (`__STUDIO_INTERACTIVE_MS__`: 1.543 ms, 827,2 KB, `advLoaded: false`) · **0 HTTP/COEP/JS error** (crash-free 100%) |
 
-> Chi tiết kỹ thuật & quy trình phát hành xem [AUDIT.md](AUDIT.md), [AGENTS.md](AGENTS.md) và [docs/RELEASE_AND_GIT_WORKFLOW.md](docs/RELEASE_AND_GIT_WORKFLOW.md). Staging đang chạy phiên bản **`v0.9.0-beta.1`** (`5c45cf4b-fe0f-4ad5-b1fc-64d16febbfb7`) với Cloudflare Workers + R2 + Supabase + Edge Telemetry; **còn chờ cấu hình tài khoản ngoài** cho `SENTRY_DSN` trên staging (`sentryConfigured: false`), gắn remote GitHub + bật protected `main` và nạp secret SePay/LemonSqueezy live (`freeMode: false`) + Image-to-3D API trước khi GA thu phí.
+> Chi tiết kỹ thuật & quy trình phát hành xem [AUDIT.md](AUDIT.md), [AGENTS.md](AGENTS.md) và [docs/RELEASE_AND_GIT_WORKFLOW.md](docs/RELEASE_AND_GIT_WORKFLOW.md). Staging đang chạy phiên bản **`v0.9.0-beta.1`** (`e238b776-5a35-4f14-a1d4-8a5a5058a5bb`) với Cloudflare Workers + R2 + Supabase + Edge Telemetry + **Sentry live** (`sentryConfigured: true`, đã xác minh fatal smoke event `6b15fd458d6ead23dc4e005b4c1931da` với `sentryForwarded: 1`); trước GO Phase 2 còn bước gắn remote GitHub + bật protected `main`, và trước GA thu phí cần nạp secret SePay/LemonSqueezy live (`freeMode: false`) + Image-to-3D API.
 
 Định vị: **Hunger Motion — 100% Browser Video-to-3D Motion Capture & AI 3D Studio** (workspace `Motion` gọn gàng với 3 template Unity Humanoid, VRM/VTuber, TikTok Dance 9:16; toàn bộ công cụ Blender Pro nằm gọn sau tab **Advanced**).
 
@@ -294,11 +294,10 @@ http://127.0.0.1:8080/tests/chaos-ui-suite.html        7 test
 
 Browser suite cần tab hiển thị để `requestAnimationFrame` chạy. Khi chạy tự động trong tab ẩn, dùng Chrome headless + CDP; kết quả nằm trong `window.__SUITE_RESULTS__`, `__INTERACTION_RESULTS__`, `__EMBED_SUITE_RESULTS__`, `__MOCAP_SUITE_RESULTS__`, `__CLOUD_SUITE_RESULTS__`, `__PATH_TRACE_RESULTS__`, `__WEBCODECS_SUITE_RESULTS__`, `__GEOMETRY_WORKER_RESULTS__`.
 
-## Giới hạn đã biết & Trạng thái Live (27/11/2026)
+## Giới hạn đã biết & Trạng thái Live (28/11/2026)
 
-- **Đã live trên Staging (`https://hunger-studio-staging.hunger-studio-vn.workers.dev`, `v0.9.0-beta.1`):** Cloudflare Workers Edge, R2 CDN (`hunger-assets`, giảm `dist/` từ 79,7 MB xuống 14,6 MB), Supabase production (`fpkhjitqzieqofcviyqi` với private Storage RLS + 8 RPC + 0 advisor), Durable Objects bridge, Edge Telemetry (`/api/telemetry/event` HTTP 202 + `/api/telemetry/summary`), landing `/motion`, workspace Motion lazy-load và 3 template Unity/VRM/TikTok. Toàn bộ P0/P1 kỹ thuật đã đóng (gồm Copilot `addCamera` undo/redo, `batchToInstances` TransformControls và browser suite 14/14 PASS 2 lượt liên tiếp).
+- **Đã live trên Staging (`https://hunger-studio-staging.hunger-studio-vn.workers.dev`, `v0.9.0-beta.1`):** Cloudflare Workers Edge, R2 CDN (`hunger-assets`, giảm `dist/` từ 79,7 MB xuống 14,6 MB), Supabase production (`fpkhjitqzieqofcviyqi` với private Storage RLS + 8 RPC + 0 advisor), Durable Objects bridge, Edge Telemetry (`/api/telemetry/event` HTTP 202 + `/api/telemetry/summary`), **Sentry error monitoring live** (`sentryConfigured: true`, `node scripts/verify_sentry_staging.mjs` PASS với `sentryForwarded: 1`, event `6b15fd458d6ead23dc4e005b4c1931da`), landing `/motion`, workspace Motion lazy-load và 3 template Unity/VRM/TikTok. Toàn bộ P0/P1 kỹ thuật đã đóng (gồm Copilot `addCamera` undo/redo, `batchToInstances` TransformControls và browser suite 14/14 PASS 2 lượt liên tiếp).
 - **Chưa cấu hình tài khoản/hạ tầng ngoài trước GO Phase 2 / GA thu phí:**
-  - **Sentry trên Staging (`sentryConfigured: false`):** mã nguồn đã chuyển tiếp lỗi dạng Sentry Envelope v7 (đã kiểm bằng HTTP mock ở `test_beta_motion_telemetry.mjs` Test 8), nhưng chưa đặt secret `SENTRY_DSN` trên Worker staging để xác nhận event xuất hiện trong dashboard Sentry thật (`scripts/verify_sentry_staging.mjs`).
   - **Git remote & protected `main`:** Git local đã sạch với tag `v0.9.0-beta.1`, `.githooks/`, CI/PR templates và hướng dẫn tại `docs/RELEASE_AND_GIT_WORKFLOW.md`, nhưng chưa gắn `git remote` GitHub nên branch protection và CI PR checks chưa chạy trên remote.
   - **Thanh toán SePay/LemonSqueezy & Auth SaaS:** Edge đang để `freeMode: true` (`billingEnabled: false`), chưa nạp secret webhook thật (còn edge refund external-ID-only), chưa có OAuth Google/GitHub và Reset Password riêng.
   - **Image-to-3D (Hunyuan3D):** đang ở chế độ bảo trì trên Cloudflare Edge (`mode: "maintenance"`) cho tới khi gắn Cloud 3D provider API trả phí hoặc `API_ORIGIN`.
@@ -311,7 +310,7 @@ Browser suite cần tab hiển thị để `requestAnimationFrame` chạy. Khi c
 
 ## Còn lại trong roadmap
 
-- **Hoàn tất cổng Phase 1 -> Phase 2:** nạp `SENTRY_DSN` trên staging + xác nhận fatal smoke event trong Sentry; thêm remote GitHub + bật branch protection + chạy CI trên PR.
+- **Hoàn tất cổng Phase 1 -> Phase 2:** thêm remote GitHub + bật branch protection cho `main` + xác nhận CI chạy trên PR.
 - **Chuẩn bị GA thu phí:** bật SePay/LemonSqueezy live (`freeMode: false`), xử lý edge refund external-ID-only, bổ sung Google/GitHub OAuth + Reset Password, mở lại Image-to-3D qua Cloud 3D API.
 - **Tối ưu & mở rộng sản phẩm:** nén GLB export (Meshopt/Draco/KTX2), SSE streaming cho AI Copilot, seed mẫu Community, Teacher Dashboard cloud cho STEM, soft body / cloth / weather, giảm phụ thuộc `window.*`.
 - Đóng gói desktop Tauri **không thuộc lộ trình thương mại**; không thực hiện trừ khi có yêu cầu riêng.

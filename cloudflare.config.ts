@@ -58,12 +58,13 @@ export default defineConfig(({ mode } = {} as { mode?: string }) => {
       SUPABASE_URL: bindings.text('https://fpkhjitqzieqofcviyqi.supabase.co'),
       SUPABASE_ANON_KEY: bindings.text('eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZwa2hqaXRxemllcW9mY3ZpeXFpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTQ5ODA0NjcsImV4cCI6MjExMDU1NjQ2N30.FqKcfGc2bYw4flrp7JV7As6bNwc0lxRYNchaxZSb27U'),
       // Server-only secrets — injected exclusively via `--secrets-file` or Cloudflare Secrets.
-      // Optional `SENTRY_DSN` can be added anytime via `cf workers secrets update` and is read from `env.SENTRY_DSN`.
+      // Staging binds `SENTRY_DSN` directly so future deploys preserve Sentry Envelope v7 forwarding.
       SUPABASE_SERVICE_KEY: bindings.secret(),
       STUDIO_BRIDGE_TOKEN: bindings.secret(),
       MOTAPIS_API_KEYS: bindings.secret(),
       GEMINI_API_KEY: bindings.secret(),
       OPENAI_API_KEY: bindings.secret(),
+      ...(isStaging ? { SENTRY_DSN: bindings.secret() } : {}),
       // Public non-secret AI defaults, environment tag & credit pricing
       STUDIO_ENV: bindings.text(isStaging ? 'staging' : 'production'),
       AI_RATE_LIMIT_PER_MIN: bindings.text(isStaging ? '60' : '30'),

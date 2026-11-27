@@ -1,9 +1,9 @@
 # Default repository owners (required review for protected `main` branch)
-* @trantuan
-/cloudflare/ @trantuan
-/cloud/ @trantuan
-/crates/ @trantuan
-/js/ai/ @trantuan
-/js/animation/ @trantuan
-/js/exporters/ @trantuan
-/.github/ @trantuan
+* @hueotran80-alt
+/cloudflare/ @hueotran80-alt
+/cloud/ @hueotran80-alt
+/crates/ @hueotran80-alt
+/js/ai/ @hueotran80-alt
+/js/animation/ @hueotran80-alt
+/js/exporters/ @hueotran80-alt
+/.github/ @hueotran80-alt
