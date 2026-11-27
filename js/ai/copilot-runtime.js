@@ -776,7 +776,7 @@ async function dispatchLiveCommands(commands, context, objects) {
     }])).values()];
     const beforeObjs = new Map(collectSceneObjects(sm.rootContainer));
     const cmdPreSelection = JSON.stringify(sm.getSelectedObjects?.().map((o) => o.uuid) || []);
-    const cmdPreCamera = JSON.stringify(cameraSnapshot(context.camera, context.engine));
+    const cmdPreCamera = cameraSnapshot(context.camera, context.engine);
 
     let applied = false;
     const prevAllowCmd = Boolean(context._allowLiveExecuteCommand);
@@ -788,11 +788,11 @@ async function dispatchLiveCommands(commands, context, objects) {
       }
       // Verify per-command selection/camera isolation strictly via explicit command metadata (no regex guessing)
       const cmdPostSelection = JSON.stringify(sm.getSelectedObjects?.().map((o) => o.uuid) || []);
-      const cmdPostCamera = JSON.stringify(cameraSnapshot(context.camera, context.engine));
+      const cmdPostCamera = cameraSnapshot(context.camera, context.engine);
       if (!meta.mutatesSelection && cmdPostSelection !== cmdPreSelection) {
         throw runtimeError('E_TX_CONFLICT', `Selection changed externally during ${command.method}; rolling back cleanly.`);
       }
-      if (!meta.mutatesCamera && cmdPostCamera !== cmdPreCamera) {
+      if (!meta.mutatesCamera && cameraSnapshotChanged(cmdPreCamera, cmdPostCamera)) {
         throw runtimeError('E_TX_CONFLICT', `Camera changed externally during ${command.method}; rolling back cleanly.`);
       }
       applied = true;
@@ -1152,6 +1152,28 @@ function cameraSnapshot(camera, engine) {
   };
 }
 
+function cameraSnapshotChanged(before, after, eps = 1e-4) {
+  if (!before && !after) return false;
+  if (!before || !after) return true;
+  if (before.uuid !== after.uuid || before.activeUUID !== after.activeUUID || before.type !== after.type) return true;
+  for (const key of ['zoom', 'fov', 'aspect', 'near', 'far']) {
+    const a = before[key];
+    const b = after[key];
+    if (a === b) continue;
+    if (typeof a !== 'number' || typeof b !== 'number' || Math.abs(a - b) > eps) return true;
+  }
+  for (const key of ['position', 'quaternion', 'target']) {
+    const a = before[key];
+    const b = after[key];
+    if (!a && !b) continue;
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return true;
+    for (let i = 0; i < a.length; i += 1) {
+      if (Math.abs((a[i] || 0) - (b[i] || 0)) > eps) return true;
+    }
+  }
+  return false;
+}
+
 export class CopilotRuntime {
   constructor(options = {}) {
     this.sceneManager = options.sceneManager;
@@ -1310,8 +1332,12 @@ export class CopilotRuntime {
       const currentPayload = serializeScene(sm.rootContainer);
       const currentSelection = sm.getSelectedObjects?.().map((object) => object.uuid) || [];
       const currentCamera = cameraSnapshot(this.camera, this.engine);
-      if (payloadHash(currentPayload) !== beforeHash || JSON.stringify(currentSelection) !== JSON.stringify(beforeSelection) || JSON.stringify(currentCamera) !== JSON.stringify(beforeCamera)) {
-        throw runtimeError('E_TX_CONFLICT', 'The scene or camera changed during Copilot execution. Retry against the current scene.');
+      const sceneChanged = payloadHash(currentPayload) !== beforeHash;
+      const selectionChanged = JSON.stringify(currentSelection) !== JSON.stringify(beforeSelection);
+      const cameraChanged = cameraSnapshotChanged(beforeCamera, currentCamera);
+      if (sceneChanged || selectionChanged || cameraChanged) {
+        const reasons = [sceneChanged && 'scene', selectionChanged && 'selection', cameraChanged && 'camera'].filter(Boolean).join('/');
+        throw runtimeError('E_TX_CONFLICT', `The scene or camera changed during Copilot execution (${reasons}). Retry against the current scene.`);
       }
 
       const parsedRoot = new this.THREE.ObjectLoader().parse(sceneLoaderDocument(payload));

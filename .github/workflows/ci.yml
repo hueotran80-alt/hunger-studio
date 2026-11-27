@@ -134,6 +134,8 @@ jobs:
           pip install "websockets>=14.0" pillow
 
       - name: Run 14 Browser Suites + dist/ E2E Gate
+        env:
+          SUITE_TIMEOUT_SEC: "600"
         run: |
           npm run test:browser
           npm run test:dist

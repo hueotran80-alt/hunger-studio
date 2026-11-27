@@ -459,11 +459,18 @@
             .find((input) => input.dataset.key === 'controls');
           checkbox.checked = false;
           checkbox.dispatchEvent(new win.Event('change'));
-          await sleep(700);
+          await waitUntil(() => {
+            const l = win.document.getElementById('ss-link')?.value || '';
+            return l.includes('controls=0');
+          }, 15000, 'link includes controls=0');
           const link = win.document.getElementById('ss-link').value;
           if (!link.includes('controls=0')) throw new Error('liên kết thiếu controls=0');
+          await waitUntil(() => {
+            const f = win.document.querySelector('#ss-preview iframe');
+            const href = f?.contentWindow?.location?.href || '';
+            return Boolean(f?.src?.includes('controls=0') && href.includes('controls=0') && f.contentWindow?.studioEmbed?.ready && f.contentWindow.studioEmbed.controls?.enabled === false);
+          }, 30000, 'preview ready with controls=0');
           const frame = win.document.querySelector('#ss-preview iframe');
-          await waitUntil(() => frame.contentWindow?.studioEmbed?.ready, 30000, 'preview ready');
           if (frame.contentWindow.studioEmbed.controls.enabled !== false) {
             throw new Error('preview chưa áp controls=0');
           }
