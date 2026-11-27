@@ -26,9 +26,13 @@ jobs:
           test -f dist/embed.html
 
       - name: Deploy production Worker (when CLOUDFLARE_API_TOKEN is configured)
-        if: ${{ secrets.CLOUDFLARE_API_TOKEN != '' }}
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           STUDIO_R2_CDN: "1"
           HUNGER_ENV: "production"
-        run: npx cf deploy -m production --tag "${GITHUB_REF_NAME}" --force
+        run: |
+          if [ -n "$CLOUDFLARE_API_TOKEN" ]; then
+            npx cf deploy -m production --tag "${GITHUB_REF_NAME}" --force
+          else
+            echo "CLOUDFLARE_API_TOKEN secret not configured on GitHub; skipping automatic production deploy."
+          fi
