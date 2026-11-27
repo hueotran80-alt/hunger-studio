@@ -29,6 +29,10 @@
   <script type="module">
     const frame = document.querySelector('#studio');
     const results = window.__PATH_TRACE_RESULTS__ = [];
+    window.__PATH_TRACE_DONE__ = false;
+    window.__PATH_TRACE_STEP__ = 'boot';
+    let stepIndex = 0;
+    const suiteStartMs = performance.now();
     const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
     const assert = (condition, message) => { if (!condition) throw new Error(message); };
     assert.equal = (actual, expected, message) => {
@@ -74,9 +78,25 @@
         renderTarget:r.getRenderTarget()?.uuid,children:app.sceneManager.getAllObjects().map((o)=>o.uuid) });
     }
     async function test(name, fn) {
+      const idx = ++stepIndex;
+      const t0 = performance.now();
+      window.__PATH_TRACE_STEP__ = `#${idx} running: ${name}`;
+      console.log(`[pathtrace] #${idx} start: ${name}`);
       const row = document.createElement('li'); row.textContent = name; document.querySelector('#results').appendChild(row);
-      try { const detail = await fn(); row.className='pass';row.textContent += ' — PASS '+(detail||'');results.push({name,ok:true,detail}); }
-      catch (error) { row.className='fail';row.textContent += ' — FAIL '+error.message;results.push({name,ok:false,detail:error.stack}); }
+      try {
+        const detail = await fn();
+        const ms = Math.round(performance.now() - t0);
+        row.className='pass';row.textContent += ' — PASS '+(detail||'');
+        results.push({name,ok:true,detail,ms});
+        window.__PATH_TRACE_STEP__ = `#${idx} PASS (${ms}ms): ${name}`;
+        console.log(`[pathtrace] #${idx} PASS (${ms}ms): ${name}`);
+      } catch (error) {
+        const ms = Math.round(performance.now() - t0);
+        row.className='fail';row.textContent += ' — FAIL '+error.message;
+        results.push({name,ok:false,detail:error.stack,ms});
+        window.__PATH_TRACE_STEP__ = `#${idx} FAIL (${ms}ms): ${name} — ${error.message}`;
+        console.error(`[pathtrace] #${idx} FAIL (${ms}ms): ${name} — ${error.message}`);
+      }
     }
     try {
       await until(()=>frame.contentWindow.app?.pathTraceRender && frame.contentWindow.studio);
@@ -677,8 +697,25 @@
 
         return 'Hero frame kẹp 32 samples; AbortSignal huỷ tức thì';
       });
-    } catch (error) { results.push({name:'Khởi tạo suite',ok:false,detail:error.stack}); }
-    document.querySelector('#summary').textContent=`${results.filter((r)=>r.ok).length}/${results.length} PASS`;
+    } catch (error) {
+      results.push({name:'Khởi tạo suite',ok:false,detail:error.stack});
+      window.__PATH_TRACE_STEP__ = `boot FAIL: ${error.message}`;
+    } finally {
+      document.querySelector('#summary').textContent=`${results.filter((r)=>r.ok).length}/${results.length} PASS`;
+      window.__PATH_TRACE_STEP__ = `done (${results.filter((r)=>r.ok).length}/${results.length} in ${Math.round(performance.now() - suiteStartMs)}ms)`;
+      window.__PATH_TRACE_DONE__ = true;
+      console.log(`[pathtrace] ${window.__PATH_TRACE_STEP__}`);
+      // Release iframe render loop, textures, and WebGL context after completion so CDP stays responsive.
+      try {
+        const win = frame.contentWindow;
+        win?.app?.pathTraceRender?.cancel?.();
+        win?.app?.engine?.stop?.();
+        win?.studio?.clearScene?.();
+        const r = win?.app?.engine?.renderer;
+        r?.dispose?.();
+        r?.forceContextLoss?.();
+      } catch (_) {}
+    }
   </script>
 </body>
 </html>

@@ -41,6 +41,7 @@ const ALL_SUITES = [
 ];
 
 const SUITE_TIMEOUT_MS = Number(process.env.SUITE_TIMEOUT_SEC || 240) * 1000;
+const PATHTRACE_TIMEOUT_MS = Number(process.env.PATHTRACE_TIMEOUT_SEC || Math.max(240, Number(process.env.SUITE_TIMEOUT_SEC || 240))) * 1000;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function findChromeBinary() {
@@ -144,7 +145,7 @@ function buildProbeExpr(suite) {
       }
     } else if (suiteName === 'pathtrace' && Array.isArray(window.__PATH_TRACE_RESULTS__)) {
       collectArr(window.__PATH_TRACE_RESULTS__);
-      if (st && !/Đang chạy/i.test(st)) {
+      if (window.__PATH_TRACE_DONE__ === true || (st && !/Đang chạy/i.test(st))) {
         done = true;
       }
     } else if (suiteName === 'render' && Array.isArray(window.__RENDER_SUITE_RESULTS__)) {
@@ -173,7 +174,7 @@ function buildProbeExpr(suite) {
       passed = window.__LOD_INSTANCING_SUITE_RESULTS__.passed;
       failed = window.__LOD_INSTANCING_SUITE_RESULTS__.failed;
     }
-    return { done, summary: st, passed, failed, total, fails };
+    return { done, summary: st, passed, failed, total, fails, step: window.__PATH_TRACE_STEP__ || null };
   })()`;
 }
 
@@ -286,6 +287,12 @@ async function runSingleSuite(name) {
       const desc = m.params.exceptionDetails.exception?.description || m.params.exceptionDetails.text || 'Exception';
       uncaughtExceptions.push(desc.slice(0, 260));
     }
+    if (m.method === 'Runtime.consoleAPICalled' && name === 'pathtrace') {
+      const line = (m.params.args || []).map((a) => a.value ?? a.description ?? '').join(' ');
+      if (line.startsWith('[pathtrace]')) {
+        console.log(`       ${line}`);
+      }
+    }
   };
 
   const call = (method, params = {}) => new Promise((resolve) => {
@@ -302,16 +309,18 @@ async function runSingleSuite(name) {
   await call('Page.enable');
 
   const startedAt = Date.now();
+  const suiteTimeoutMs = name === 'pathtrace' ? PATHTRACE_TIMEOUT_MS : SUITE_TIMEOUT_MS;
   await call('Page.navigate', { url: `http://127.0.0.1:${httpPort}/tests/${name}-suite.html` });
   const probeExpr = buildProbeExpr(name);
 
   let state = null;
-  while (Date.now() - startedAt < SUITE_TIMEOUT_MS) {
+  while (Date.now() - startedAt < suiteTimeoutMs) {
     await sleep(1200);
     try {
-      state = await evalJs(probeExpr);
+      const next = await evalJs(probeExpr);
+      if (next && typeof next === 'object') state = next;
     } catch (err) {
-      state = { evalError: String(err) };
+      if (!state) state = { evalError: String(err) };
     }
     if (state && state.done) break;
   }
@@ -333,6 +342,7 @@ async function runSingleSuite(name) {
     failed: state?.failed ?? (timedOut ? 1 : 0),
     total: state?.total ?? 0,
     summary: state?.summary ?? null,
+    step: state?.step ?? null,
     fails: state?.fails ?? [],
     blockedRequests: [...new Set(blockedRequests)],
     uncaughtExceptions: [...new Set(uncaughtExceptions)],
@@ -348,8 +358,9 @@ for (const s of suites) {
   summaryRows.push(res);
   totalAssertionsPassed += Number(res.passed || 0);
   const badge = res.ok ? 'PASS' : 'FAIL';
+  const stepInfo = !res.ok && res.step ? ` [lastStep: ${res.step}]` : '';
   console.log(
-    `[${badge}] ${s.padEnd(16)} ${String(res.passed).padStart(2)}/${String(res.total).padEnd(2)} (${res.elapsedSec}s) — ${res.summary || 'TIMEOUT'}`
+    `[${badge}] ${s.padEnd(16)} ${String(res.passed).padStart(2)}/${String(res.total).padEnd(2)} (${res.elapsedSec}s) — ${res.summary || 'TIMEOUT'}${stepInfo}`
   );
   if (!res.ok) {
     anyFailure = true;

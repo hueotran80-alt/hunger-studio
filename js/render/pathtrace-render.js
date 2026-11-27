@@ -83,6 +83,11 @@ export class PathTraceRenderManager {
       const generated = generator.generate();
       tracer = new PathTracingRenderer(renderer);
       const material = tracer.material;
+      // Batch all initial scene/camera/feature define mutations before compiling once,
+      // avoiding 3-4 wasted throwaway uber-shader compilations on WebGL2 / SwiftShader.
+      if (tracer._compileFunction) {
+        material.removeEventListener('recompilation', tracer._compileFunction);
+      }
       material.bounces = 5;
       material.transmissiveBounces = 5;
       material.filterGlossyFactor = 0.5;
@@ -115,6 +120,11 @@ export class PathTraceRenderManager {
       tracer.setCamera(camera);
       tracer.setSize(width, height);
       tracer.tiles.set(2, 2);
+      material.onBeforeRender();
+      if (tracer._compileFunction) {
+        material.addEventListener('recompilation', tracer._compileFunction);
+        tracer._compileFunction();
+      }
       while (tracer.samples < samples) {
         if (this._cancelled) return null;
         if (renderer.getContext().isContextLost()) throw new Error('GPU context lost; lower resolution and try again.');
