@@ -19,7 +19,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
           cache: "npm"
 
       - uses: actions/setup-python@v5
@@ -30,18 +30,18 @@ jobs:
         run: |
           npm ci
           python -m pip install --upgrade pip
-          pip install "websockets>=14.0"
+          pip install "websockets>=14.0" pillow
 
       - name: Run Python backend & security tests
         run: |
-          PYTHONPATH=. python tests/test_cloud.py
-          PYTHONPATH=. python tests/test_security.py
-          PYTHONPATH=. python tests/test_server_concurrency.py
-          PYTHONPATH=. python tests/test_image_to_3d_provider.py
-          PYTHONPATH=. python tests/test_hunyuan_upload.py
-          PYTHONPATH=. python tests/test_robustness.py
-          PYTHONPATH=. python tests/test_blend_import.py
-          PYTHONPATH=. python test_agent_server.py
+          PYTHONPATH=.:tests python tests/test_cloud.py
+          PYTHONPATH=.:tests python tests/test_security.py
+          PYTHONPATH=.:tests python tests/test_server_concurrency.py
+          PYTHONPATH=.:tests python tests/test_image_to_3d_provider.py
+          PYTHONPATH=.:tests python tests/test_hunyuan_upload.py
+          PYTHONPATH=.:tests python tests/test_robustness.py
+          PYTHONPATH=.:tests python tests/test_blend_import.py
+          PYTHONPATH=.:tests python test_agent_server.py
 
       - name: Run Node.js unit, P0/P1 hardening, skills & Beta Motion suites
         run: |
@@ -121,7 +121,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
           cache: "npm"
 
       - uses: actions/setup-python@v5
@@ -131,7 +131,7 @@ jobs:
       - name: Install dependencies
         run: |
           npm ci
-          pip install "websockets>=14.0"
+          pip install "websockets>=14.0" pillow
 
       - name: Run 14 Browser Suites + dist/ E2E Gate
         run: |

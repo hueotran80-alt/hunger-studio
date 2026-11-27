@@ -139,15 +139,18 @@ const extSrv = http.createServer((_req, res) => {
 });
 await new Promise((r) => extSrv.listen(extPort, 'localhost', r));
 
+const isMac = process.platform === 'darwin';
+const chromeGpuArgs = isMac
+  ? ['--enable-unsafe-swiftshader', '--use-angle=metal', '--enable-gpu']
+  : ['--no-sandbox', '--disable-dev-shm-usage', '--enable-unsafe-swiftshader', '--use-gl=angle', '--use-angle=swiftshader'];
+
 const chrome = spawn(chromeBin, [
   '--headless=new',
   `--remote-debugging-port=${cdpPort}`,
   `--user-data-dir=${profileDir}`,
   '--no-first-run',
   '--no-default-browser-check',
-  '--enable-unsafe-swiftshader',
-  '--use-angle=metal',
-  '--enable-gpu',
+  ...chromeGpuArgs,
   '--ignore-gpu-blocklist',
   '--autoplay-policy=no-user-gesture-required',
   '--window-size=1440,900',
