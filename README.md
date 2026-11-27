@@ -2,6 +2,7 @@
 
 Studio 3D/AI và Video-to-3D Motion Capture chạy 100% trên trình duyệt theo phong cách Blender: dựng cảnh, mocap WASM (Pose + Face + Hand + Foot-Lock IK), animation, vật lý, Path Tracing (WebGPU / Rust SIMD128 / Three GPU), xuất GLB/FBX/BVH/USDZ/3MF/MP4 và chia sẻ 1-click. Chạy 100% Serverless trên Cloudflare Workers + R2 + Supabase (server Python chỉ dùng cho dev local / MCP CLI / `.blend` tùy chọn).
 
+- **GitHub Repository (Protected `main` + CI):** `https://github.com/hueotran80-alt/hunger-studio`
 - **Landing Page Hunger Motion (Staging):** `https://hunger-studio-staging.hunger-studio-vn.workers.dev/motion`
 - **Motion Workspace (gọn + 3 template Unity/VRM/TikTok):** `https://hunger-studio-staging.hunger-studio-vn.workers.dev/?workspace=motion`
 - **Production Edge:** `https://hunger-studio.hunger-studio-vn.workers.dev`
@@ -22,7 +23,7 @@ Studio 3D/AI và Video-to-3D Motion Capture chạy 100% trên trình duyệt the
 | Build CDN R2 (`npm run build:cdn`) | `dist/` **14,6 MB / 104 file** (`STUDIO_R2_CDN=1`, giảm **81,7%** — `models/`, `vendor/mediapipe/`, studio GLB phục vụ trực tiếp từ Cloudflare R2 `hunger-assets` kèm Range 206 + ETag 304) |
 | Đo KPI độc lập trên Staging (4G, tắt cache) | **Standard 4G (4 Mbps / 100 ms RTT):** Landing `/motion` **852 ms** (8,3 KB), Motion Workspace interactive **2.583 ms** (`__STUDIO_INTERACTIVE_MS__`: 835 ms, 828,7 KB, `advLoaded: false`) · **Slow 4G (1,6 Mbps / 150 ms RTT):** Motion Workspace interactive **4.741 ms** (`__STUDIO_INTERACTIVE_MS__`: 1.543 ms, 827,2 KB, `advLoaded: false`) · **0 HTTP/COEP/JS error** (crash-free 100%) |
 
-> Chi tiết kỹ thuật & quy trình phát hành xem [AUDIT.md](AUDIT.md), [AGENTS.md](AGENTS.md) và [docs/RELEASE_AND_GIT_WORKFLOW.md](docs/RELEASE_AND_GIT_WORKFLOW.md). Staging đang chạy phiên bản **`v0.9.0-beta.1`** (`e238b776-5a35-4f14-a1d4-8a5a5058a5bb`) với Cloudflare Workers + R2 + Supabase + Edge Telemetry + **Sentry live** (`sentryConfigured: true`, đã xác minh fatal smoke event `6b15fd458d6ead23dc4e005b4c1931da` với `sentryForwarded: 1`); trước GO Phase 2 còn bước gắn remote GitHub + bật protected `main`, và trước GA thu phí cần nạp secret SePay/LemonSqueezy live (`freeMode: false`) + Image-to-3D API.
+> Chi tiết kỹ thuật & quy trình phát hành xem [AUDIT.md](AUDIT.md), [AGENTS.md](AGENTS.md) và [docs/RELEASE_AND_GIT_WORKFLOW.md](docs/RELEASE_AND_GIT_WORKFLOW.md). Toàn bộ tiêu chí **Phase 1 Beta (`v0.9.0-beta.1`) đã đạt GO Phase 2**: Cloudflare Workers + R2 + Supabase + Edge Telemetry + **Sentry live** (`sentryConfigured: true`, event `6b15fd458d6ead23dc4e005b4c1931da`), GitHub remote `https://github.com/hueotran80-alt/hunger-studio` với **protected `main`** và CI chạy xanh trên PR; trước khi mở thu phí GA cần nạp secret SePay/LemonSqueezy live (`freeMode: false`) + Image-to-3D API.
 
 Định vị: **Hunger Motion — 100% Browser Video-to-3D Motion Capture & AI 3D Studio** (workspace `Motion` gọn gàng với 3 template Unity Humanoid, VRM/VTuber, TikTok Dance 9:16; toàn bộ công cụ Blender Pro nằm gọn sau tab **Advanced**).
 
@@ -296,9 +297,11 @@ Browser suite cần tab hiển thị để `requestAnimationFrame` chạy. Khi c
 
 ## Giới hạn đã biết & Trạng thái Live (28/11/2026)
 
-- **Đã live trên Staging (`https://hunger-studio-staging.hunger-studio-vn.workers.dev`, `v0.9.0-beta.1`):** Cloudflare Workers Edge, R2 CDN (`hunger-assets`, giảm `dist/` từ 79,7 MB xuống 14,6 MB), Supabase production (`fpkhjitqzieqofcviyqi` với private Storage RLS + 8 RPC + 0 advisor), Durable Objects bridge, Edge Telemetry (`/api/telemetry/event` HTTP 202 + `/api/telemetry/summary`), **Sentry error monitoring live** (`sentryConfigured: true`, `node scripts/verify_sentry_staging.mjs` PASS với `sentryForwarded: 1`, event `6b15fd458d6ead23dc4e005b4c1931da`), landing `/motion`, workspace Motion lazy-load và 3 template Unity/VRM/TikTok. Toàn bộ P0/P1 kỹ thuật đã đóng (gồm Copilot `addCamera` undo/redo, `batchToInstances` TransformControls và browser suite 14/14 PASS 2 lượt liên tiếp).
-- **Chưa cấu hình tài khoản/hạ tầng ngoài trước GO Phase 2 / GA thu phí:**
-  - **Git remote & protected `main`:** Git local đã sạch với tag `v0.9.0-beta.1`, `.githooks/`, CI/PR templates và hướng dẫn tại `docs/RELEASE_AND_GIT_WORKFLOW.md`, nhưng chưa gắn `git remote` GitHub nên branch protection và CI PR checks chưa chạy trên remote.
+- **Đã live & xác nhận GO Phase 2 (`v0.9.0-beta.1`):**
+  - **Staging:** `https://hunger-studio-staging.hunger-studio-vn.workers.dev` — Cloudflare Workers Edge, R2 CDN (`hunger-assets`, giảm `dist/` từ 79,7 MB xuống 14,6 MB), Supabase production (`fpkhjitqzieqofcviyqi` với private Storage RLS + 8 RPC + 0 advisor), Durable Objects bridge, Edge Telemetry (`/api/telemetry/event` HTTP 202 + `/api/telemetry/summary`), **Sentry error monitoring live** (`sentryConfigured: true`, `node scripts/verify_sentry_staging.mjs` PASS với `sentryForwarded: 1`, event `6b15fd458d6ead23dc4e005b4c1931da`), landing `/motion`, workspace Motion lazy-load và 3 template Unity/VRM/TikTok.
+  - **GitHub & Protected `main`:** `https://github.com/hueotran80-alt/hunger-studio` — bật Branch Protection cho `main` (`enforce_admins: true`, `strict: true`, yêu cầu PR và 3 required CI checks trên GitHub Actions, chặn force push & xoá nhánh).
+  - Toàn bộ P0/P1 kỹ thuật đã đóng (gồm Copilot `addCamera` undo/redo, `batchToInstances` TransformControls và browser suite 14/14 PASS 2 lượt liên tiếp).
+- **Chưa cấu hình trước GA thu phí (Phase 2+):**
   - **Thanh toán SePay/LemonSqueezy & Auth SaaS:** Edge đang để `freeMode: true` (`billingEnabled: false`), chưa nạp secret webhook thật (còn edge refund external-ID-only), chưa có OAuth Google/GitHub và Reset Password riêng.
   - **Image-to-3D (Hunyuan3D):** đang ở chế độ bảo trì trên Cloudflare Edge (`mode: "maintenance"`) cho tới khi gắn Cloud 3D provider API trả phí hoặc `API_ORIGIN`.
 - **Hạn chế kỹ thuật còn lại:**
@@ -306,12 +309,11 @@ Browser suite cần tab hiển thị để `requestAnimationFrame` chạy. Khi c
   - Joint Fixed/Revolute có motor/giới hạn góc; chưa chỉnh điểm neo sau tạo, chưa có soft body, cloth hoặc weather.
   - Link chia sẻ tự chứa `#z=` giới hạn ~96 KB sau nén; cảnh lớn dùng Cloud Share qua R2/Supabase.
   - Đã có `LICENSE`, `PRIVACY.md` (đã điền email liên hệ `hueotran80@gmail.com`), `TERMS.md`, `THIRD_PARTY_LICENSES.md` và `Mannequin_CC0.glb`/`Bot_CC0.glb` sạch bản quyền cho `dist/`; một số asset dev cũ ngoài `dist/` (`Michelle.glb`, cathedral, tượng) vẫn bị loại bởi `asset-ship-policy.json` (`requireCommercialSafe: true`).
-  - `Dockerfile` và `.github/workflows/ci.yml` đã có sẵn trong repo nhưng chưa chạy thực tế trên Docker host / GitHub Actions runner.
+  - `Dockerfile` đã có sẵn trong repo nhưng chưa chạy `docker build` trên Docker host thật.
 
 ## Còn lại trong roadmap
 
-- **Hoàn tất cổng Phase 1 -> Phase 2:** thêm remote GitHub + bật branch protection cho `main` + xác nhận CI chạy trên PR.
-- **Chuẩn bị GA thu phí:** bật SePay/LemonSqueezy live (`freeMode: false`), xử lý edge refund external-ID-only, bổ sung Google/GitHub OAuth + Reset Password, mở lại Image-to-3D qua Cloud 3D API.
+- **Chuẩn bị GA thu phí (Phase 2+):** bật SePay/LemonSqueezy live (`freeMode: false`), xử lý edge refund external-ID-only, bổ sung Google/GitHub OAuth + Reset Password, mở lại Image-to-3D qua Cloud 3D API.
 - **Tối ưu & mở rộng sản phẩm:** nén GLB export (Meshopt/Draco/KTX2), SSE streaming cho AI Copilot, seed mẫu Community, Teacher Dashboard cloud cho STEM, soft body / cloth / weather, giảm phụ thuộc `window.*`.
 - Đóng gói desktop Tauri **không thuộc lộ trình thương mại**; không thực hiện trừ khi có yêu cầu riêng.
 

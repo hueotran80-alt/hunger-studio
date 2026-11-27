@@ -18,17 +18,18 @@ jobs:
           node-version: "22"
           cache: "npm"
 
-      - name: Install dependencies
-        if: ${{ secrets.CLOUDFLARE_API_TOKEN != '' }}
-        run: npm ci
-
-      - name: Deploy Cloudflare Staging Worker (CDN R2 offload)
-        if: ${{ secrets.CLOUDFLARE_API_TOKEN != '' }}
+      - name: Deploy Cloudflare Staging Worker (when CLOUDFLARE_API_TOKEN is configured)
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           STUDIO_R2_CDN: "1"
           HUNGER_ENV: "staging"
-        run: npx cf deploy -m staging --force
+        run: |
+          if [ -n "$CLOUDFLARE_API_TOKEN" ]; then
+            npm ci
+            npx cf deploy -m staging --force
+          else
+            echo "CLOUDFLARE_API_TOKEN secret not configured on GitHub; skipping automatic Worker deploy."
+          fi
 
       - name: Smoke-check staging healthz & Motion landing
         run: |

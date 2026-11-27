@@ -33,11 +33,12 @@ venv/
 crates/*/target/
 target/
 
-# Testing & temporary artifacts
-test_*.py
-update_*.py
-fix_*.py
-verify_*.py
+# Local ad-hoc root scratch scripts (keep official tests/, scripts/, and test_agent_server.py tracked)
+/test_*.py
+!/test_agent_server.py
+/update_*.py
+/fix_*.py
+/verify_*.py
 *.log
 .DS_Store
 Thumbs.db

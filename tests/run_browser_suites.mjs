@@ -143,9 +143,9 @@ function buildProbeExpr(suite) {
         collectArr(window.__MOCAP_SUITE_RESULTS__.results);
       }
     } else if (suiteName === 'pathtrace' && Array.isArray(window.__PATH_TRACE_RESULTS__)) {
+      collectArr(window.__PATH_TRACE_RESULTS__);
       if (st && !/Đang chạy/i.test(st)) {
         done = true;
-        collectArr(window.__PATH_TRACE_RESULTS__);
       }
     } else if (suiteName === 'render' && Array.isArray(window.__RENDER_SUITE_RESULTS__)) {
       const arr = window.__RENDER_SUITE_RESULTS__;
