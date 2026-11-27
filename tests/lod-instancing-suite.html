@@ -73,9 +73,20 @@
     }
 
     const w = await waitFor(
-      () => (frame.contentWindow?.app && frame.contentWindow?.instancingSystem && frame.contentWindow?.lodManager ? frame.contentWindow : null),
+      () => (
+        frame.contentWindow?.app &&
+        frame.contentWindow?.app._advancedLoaded &&
+        frame.contentWindow?.instancingSystem &&
+        frame.contentWindow?.lodManager &&
+        frame.contentWindow?.blenderProTools &&
+        frame.contentWindow?.exporter &&
+        frame.contentWindow?.inspector &&
+        frame.contentWindow?.rigSystem
+          ? frame.contentWindow
+          : null
+      ),
       25000,
-      'Studio + LOD/Instancing boot'
+      'Studio + LOD/Instancing + ProTools boot'
     );
     await w.lodManager.ensureKernel();
     await sleep(200);

@@ -6,6 +6,7 @@
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as THREE from '../vendor/three/three.module.js';
@@ -198,6 +199,56 @@ await test('7. motion.html landing page exists and links all 3 Hunger Motion tem
   assert.ok(html.includes('workspace=motion&amp;template=unity_humanoid'));
   assert.ok(html.includes('workspace=motion&amp;template=vrm_avatar'));
   assert.ok(html.includes('workspace=motion&amp;template=tiktok_dance'));
+});
+
+await test('8. Cloudflare Edge forwards fatal errors in Sentry Envelope v7 format when SENTRY_DSN is set', async () => {
+  const received = [];
+  const srv = http.createServer((req, res) => {
+    const chunks = [];
+    req.on('data', (c) => chunks.push(c));
+    req.on('end', () => {
+      received.push({
+        url: req.url,
+        contentType: req.headers['content-type'],
+        sentryAuth: req.headers['x-sentry-auth'],
+        body: Buffer.concat(chunks).toString('utf8'),
+      });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end('{"id":"ok"}');
+    });
+  });
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+  const { port } = srv.address();
+  try {
+    const fakeEnv = {
+      STUDIO_ENV: 'staging',
+      SENTRY_DSN: `http://testpubkey123@127.0.0.1:${port}/99`,
+    };
+    const health = await (await worker.fetch(new Request('https://hunger-studio-staging.workers.dev/healthz'), fakeEnv)).json();
+    assert.equal(health.sentryConfigured, true, '/healthz reports sentryConfigured=true when SENTRY_DSN is valid');
+
+    const sentryEvent = buildSentryEventPayload(new Error('Staging fatal smoke'), { subsystem: 'mocap', fatal: true });
+    const res = await worker.fetch(new Request('https://hunger-studio-staging.workers.dev/api/telemetry/event', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sessionId: 'sess-sentry',
+        events: [{ kind: 'error', workspace: 'motion', sentry: sentryEvent }],
+      }),
+    }), fakeEnv);
+    assert.equal(res.status, 202);
+    const body = await res.json();
+    assert.equal(body.sentryForwarded, 1, 'Sentry forward count equals 1');
+    assert.equal(received.length, 1, 'Mock Sentry server received 1 envelope');
+    assert.equal(received[0].url, '/api/99/envelope/');
+    assert.equal(received[0].contentType, 'application/x-sentry-envelope');
+    assert.ok(received[0].sentryAuth.includes('sentry_key=testpubkey123'));
+    const lines = received[0].body.split('\n');
+    assert.equal(lines.length, 3, 'Sentry envelope has 3 newline-delimited JSON sections');
+    assert.equal(JSON.parse(lines[2]).environment, 'staging');
+  } finally {
+    srv.close();
+  }
 });
 
 console.log(`\nALL ${passed} BETA MOTION & TELEMETRY TESTS PASSED`);

@@ -11,20 +11,20 @@ Studio 3D/AI và Video-to-3D Motion Capture chạy 100% trên trình duyệt the
 
 | Hạng mục | Số liệu thực đo |
 |---|---|
-| Module JS (`js/`) | **153** file, **141.510** dòng |
+| Module JS (`js/`) | **153** file, **141.581** dòng |
 | Cloudflare Edge (`cloudflare/`) | **4** file, **2.527** dòng (`worker.js`, `cloud-bff.js`, `bridge-do.js`, `mcp-endpoint.js`) |
 | Rust WASM (`crates/`) | **4** crate / **19** file / **18.525** dòng (`mesh_kernel`, `mocap_kernel`, `render_kernel`, `video_kernel`) |
-| Backend Python | **18** file ngoài test / **10.152** dòng (**29** file / **13.860** dòng gồm test) |
-| Giao diện HTML/CSS | `index.html` (1.264 L) + `motion.html` (351 L) + `embed.html` (118 L) + `css/blender-theme.css` (5.938 L) |
-| Bộ test (`tests/`) | **107** file test · **Full gate PASS**: Python **124/124**, agent bridge **16/16**, Rust **47/47**, Godot/Blender import PASS, P1 Hardening **13/13**, Beta Motion/Telemetry **7/7**, Cloudflare Worker **14/14**, Copilot Worker **19/19**, `agent.exec` isolation **13/13**, Hunger Skills **16/16**, browser **14/14 suite / 208 kiểm tra** (0 blocked, 0 uncaught), production `dist/` **9/9** |
-| An toàn & P0/P1 (27/11) | **0 P0 / 0 P1 mở**: đóng toàn bộ P1 transaction/rollback (không dispose geometry trước rollback, khôi phục selection/camera), TextureLeaseRegistry, Inspector abort, Export Cancel (abort cả trong traverse + mutex settle), stale-bundle reload UX, đồng bộ 12 category Community, Edge Rate Limit AI, Telemetry/Sentry v7 (`/api/telemetry/event`) |
-| Build đầy đủ (`npm run build`) | `dist/` **79,7 MB / 134 file**, **0 file > 25 MB**; entry Vite **315,89 kB gzip**; catalog **2.396 item** (6 Studio + 2.390 Poly Haven CC0); build **12,01 s** |
+| Backend Python | **20** file ngoài test / **10.959** dòng (**29** file / **13.860** dòng gồm test) |
+| Giao diện HTML/CSS | `index.html` (1.264 L) + `motion.html` (357 L) + `embed.html` (118 L) + `css/blender-theme.css` (5.938 L) |
+| Bộ test (`tests/`) | **106** file test · **Fast gate PASS (`exit 0`)**: Python **124/124** (Cloud **49/49**), agent bridge **16/16**, Rust **47/47**, Godot/Blender import PASS, P1 Hardening **15/15**, Beta Motion/Telemetry **8/8**, Cloudflare Worker **14/14**, Copilot Worker **19/19**, `agent.exec` isolation **13/13**, Hunger Skills **16/16**, guard **26/26** · **Browser gate PASS 2 lượt liên tiếp**: **14/14 suite / 208 kiểm tra** (`lod-instancing` 8/8, 0 blocked, 0 uncaught) · **Production `dist/` gate**: **9/9 PASS** |
+| An toàn & P0/P1 (27/11) | **0 P0 / 0 P1 mở**: đóng toàn bộ P1 transaction/rollback (Copilot `studio.addCamera` + `CameraManager` undo/redo giữ nguyên `undoStack`, `studio.batchToInstances` detach `TransformControls` cũ và chọn scatter group, không dispose geometry trước rollback, khôi phục selection/camera), TextureLeaseRegistry, Inspector abort, Export Cancel (abort trong traverse + mutex settle), stale-bundle reload UX, đồng bộ 12 category Community, Edge Rate Limit AI, Telemetry/Sentry v7 (`/api/telemetry/event`) |
+| Build đầy đủ (`npm run build`) | `dist/` **79,7 MB / 134 file**, **0 file > 25 MB**; entry Vite **315,85 kB gzip**; catalog **2.396 item** (6 Studio + 2.390 Poly Haven CC0); build **10,35 s** |
 | Build CDN R2 (`npm run build:cdn`) | `dist/` **14,6 MB / 104 file** (`STUDIO_R2_CDN=1`, giảm **81,7%** — `models/`, `vendor/mediapipe/`, studio GLB phục vụ trực tiếp từ Cloudflare R2 `hunger-assets` kèm Range 206 + ETag 304) |
-| Đo KPI thực tế trên Staging (4G) | Landing `/motion` **1,05 s** (`HTTP/2 200`); Motion Workspace interactive **2,33 s** (`initialInteractiveMs: 801 ms`, **0** chunk Advanced tải lúc boot); Video → GLB **786,3 KB / 23 tracks** (100% pass, TTFA **2,43 s**); **0 HTTP/COEP/JS error** (crash-free 100%) |
+| Đo KPI độc lập trên Staging (4G, tắt cache) | **Standard 4G (4 Mbps / 100 ms RTT):** Landing `/motion` **852 ms** (8,3 KB), Motion Workspace interactive **2.583 ms** (`__STUDIO_INTERACTIVE_MS__`: 835 ms, 828,7 KB, `advLoaded: false`) · **Slow 4G (1,6 Mbps / 150 ms RTT):** Motion Workspace interactive **4.741 ms** (`__STUDIO_INTERACTIVE_MS__`: 1.543 ms, 827,2 KB, `advLoaded: false`) · **0 HTTP/COEP/JS error** (crash-free 100%) |
 
-> Chi tiết kỹ thuật & quy trình phát hành xem [AUDIT.md](AUDIT.md), [AGENTS.md](AGENTS.md) và [docs/RELEASE_AND_GIT_WORKFLOW.md](docs/RELEASE_AND_GIT_WORKFLOW.md). Đã sẵn sàng **Public Beta (`v0.9.0-beta.1`) trên Staging**; trước khi bật thu phí công khai cần nạp secrets thật cho SePay/LemonSqueezy, tắt `freeMode`, và mở khóa Image-to-3D API (hiện ở chế độ bảo trì).
+> Chi tiết kỹ thuật & quy trình phát hành xem [AUDIT.md](AUDIT.md), [AGENTS.md](AGENTS.md) và [docs/RELEASE_AND_GIT_WORKFLOW.md](docs/RELEASE_AND_GIT_WORKFLOW.md). Staging đang chạy phiên bản **`v0.9.0-beta.1`** (`5c45cf4b-fe0f-4ad5-b1fc-64d16febbfb7`) với Cloudflare Workers + R2 + Supabase + Edge Telemetry; **còn chờ cấu hình tài khoản ngoài** cho `SENTRY_DSN` trên staging (`sentryConfigured: false`), gắn remote GitHub + bật protected `main` và nạp secret SePay/LemonSqueezy live (`freeMode: false`) + Image-to-3D API trước khi GA thu phí.
 
-Định vị: **Hunger Motion — 100% Browser Video-to-3D Motion Capture & AI 3D Studio** (workspace `Motion` gọn gàng với 3 template Unity Humanoid, VRM/VTuber, TikTok Dance 9:16; toàn bộ công cụ Blender Pro nằm gọn sau tab **⚙ Advanced**).
+Định vị: **Hunger Motion — 100% Browser Video-to-3D Motion Capture & AI 3D Studio** (workspace `Motion` gọn gàng với 3 template Unity Humanoid, VRM/VTuber, TikTok Dance 9:16; toàn bộ công cụ Blender Pro nằm gọn sau tab **Advanced**).
 
 ## Dùng để làm gì?
 
@@ -63,7 +63,7 @@ Studio 3D/AI và Video-to-3D Motion Capture chạy 100% trên trình duyệt the
 ### AI & tự động hoá
 - AI Copilot offline NLP + tùy chọn Gemini/OpenAI.
 - **Cầu nối tool-calling additive** (`js/ai/agent-tool-bridge.js`): ghép Copilot với **60 tool** của agent API (68 definition, bỏ `exec` và tool chỉ dùng trình duyệt) qua giao thức JSON `{"tool":…,"args":[…]}` — tương thích proxy `/api/ai/chat` hiện tại; executor có `approve()` cho tool phá huỷ, timeout từng tool, giới hạn số bước; `installToolCalling()`/`uninstallToolCalling()` gắn-gỡ **tại runtime, không sửa file dự án**; fallback introspection khi manifest không nạp được. Test: `tests/test_agent_tool_bridge.mjs` (25/25).
-- **Copilot chỉ thao tác cảnh, không sửa dự án** (`js/ai/copilot-runtime.js` + `copilot-exec-worker.js`): code AI-generated và STEM demo chạy trong dedicated module Worker với scene mirror Three.js, CSP hạn chế, capability denial, timeout/cancellation và live-command allowlist; parent kiểm tra URL asset, giới hạn payload, phát hiện xung đột scene/camera, áp diff transaction và gộp mỗi lượt thành một bước undo. `agent.exec` dùng Worker riêng với CSP/global bị chặn. Static guard vẫn được chạy trước Worker nhưng không còn được coi là ranh giới bảo mật chính. Test: guard **26/26**, Copilot Worker **17/17**, `agent.exec` isolation **7/7**, browser **43/43**, production `dist/` **9/9**. Đây là kiểm soát rủi ro, không phải tuyên bố chống lại mọi exploit arbitrary-code.
+- **Copilot chỉ thao tác cảnh, không sửa dự án** (`js/ai/copilot-runtime.js` + `copilot-exec-worker.js`): code AI-generated và STEM demo chạy trong dedicated module Worker với scene mirror Three.js, CSP hạn chế, capability denial, timeout/cancellation và live-command allowlist; parent kiểm tra URL asset, giới hạn payload, phát hiện xung đột scene/camera, áp diff transaction và gộp mỗi lượt thành một bước undo. `agent.exec` dùng Worker riêng với CSP/global bị chặn. Static guard vẫn được chạy trước Worker nhưng không còn được coi là ranh giới bảo mật chính. Test: guard **26/26**, Copilot Worker **19/19**, `agent.exec` isolation **13/13**, P1 Hardening **15/15**, browser **43/43**, production `dist/` **9/9**. Đây là kiểm soát rủi ro, không phải tuyên bố chống lại mọi exploit arbitrary-code.
 - **Khởi động nhanh hơn**: ShareDialog + `embed-core` (~193 KB gzip) chỉ nạp khi mở Share; server chỉ import MediaPipe/`mocap_engine` ở lần gọi `/api/mocap/*` đầu tiên → import server **2,52 s → 0,65 s**, mocap vẫn khởi tạo đúng (2,6 s) khi cần.
 - **Live scene digest** (`js/ai/scene-digest.js`): trước mỗi lượt, Copilot nhận bản tóm tắt cảnh thật (hierarchy, số object/mesh/group/light/camera, tổng tam giác/đỉnh, skinned/bones, material, animation clip, selection) trong ngân sách ~1.600 ký tự — thay cho cờ boolean cố định — kèm chỉ dẫn “build ON these objects”; object không tên nhận nhãn ổn định `Mesh#n`/`Group#n`. Test: `tests/test_scene_digest.mjs` (14/14).
 - Prefab library: lắp nhân vật/cảnh GLB thay vì chỉ ghép primitive.
@@ -76,7 +76,7 @@ Studio 3D/AI và Video-to-3D Motion Capture chạy 100% trên trình duyệt the
 - Mỗi bước có `expectedAction`: tutor nhận diện thao tác thật (orbit, add mesh, transform commit, Tab/Edit, extrude, gắn modifier, thêm đèn, keyframe/play, physics) và tự tick ✓ + chuyển bước.
 - Chấm điểm tự động thang 100 dựa trên hình học thật của cảnh (topology, PBR, đèn, modifier, animation, physics) và **chỉ mã đã thực thi**, không chấm chữ gõ dở trong editor; XP lưu localStorage.
 - Con trỏ giáo viên 44px không đè nút mục tiêu và tự né chuột; HUD lời giảng thu gọn được; giọng Việt qua `/api/tts` (prefetch) với fallback Web Speech.
-- **🎙 Live voice hands-free** (`js/education/stem-voice-session.js` + nút `#stem-mic-btn`): nghe liên tục bằng Web Speech API, tự gửi câu hỏi sau ~1,1 s ngừng nói, **ngắt lời giáo viên (barge-in)** khi học sinh nói chen, tự khởi động lại phiên khi Chrome kết thúc, có wake word tuỳ chọn (`wakeWord`, ví dụ “thầy ơi”), báo lỗi micro rõ ràng (`E_UNSUPPORTED`, `E_MIC_DENIED`, `E_SUBMIT`). Câu trả lời có **timeout 9 s** rồi tự rơi về coach offline nên phiên không bao giờ treo ở “Đang xử lý…”. Echo guard chặn lệnh điều hướng bị nhận nhầm từ tiếng loa (ví dụ “xem lại” → “quay lại”) nhưng vẫn nhận “khoan đã”/“tiếp tục” thật. Test: `tests/test_stem_voice_session.mjs` (**20/20**).
+- **Live voice hands-free** (`js/education/stem-voice-session.js` + nút `#stem-mic-btn`): nghe liên tục bằng Web Speech API, tự gửi câu hỏi sau ~1,1 s ngừng nói, **ngắt lời giáo viên (barge-in)** khi học sinh nói chen, tự khởi động lại phiên khi Chrome kết thúc, có wake word tuỳ chọn (`wakeWord`, ví dụ “thầy ơi”), báo lỗi micro rõ ràng (`E_UNSUPPORTED`, `E_MIC_DENIED`, `E_SUBMIT`). Câu trả lời có **timeout 9 s** rồi tự rơi về coach offline nên phiên không bao giờ treo ở “Đang xử lý…”. Echo guard chặn lệnh điều hướng bị nhận nhầm từ tiếng loa (ví dụ “xem lại” → “quay lại”) nhưng vẫn nhận “khoan đã”/“tiếp tục” thật. Test: `tests/test_stem_voice_session.mjs` (**20/20**).
 
 ### Vật lý
 - Rapier WASM, fixed-step 60 Hz, deterministic.
@@ -193,7 +193,7 @@ cp cloud_config.example.json cloud_config.json
 Đặt `session_secret` ≥ 32 byte, sau đó chạy lại server. Các provider và webhook:
 
 - `local`: dev login chỉ chấp nhận loopback; dữ liệu ở `cloud_data/`.
-- `supabase`: điền `url`, `anon_key`, `service_key`, rồi chạy `cloud/supabase_schema.sql` trên project thật. Schema ngày 26/11 đặt bucket `shared-models` ở chế độ **private**, bật Storage RLS và thu hồi quyền truy cập trực tiếp của `anon/authenticated`; asset public được phục vụ qua BFF bằng signed URL, còn private URL chỉ trả cho owner. Test Cloud cục bộ **48/48**, nhưng schema chưa được áp hoặc kiểm end-to-end trên Supabase thật — bước này là bắt buộc trước khi public.
+- `supabase`: điền `url`, `anon_key`, `service_key`, rồi chạy `cloud/supabase_schema.sql`. Schema đã được áp **live trên Supabase `fpkhjitqzieqofcviyqi`**: bucket `shared-models` và `studio-projects` ở chế độ **private**, bật Storage RLS (0 policy client), thu hồi quyền trực tiếp bảng và toàn bộ 8 RPC (gồm `cloud_reserve_asset` nguyên tử) khỏi `anon`/`authenticated`, `supabase db advisors` đạt 0 cảnh báo. Test Cloud cục bộ **49/49**; staging Cloudflare Worker đang kết nối trực tiếp tới project Supabase này (`cloud: true` trên `/healthz`).
 - SePay: `/api/cloud/webhook/sepay`.
 - LemonSqueezy: `/api/cloud/webhook/lemonsqueezy`, redirect `/?cloud=paid&code=…`.
 
@@ -211,19 +211,20 @@ Mặc định server chỉ nghe `127.0.0.1`; API kiểm tra Host/Origin và khô
 ## Build production & thu gọn asset
 
 ```bash
-npm run build                 # dist/ theo chính sách ship mặc định (~80,7 MB khi đo 26/11/2026)
+npm run build                     # dist/ đầy đủ theo chính sách ship mặc định (79,7 MB / 134 file)
+npm run build:cdn                 # dist/ CDN R2 (STUDIO_R2_CDN=1: 14,6 MB / 104 file, đẩy media sang R2)
 STUDIO_SHIP_ALL=1 npm run build   # self-host/LAN: ship toàn bộ asset như cũ
 ```
 
 `assets/asset-ship-policy.json` quyết định bản public ship gì — **không xoá file gốc** trong `assets/`, `models/`:
 
-- `library.maxAssetMB: 5` — chỉ ship asset Studio đủ điều kiện (khi đo 25/11: **6/45 asset, 5,9 MB**) và **tự lọc `assets/library/studio-catalog.json` trong `dist/`** để Asset Library không bao giờ trỏ tới file không tồn tại.
+- `library.maxAssetMB: 5` — chỉ ship asset Studio đủ điều kiện (**6/45 asset, 5,9 MB**) và **tự lọc `assets/library/studio-catalog.json` trong `dist/`** để Asset Library không bao giờ trỏ tới file không tồn tại.
 - `models.excludeDirs: hunyuan_inputs, hunyuan_outputs` — dữ liệu upload/xuất của server, không thuộc gói client (tiết kiệm 68 MB).
-- `models.excludeFiles: pose_landmarker_heavy.task` — 29 MB, vượt giới hạn 25 MB/file của một số host; engine tự fallback `heavy → full` (9 MB) local rồi mới tới CDN.
+- `models.excludeFiles: pose_landmarker_heavy.task` — 29 MB, vượt giới hạn 25 MB/file của một số host; engine tự fallback `heavy → full` (9 MB) local hoặc R2 CDN.
 - `vendor.excludeFiles: rapier/rapier.mjs` — bản build đã bundle Rapier (WASM base64) nên bản copy trong `vendor/` là dư 4,1 MB.
 - `host.maxFileMB: 25` — build in cảnh báo nếu còn file vượt giới hạn host.
 
-Kết quả đo 26/11/2026: `dist/` **80,7 MB / 128 file**, 0 file > 25 MB; entry Vite **275,99 kB gzip**; catalog **2.396 item** (6 Studio + 2.390 Poly Haven CC0); build **34,15 s**. Snapshot lịch sử 25/11 trước đợt vá là 80,0 MB / 126 file, 275,84 kB gzip, build 24,72 s. Muốn thêm asset lớn cho bản public, thêm đường dẫn vào `library.include` (bỏ qua ngưỡng 5 MB) hoặc dùng `STUDIO_SHIP_ALL=1`.
+Kết quả đo 27/11/2026: bản đầy đủ `dist/` **79,7 MB / 134 file**, 0 file > 25 MB; entry Vite **315,85 kB gzip**; catalog **2.396 item** (6 Studio + 2.390 Poly Haven CC0); build **10,35 s**. Bản CDN (`npm run build:cdn`, `STUDIO_R2_CDN=1`) giảm xuống **14,6 MB / 104 file** (đã upload và phục vụ thực tế từ Cloudflare R2 `hunger-assets` trên staging). Muốn thêm asset lớn cho bản public, thêm đường dẫn vào `library.include` (bỏ qua ngưỡng 5 MB) hoặc dùng `STUDIO_SHIP_ALL=1`.
 
 ## Phím tắt chính
 
@@ -251,21 +252,26 @@ Kết quả đo 26/11/2026: `dist/` **80,7 MB / 128 file**, 0 file > 25 MB; entr
 bash tests/run_all.sh
 ```
 
-**Full gate 26/11/2026:** `bash tests/run_all.sh` thoát mã **0**, **68/68 nhóm**. Python **124/124**, agent bridge **16/16**, Rust **47/47**, Godot/Blender import PASS; browser **14/14 suite / 208 kiểm tra**, 0 blocked, 0 uncaught; production build và `dist/` gate **9/9**. Sculpt benchmark dùng median sau warm-up, vẫn giữ ngưỡng **<25 ms**; `chaos-ui` đạt **7/7** sau khi sửa điều kiện chờ subsystem.
+**Kết quả gate 27/11/2026 (`v0.9.0-beta.1`):**
+- `bash tests/run_all.sh --fast` thoát mã **0** (Python **124/124**, Cloud **49/49**, agent bridge **16/16**, Rust **47/47**, Godot/Blender import PASS, P1 Hardening **15/15**, Beta Motion/Telemetry **8/8**, Cloudflare Worker **14/14**, Copilot Worker **19/19**, `agent.exec` isolation **13/13**, Hunger Skills **16/16**, guard **26/26**).
+- `node tests/run_browser_suites.mjs` chạy **2 lượt liên tiếp** đều đạt **14/14 suite / 208 kiểm tra** (`lod-instancing` 8/8, `chaos-ui` 7/7, 0 blocked, 0 uncaught).
+- `node tests/test_dist_production.mjs --build` đạt **9/9** (`dist/` 79,7 MB / 134 file, build 10,35 s).
 
-**Test P0 chạy riêng:**
+**Các nhóm test trọng tâm chạy riêng:**
 
 ```bash
-node tests/test_wave2_fixes.mjs                              # 10/10 — Inspector metadata an toàn
-node tests/test_copilot_guard.mjs                            # 26/26 — static guard bổ trợ
-node --import ./tests/three-resolve-hooks.mjs tests/test_copilot_worker.mjs  # 17/17 — Worker/serialization/asset/command/permission
-node tests/test_agent_exec_isolation.mjs                     # 7/7 — capability denial trong Worker
-.venv/bin/python -m unittest discover -s tests -p 'test_cloud.py'  # 48/48 — private Storage/signed URL/refund ordering
-node tests/run_browser_suites.mjs                            # 14/14 suite / 208 kiểm tra
-node tests/test_dist_production.mjs --build                  # build + 9/9 production checks
+node tests/test_wave2_fixes.mjs                                              # 10/10 — Inspector metadata an toàn
+node tests/test_copilot_guard.mjs                                            # 26/26 — static guard bổ trợ
+node --import ./tests/three-resolve-hooks.mjs tests/test_copilot_worker.mjs  # 19/19 — Worker/serialization/asset/command/permission
+node tests/test_agent_exec_isolation.mjs                                     # 13/13 — capability denial trong Worker
+node --import ./tests/three-resolve-hooks.mjs tests/test_p1_hardening.mjs    # 15/15 — P1 transaction, addCamera, batchToInstances, lease, export cancel
+node --import ./tests/three-resolve-hooks.mjs tests/test_beta_motion_telemetry.mjs # 8/8 — Telemetry, Sentry v7 forwarder, 3 templates, CDN
+.venv/bin/python -m unittest discover -s tests -p 'test_cloud.py'            # 49/49 — private Storage/signed URL/atomic quota/refund ordering
+node tests/run_browser_suites.mjs                                            # 14/14 suite / 208 kiểm tra
+node tests/test_dist_production.mjs --build                                  # build + 9/9 production checks
 ```
 
-Các kết quả trên không thay thế việc áp `cloud/supabase_schema.sql` và kiểm end-to-end Supabase/SePay/LemonSqueezy thật.
+Các test cục bộ bổ trợ nhưng không thay thế việc kích hoạt secret live trên môi trường thật (`SENTRY_DSN` trên staging, SePay/LemonSqueezy webhook thật, và CI trên remote GitHub).
 
 Browser suite (cần server chạy):
 
@@ -288,29 +294,27 @@ http://127.0.0.1:8080/tests/chaos-ui-suite.html        7 test
 
 Browser suite cần tab hiển thị để `requestAnimationFrame` chạy. Khi chạy tự động trong tab ẩn, dùng Chrome headless + CDP; kết quả nằm trong `window.__SUITE_RESULTS__`, `__INTERACTION_RESULTS__`, `__EMBED_SUITE_RESULTS__`, `__MOCAP_SUITE_RESULTS__`, `__CLOUD_SUITE_RESULTS__`, `__PATH_TRACE_RESULTS__`, `__WEBCODECS_SUITE_RESULTS__`, `__GEOMETRY_WORKER_RESULTS__`.
 
-## Giới hạn đã biết
+## Giới hạn đã biết & Trạng thái Live (27/11/2026)
 
-- **P0 đã đóng lại trong phạm vi kiểm tra sau hồi quy:** mã AI-generated và STEM demo chạy trong Worker riêng, `agent.exec` dùng Worker hạn chế; Inspector XSS, Supabase private Storage/BFF signed URL và refund-before-paid đã vá trong source/schema và có regression cục bộ. Server dev cũ thiếu CSP, Live Voice echo và serialize material null đã được sửa; `E_PERMISSION` không còn bị Auto-Repair lặp. Full gate 68/68, browser 208 kiểm tra và dist 9/9 xanh. **Chưa thể public thương mại:** schema Supabase chưa áp live, còn edge refund external-ID-only và các kiểm chứng cloud/webhook/deployment thật.
-- Cloud Supabase, SePay và LemonSqueezy mới kiểm bằng adapter giả/schema, chưa chạy với tài khoản thật.
-- Đã có Vite build additive (`npm run build` → `dist/`); vẫn còn nhiều biến toàn cục `window.*` chưa dọn.
-- BVH/CSG mesh lớn (>20.000 tam giác) đã đẩy Web Worker; các thao tác Edit/Sculpt khác vẫn CPU một luồng.
-- Joint Fixed/Revolute cho mesh cứng đã có motor/giới hạn góc; chưa chỉnh điểm neo sau tạo, soft body, cloth.
-- Chưa có weather, vật liệu nâng cao ngoài PBR cơ bản.
-- `Michelle.glb` dùng rig/animation Mixamo; repo không kèm giấy phép, cần kiểm tra trước khi thương mại hóa.
-- Link tự chứa `#z=` giới hạn ~96 KB sau nén; link localhost chỉ mở trên máy tạo.
-- Bản `dist/` public **mặc định không ship** `models/hunyuan_inputs|outputs` và `pose_landmarker_heavy.task` (29 MB > 25 MB/file) — tier `heavy` fallback sang `full`; xem mục *Build production & thu gọn asset*.
-- Đã có `Dockerfile` và `.github/workflows/ci.yml` trong mã nguồn, nhưng chưa chạy `docker build` hay GitHub Actions runner thật; `server.py` vẫn là HTTP server Python và cần reverse proxy/HTTPS trước khi public.
-- Đã có `LICENSE`, `PRIVACY.md`, `TERMS.md`, `THIRD_PARTY_LICENSES.md`; một số asset mẫu (Michelle/Mixamo, cathedral, tượng) chưa kèm giấy phép phân phối — cần thay hoặc xin phép trước khi thương mại hoá.
-- `PRIVACY.md` vẫn thiếu email/hệ pháp nhân vận hành thật; cần điền trước khi public.
-- Thanh toán SePay/LemonSqueezy và Supabase chưa chạy với tài khoản thật; chưa có analytics/error monitoring.
+- **Đã live trên Staging (`https://hunger-studio-staging.hunger-studio-vn.workers.dev`, `v0.9.0-beta.1`):** Cloudflare Workers Edge, R2 CDN (`hunger-assets`, giảm `dist/` từ 79,7 MB xuống 14,6 MB), Supabase production (`fpkhjitqzieqofcviyqi` với private Storage RLS + 8 RPC + 0 advisor), Durable Objects bridge, Edge Telemetry (`/api/telemetry/event` HTTP 202 + `/api/telemetry/summary`), landing `/motion`, workspace Motion lazy-load và 3 template Unity/VRM/TikTok. Toàn bộ P0/P1 kỹ thuật đã đóng (gồm Copilot `addCamera` undo/redo, `batchToInstances` TransformControls và browser suite 14/14 PASS 2 lượt liên tiếp).
+- **Chưa cấu hình tài khoản/hạ tầng ngoài trước GO Phase 2 / GA thu phí:**
+  - **Sentry trên Staging (`sentryConfigured: false`):** mã nguồn đã chuyển tiếp lỗi dạng Sentry Envelope v7 (đã kiểm bằng HTTP mock ở `test_beta_motion_telemetry.mjs` Test 8), nhưng chưa đặt secret `SENTRY_DSN` trên Worker staging để xác nhận event xuất hiện trong dashboard Sentry thật (`scripts/verify_sentry_staging.mjs`).
+  - **Git remote & protected `main`:** Git local đã sạch với tag `v0.9.0-beta.1`, `.githooks/`, CI/PR templates và hướng dẫn tại `docs/RELEASE_AND_GIT_WORKFLOW.md`, nhưng chưa gắn `git remote` GitHub nên branch protection và CI PR checks chưa chạy trên remote.
+  - **Thanh toán SePay/LemonSqueezy & Auth SaaS:** Edge đang để `freeMode: true` (`billingEnabled: false`), chưa nạp secret webhook thật (còn edge refund external-ID-only), chưa có OAuth Google/GitHub và Reset Password riêng.
+  - **Image-to-3D (Hunyuan3D):** đang ở chế độ bảo trì trên Cloudflare Edge (`mode: "maintenance"`) cho tới khi gắn Cloud 3D provider API trả phí hoặc `API_ORIGIN`.
+- **Hạn chế kỹ thuật còn lại:**
+  - Vẫn còn nhiều biến toàn cục `window.*` trong lớp tương thích dev; BVH/CSG mesh lớn (>20.000 tam giác) đã chạy Web Worker, nhưng các thao tác Edit/Sculpt khác vẫn trên một luồng CPU.
+  - Joint Fixed/Revolute có motor/giới hạn góc; chưa chỉnh điểm neo sau tạo, chưa có soft body, cloth hoặc weather.
+  - Link chia sẻ tự chứa `#z=` giới hạn ~96 KB sau nén; cảnh lớn dùng Cloud Share qua R2/Supabase.
+  - Đã có `LICENSE`, `PRIVACY.md` (đã điền email liên hệ `hueotran80@gmail.com`), `TERMS.md`, `THIRD_PARTY_LICENSES.md` và `Mannequin_CC0.glb`/`Bot_CC0.glb` sạch bản quyền cho `dist/`; một số asset dev cũ ngoài `dist/` (`Michelle.glb`, cathedral, tượng) vẫn bị loại bởi `asset-ship-policy.json` (`requireCommercialSafe: true`).
+  - `Dockerfile` và `.github/workflows/ci.yml` đã có sẵn trong repo nhưng chưa chạy thực tế trên Docker host / GitHub Actions runner.
 
 ## Còn lại trong roadmap
 
-- Ưu tiên hiện tại: xử lý edge refund external-ID-only, áp và kiểm schema Supabase live, xác minh SePay/LemonSqueezy/Docker/CI thật, rồi mới xét hạ tầng public và CDN. Tiếp theo là quota RPC nguyên tử, Hunyuan path containment và upload Mocap TTL/build exclusion.
-- Giảm phụ thuộc `window.*`; chiến lược CDN/lazy-load để đưa `dist/` từ ~80 MB xuống dưới 15 MB.
+- **Hoàn tất cổng Phase 1 -> Phase 2:** nạp `SENTRY_DSN` trên staging + xác nhận fatal smoke event trong Sentry; thêm remote GitHub + bật branch protection + chạy CI trên PR.
+- **Chuẩn bị GA thu phí:** bật SePay/LemonSqueezy live (`freeMode: false`), xử lý edge refund external-ID-only, bổ sung Google/GitHub OAuth + Reset Password, mở lại Image-to-3D qua Cloud 3D API.
+- **Tối ưu & mở rộng sản phẩm:** nén GLB export (Meshopt/Draco/KTX2), SSE streaming cho AI Copilot, seed mẫu Community, Teacher Dashboard cloud cho STEM, soft body / cloth / weather, giảm phụ thuộc `window.*`.
 - Đóng gói desktop Tauri **không thuộc lộ trình thương mại**; không thực hiện trừ khi có yêu cầu riêng.
-- Vật lý tiếp theo: soft body / cloth / weather, chỉnh neo joint sau tạo (5.2 Fixed/Revolute + motor/giới hạn góc + BVH/CSG worker đã có).
-- Hạ tầng public: xác minh Docker/CI thật, HTTPS/CSP, analytics/giám sát lỗi, landing + onboarding, pháp lý asset.
 
 ## Tài liệu
 

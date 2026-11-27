@@ -74,7 +74,7 @@
 
     async function waitForStudio(win) {
       await waitUntil(
-        () => win.app?.engine && win.sceneManager && win.studio && win.timelineUI && win.simulationManager,
+        () => win.app?._advancedLoaded && win.app?.engine && win.sceneManager && win.studio && win.timelineUI && win.simulationManager && win.blenderProTools && win.inspector && win.exporter && win.rigSystem,
         30000,
         'studio boot'
       );

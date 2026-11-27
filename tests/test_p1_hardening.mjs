@@ -363,4 +363,139 @@ await test('13. CopilotRuntime LIVE resolver targets EditMode.targetMesh (not ac
   assert.equal(sm.rootContainer.getObjectByName('AddedCam'), undefined, 'rolled back addCamera removes leaked camera cleanly');
 });
 
+await test('14. Copilot LIVE studio.addCamera succeeds with real CameraManager, preserves undoStack, and undoes/redoes cleanly', async () => {
+  const { dispatchLiveCommands, LIVE_COMMAND_META, CopilotObjectCommand, captureDescriptor, dataSize } = __copilotRuntimeInternals;
+  const { CameraManager } = await import('../js/core/camera-manager.js');
+  assert.equal(Boolean(LIVE_COMMAND_META['studio.addCamera']?.mutatesSelection), true, 'addCamera metadata includes mutatesSelection');
+  const prevWin = globalThis.window;
+  globalThis.window = { dispatchEvent() {}, addEventListener() {}, removeEventListener() {} };
+  try {
+    const scene = new THREE.Scene();
+    const engine = { scene, camera: new THREE.PerspectiveCamera(50, 1.6, 0.1, 1000), requestRender() {}, updateViewportCameraLabel() {} };
+    const sm = new SceneManager(scene, engine);
+    const cm = new CameraManager(engine, { sceneManager: sm });
+
+    // Starter scene with a Cube + default Camera (whose userData.cameraHelper points into engine.scene)
+    const cube = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshStandardMaterial());
+    cube.name = 'StarterCube';
+    sm.addObject(cube, null, false, true);
+    const defaultCam = cm.createCamera({ name: 'Camera', position: { x: 6, y: 4, z: 8 }, target: { x: 0, y: 1, z: 0 } });
+    sm.setSelection([cube]);
+
+    // Verify dataSize/CopilotObjectCommand on a camera with live cameraHelper never walks engine.scene (>64 MB eviction bug)
+    const camDesc = captureDescriptor(defaultCam);
+    const estBytes = dataSize(camDesc.userData);
+    assert.ok(estBytes < 16384, `Camera userData dataSize stays bounded (got ${estBytes})`);
+    const camUpdateCmd = new CopilotObjectCommand(defaultCam, camDesc, camDesc, sm.rootContainer, sm.rootContainer);
+    assert.ok(camUpdateCmd.bytes < 32768, `CopilotObjectCommand bytes stays bounded (got ${camUpdateCmd.bytes})`);
+
+    const liveObjects = new Map([[cube.uuid, cube], [defaultCam.uuid, defaultCam]]);
+    const ctx = {
+      sceneManager: sm,
+      engine,
+      THREE,
+      studio: {
+        addCamera(opts = {}) {
+          return cm.createCamera({
+            name: opts.name || 'HeroCamera',
+            position: { x: opts.x ?? 5, y: opts.y ?? 3, z: opts.z ?? 7 },
+            target: { x: opts.targetX ?? 0, y: opts.targetY ?? 1, z: opts.targetZ ?? 0 },
+            fov: opts.fov ?? 50,
+          });
+        },
+      },
+    };
+
+    const stackBefore = sm.undoStack.length;
+    sm.beginBatch('AI Copilot Generation');
+    sm.recordExecutedCommand(camUpdateCmd);
+    const dispatched = await dispatchLiveCommands([{ method: 'studio.addCamera', args: [{ name: 'HeroCamera', x: 5, y: 3, z: 7 }] }], ctx, liveObjects);
+    const tx = sm.endBatch();
+
+    assert.equal(dispatched.mutatedSelection, true, 'dispatched records mutatedSelection');
+    assert.ok(tx, 'batch transaction recorded');
+    assert.equal(sm.undoStack.length, stackBefore + 1, 'undoStack kept prior history and pushed Copilot transaction');
+    const addedCam = sm.rootContainer.getObjectByName('HeroCamera');
+    assert.ok(addedCam, 'HeroCamera exists in scene after Copilot addCamera');
+    assert.strictEqual(sm.getActiveObject(), addedCam, 'HeroCamera is actively selected');
+    assert.ok(cm.cameras.some((c) => c.group === addedCam), 'HeroCamera registered in CameraManager');
+
+    // Undo removes HeroCamera cleanly from scene and CameraManager
+    sm.undo();
+    assert.equal(sm.rootContainer.getObjectByName('HeroCamera'), undefined, 'Undo removes HeroCamera from scene');
+    assert.equal(sm.findObjectByName('HeroCamera'), null, 'Undo removes HeroCamera from SceneManager objects');
+    assert.equal(cm.cameras.some((c) => c.group === addedCam), false, 'Undo removes HeroCamera from CameraManager');
+
+    // Redo restores HeroCamera cleanly
+    sm.redo();
+    assert.ok(sm.rootContainer.getObjectByName('HeroCamera'), 'Redo restores HeroCamera');
+    assert.ok(cm.cameras.some((c) => c.group === addedCam), 'Redo re-adopts HeroCamera in CameraManager');
+  } finally {
+    globalThis.window = prevWin;
+  }
+});
+
+await test('15. Copilot LIVE studio.batchToInstances detaches stale TransformControls, selects scatter group, and undoes cleanly', async () => {
+  const { dispatchLiveCommands, isAttachedToSceneRoot } = __copilotRuntimeInternals;
+  const { InstancingSystem } = await import('../js/core/instancing-system.js');
+  const scene = new THREE.Scene();
+  const sm = new SceneManager(scene);
+  const srcA = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshStandardMaterial({ color: 0x3366ff }));
+  srcA.name = 'Pillar_A';
+  const srcB = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshStandardMaterial({ color: 0x3366ff }));
+  srcB.name = 'Pillar_B';
+  srcB.position.set(2, 0, 0);
+  sm.addObject(srcA, null, false, false);
+  sm.addObject(srcB, null, false, false);
+  sm.setSelection([srcA, srcB]);
+
+  // Simulate TransformControls attached to srcA before batchToInstances removes srcA
+  let detachCount = 0;
+  const fakeTc = {
+    object: srcA,
+    visible: true,
+    detach() {
+      detachCount += 1;
+      this.object = null;
+      this.visible = false;
+    },
+    attach(obj) {
+      this.object = obj;
+      this.visible = true;
+    },
+  };
+  const fakeEngine = { scene, sceneManager: sm, transformControls: fakeTc, markShadowDirty() {}, requestRender() {} };
+  const instSys = new InstancingSystem(fakeEngine);
+
+  const liveObjects = new Map([[srcA.uuid, srcA], [srcB.uuid, srcB]]);
+  const ctx = {
+    sceneManager: sm,
+    engine: fakeEngine,
+    THREE,
+    studio: {
+      batchToInstances(meshes) {
+        return instSys.batchMeshesToInstanceGroupSync(meshes, { sceneManager: sm });
+      },
+    },
+  };
+
+  sm.beginBatch('CopilotBatchToInstances');
+  const dispatched = await dispatchLiveCommands([{ method: 'studio.batchToInstances', args: [[{ __copilotObject: srcA.uuid }, { __copilotObject: srcB.uuid }]] }], ctx, liveObjects);
+  sm.endBatch();
+
+  const scatterGroup = dispatched.results[0];
+  assert.ok(scatterGroup?.userData?.isScatterGroup, 'InstancedScatterGroup created');
+  assert.equal(srcA.parent, null, 'source mesh A detached from scene');
+  assert.equal(srcB.parent, null, 'source mesh B detached from scene');
+  assert.ok(detachCount >= 1, 'TransformControls detached from removed source mesh');
+  assert.ok(!fakeTc.object || isAttachedToSceneRoot(fakeTc.object, sm.rootContainer), 'TransformControls never points to detached source');
+  assert.strictEqual(sm.getActiveObject(), scatterGroup, 'active selection switched to scatter group');
+
+  // Undo restores sources cleanly
+  sm.undo();
+  assert.equal(scatterGroup.parent, null, 'Undo removes scatter group');
+  assert.strictEqual(srcA.parent, sm.rootContainer, 'Undo restores source A');
+  assert.strictEqual(srcB.parent, sm.rootContainer, 'Undo restores source B');
+});
+
 console.log(`ALL ${passed} ROUND-5 P1 HARDENING TESTS PASSED`);

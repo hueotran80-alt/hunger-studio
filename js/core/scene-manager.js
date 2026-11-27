@@ -1133,7 +1133,7 @@ export class SceneManager extends EventEmitter {
     if (this.maxHistoryBytes == null) this.maxHistoryBytes = 64 * 1024 * 1024;
     const totalBytes = () => this.undoStack.reduce((s, c) => s + (c.bytes || 0), 0);
     const evicted = [];
-    while (this.undoStack.length > this.maxHistory || totalBytes() > this.maxHistoryBytes) {
+    while (this.undoStack.length > this.maxHistory || (this.undoStack.length > 1 && totalBytes() > this.maxHistoryBytes)) {
       evicted.push(this.undoStack.shift());
     }
     const droppedRedo = this.redoStack.splice(0); // Clear redo stack on new action

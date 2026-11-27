@@ -108,20 +108,27 @@ function cloneData(value, seen = new WeakMap()) {
   return out;
 }
 
-function dataSize(value, seen = new WeakSet()) {
-  if (value === null || value === undefined) return 0;
+function dataSize(value, seen = new WeakSet(), depth = 0) {
+  if (value === null || value === undefined || depth > 12) return 0;
   if (typeof value === 'string') return value.length * 2;
   if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') return 8;
   if (typeof value !== 'object') return 0;
   if (seen.has(value)) return 0;
+  if (value.isObject3D || value.isTexture || value.isSkeleton || value.isCamera || value.isScene) return 64;
   seen.add(value);
   let size;
   if (value.isBufferGeometry) size = Object.keys(value.attributes || {}).length * 128;
   else if (value.isMaterial) size = Object.keys(value).length * 64;
-  else if (Array.isArray(value)) size = value.reduce((sum, item) => sum + dataSize(item, seen), 0);
+  else if (ArrayBuffer.isView(value)) size = value.byteLength || 0;
+  else if (Array.isArray(value)) size = value.reduce((sum, item) => sum + dataSize(item, seen, depth + 1), 0);
   else {
+    const proto = Object.getPrototypeOf(value);
+    if (proto !== Object.prototype && proto !== null) {
+      seen.delete(value);
+      return 64;
+    }
     size = 0;
-    for (const [key, item] of Object.entries(value)) size += key.length * 2 + dataSize(item, seen);
+    for (const [key, item] of Object.entries(value)) size += key.length * 2 + dataSize(item, seen, depth + 1);
   }
   seen.delete(value);
   return size;
@@ -458,7 +465,7 @@ function descriptorFromJSON(object, node, payload, previous, beforeNode = null, 
   descriptor.frustumCulled = node.frustumCulled;
   if (!beforeNode || JSON.stringify(node.userData || {}) !== JSON.stringify(beforeNode.userData || {})) {
     descriptor.userData = cloneData(node.userData || {});
-    for (const key of ['skeleton', 'baseGeometry']) {
+    for (const key of ['skeleton', 'baseGeometry', 'cameraHelper', 'lightHelper', 'physicsBody']) {
       if (object.userData?.[key] !== undefined && descriptor.userData[key] === undefined) descriptor.userData[key] = object.userData[key];
     }
   }
@@ -594,7 +601,7 @@ function resolveLiveCommand(method, context) {
 }
 
 const LIVE_COMMAND_META = Object.freeze({
-  'studio.addCamera': { mutatesCamera: true, mutatesScene: true },
+  'studio.addCamera': { mutatesCamera: true, mutatesScene: true, mutatesSelection: true },
   'studio.setupProStudio': { mutatesCamera: true, mutatesScene: true },
   'studio.setupSunLight': { mutatesScene: true },
   'studio.setTurntable': { mutatesCamera: true },
@@ -688,9 +695,47 @@ function resolveLiveCommandTargets(command, args, context) {
   return found;
 }
 
+function isAttachedToSceneRoot(obj, root) {
+  if (!obj || !root) return false;
+  let cur = obj;
+  while (cur) {
+    if (cur === root) return true;
+    cur = cur.parent;
+  }
+  return false;
+}
+
+function sanitizeSelectionAndTransformControls(sm, engine, preferredFallback = null) {
+  const root = sm?.rootContainer;
+  if (!root) return;
+
+  // 1. Prune any removed/parentless objects from SceneManager selection
+  const currentSel = sm.getSelectedObjects?.() || [];
+  const validSel = currentSel.filter((obj) => isAttachedToSceneRoot(obj, root));
+  if (validSel.length !== currentSel.length) {
+    const nextSel = validSel.length > 0
+      ? validSel
+      : (preferredFallback && isAttachedToSceneRoot(preferredFallback, root) ? [preferredFallback] : []);
+    try { sm.setSelection?.(nextSel); } catch (_) {}
+  } else if (validSel.length === 0 && preferredFallback && isAttachedToSceneRoot(preferredFallback, root)) {
+    try { sm.setSelection?.([preferredFallback]); } catch (_) {}
+  }
+
+  // 2. Never leave TransformControls attached to a detached/removed object
+  const tc = engine?.transformControls;
+  if (tc && tc.object && !isAttachedToSceneRoot(tc.object, root)) {
+    try { tc.detach?.(); } catch (_) {}
+    const active = sm.getActiveObject?.();
+    if (active && isAttachedToSceneRoot(active, root) && typeof tc.attach === 'function') {
+      try { tc.attach(active); } catch (_) {}
+    }
+  }
+}
+
 async function dispatchLiveCommands(commands, context, objects) {
   const results = [];
   const pendingModifiers = new Map();
+  let mutatedSelection = false;
   const signal = context.liveSignal || null;
   const sm = context.sceneManager;
   for (const command of commands) {
@@ -751,6 +796,7 @@ async function dispatchLiveCommands(commands, context, objects) {
         throw runtimeError('E_TX_CONFLICT', `Camera changed externally during ${command.method}; rolling back cleanly.`);
       }
       applied = true;
+      if (meta.mutatesSelection) mutatedSelection = true;
       if (command.method === 'studio.modifiers.add' || command.method === 'Modifiers.applyModifier') {
         const mesh = args[2] || sm?.getActiveObject?.();
         const stack = mesh?.userData?.modifierStack || [];
@@ -764,10 +810,12 @@ async function dispatchLiveCommands(commands, context, objects) {
       context._allowLiveExecuteCommand = true;
       try {
         // Track any newly added top-level/child objects (e.g. addCamera, scatter, batchToInstances) so rollback removes them cleanly!
+        let preferredAdded = null;
         const afterObjs = new Map(collectSceneObjects(sm.rootContainer));
         for (const [uuid, addedObj] of afterObjs) {
           if (beforeObjs.has(uuid) || addedObj === sm.rootContainer) continue;
           if (addedObj.parent && !beforeObjs.has(addedObj.parent.uuid)) continue; // covered by ancestor
+          if (!preferredAdded) preferredAdded = addedObj;
           const addCmd = new CopilotAddObjectCommand(sm, addedObj, addedObj.parent || sm.rootContainer);
           if (!applied) {
             addCmd.undo();
@@ -793,12 +841,14 @@ async function dispatchLiveCommands(commands, context, objects) {
             }
           }
         }
+        // Detach TransformControls if pointing to a deleted source and keep selection bound to live scene objects
+        sanitizeSelectionAndTransformControls(sm, context.engine, applied ? preferredAdded : null);
       } finally {
         context._allowLiveExecuteCommand = prevAllowCmd;
       }
     }
   }
-  return { results, pendingModifiers };
+  return { results, pendingModifiers, mutatedSelection };
 }
 
 function validAssetURL(raw, { image = false } = {}) {
@@ -1384,6 +1434,7 @@ export class CopilotRuntime {
         }
         commandResults = dispatched.results;
         responseValue = rewritePendingTokens(response.value, dispatched.pendingModifiers);
+        var liveMutatedSelection = Boolean(dispatched.mutatedSelection);
         transaction = sm.endBatch();
         batchOpen = false;
       } catch (error) {
@@ -1412,7 +1463,13 @@ export class CopilotRuntime {
         throw error;
       }
 
-      sm.setSelection?.(response.selection.map((uuid) => liveObjects.get(uuid)).filter(Boolean));
+      if (!liveMutatedSelection) {
+        const nextSelection = response.selection
+          .map((uuid) => liveObjects.get(uuid))
+          .filter((obj) => obj && isAttachedToSceneRoot(obj, sm.rootContainer));
+        sm.setSelection?.(nextSelection);
+      }
+      sanitizeSelectionAndTransformControls(sm, this.engine);
       this.engine?.markShadowDirty?.();
       this.engine?.requestRender?.();
       const newObjects = Array.from(collectSceneObjects(sm.rootContainer).values()).filter((object) => !beforeObjects.has(object) && object !== sm.rootContainer && !object.userData?.isSystemObject && !object.userData?.isHelper);
@@ -1495,6 +1552,9 @@ export class CopilotRuntime {
 export const __copilotRuntimeInternals = {
   flattenPayload,
   nodeSignature,
+  dataSize,
+  CopilotObjectCommand,
+  captureDescriptor,
   validAssetURL,
   validateAnimationMessage,
   decodeCommandValue,
@@ -1502,4 +1562,6 @@ export const __copilotRuntimeInternals = {
   resolveLiveCommandTargets,
   LIVE_COMMAND_META,
   dispatchLiveCommands,
+  isAttachedToSceneRoot,
+  sanitizeSelectionAndTransformControls,
 };

@@ -71,9 +71,9 @@
     async function waitForStudio(win, timeoutMs = 30000) {
       const started = Date.now();
       while (Date.now() - started < timeoutMs) {
-        const ready = win.app && win.app.engine && win.app.exporter &&
-          win.sceneManager && win.engine && win.outliner &&
-          win.timelineEngine && win.studio && win.simulationManager && win.physicsPanel;
+        const ready = win.app && win.app._advancedLoaded && win.app.engine && win.app.exporter &&
+          win.sceneManager && win.engine && win.outliner && win.inspector && win.rigSystem &&
+          win.blenderProTools && win.timelineEngine && win.studio && win.simulationManager && win.physicsPanel;
         if (ready) return;
         await sleep(120);
       }

@@ -94,6 +94,7 @@ export class BatchToInstancesCommand extends Command {
       this.sceneManager.removeObject(mesh, false);
     }
     this.sceneManager.addObject(this.scatterGroup, this.targetParent, true, false);
+    this.sceneManager.setSelection?.([this.scatterGroup]);
   }
 
   undo() {
@@ -1155,6 +1156,14 @@ export class InstancingSystem {
       } catch (err) {
         try { cmd.undo(); } catch (_) {}
         throw err;
+      }
+      // Guard TransformControls against stale references to removed source objects
+      const tc = this.engine?.transformControls;
+      if (tc && tc.object && !tc.object.parent) {
+        try { tc.detach(); } catch (_) {}
+      }
+      if (group.parent) {
+        sm.setSelection?.([group]);
       }
     }
     if (this.engine?.camera) {

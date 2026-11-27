@@ -75,12 +75,12 @@
     const requiredGlobals = [
       'app', 'sceneManager', 'studio', 'outliner', 'inspector', 'uvEditor',
       'shaderEditor', 'paintMode', 'rigSystem', 'poseShelf', 'physicsPanel',
-      'simulationManager', 'editMode', 'sculptMode', 'exporter', 'engine',
+      'simulationManager', 'editMode', 'sculptMode', 'exporter', 'engine', 'blenderProTools',
     ];
     const w = await waitFor(
       () => {
         const win = frame.contentWindow;
-        return win && requiredGlobals.every((key) => Boolean(win[key])) ? win : null;
+        return win && win.app?._advancedLoaded && requiredGlobals.every((key) => Boolean(win[key])) ? win : null;
       },
       25000,
       'Studio subsystems boot'
