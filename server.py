@@ -88,6 +88,135 @@ except ImportError:
     sys.exit(1)
 
 mocap_engine = None
+
+_TELEMETRY_LOCK = threading.Lock()
+_TELEMETRY_EVENTS = deque(maxlen=500)
+_TELEMETRY_SYNTHETIC_RE = re.compile(r'^(?:sentry-smoke|smoke-|ci-smoke|test-smoke)', re.IGNORECASE)
+
+
+def _record_telemetry_events(events, batch_session_id=''):
+    if not isinstance(events, list):
+        return 0
+    accepted = 0
+    with _TELEMETRY_LOCK:
+        for ev in events[:25]:
+            if not isinstance(ev, dict):
+                continue
+            kind = 'error' if ev.get('kind') == 'error' else 'analytics'
+            sid = str(ev.get('sessionId') or batch_session_id or '')[:64]
+            props = ev.get('props') if isinstance(ev.get('props'), dict) else {}
+            is_synth = bool(_TELEMETRY_SYNTHETIC_RE.match(sid) or props.get('synthetic') is True)
+            _TELEMETRY_EVENTS.append({
+                'kind': kind,
+                'name': str(ev.get('name') or ('error_captured' if kind == 'error' else 'unknown'))[:64],
+                'ts': str(ev.get('ts') or '')[:40],
+                'sessionId': sid,
+                'release': str(ev.get('release') or 'hunger-motion@0.9.0-beta.2')[:64],
+                'workspace': str(ev.get('workspace') or 'unknown')[:32],
+                'fatal': bool((ev.get('sentry') or {}).get('level') == 'fatal') if kind == 'error' else False,
+                'isSynthetic': is_synth,
+                'props': props,
+            })
+            accepted += 1
+    return accepted
+
+
+def _telemetry_summary():
+    with _TELEMETRY_LOCK:
+        rows = [r for r in _TELEMETRY_EVENTS if not r.get('isSynthetic')]
+    sessions = set()
+    crashed = set()
+    fatal_errors = 0
+    errors = 0
+    v2g_attempts = 0
+    v2g_ok = 0
+    interactive = []
+    ttfa = []
+    funnel = {
+        'landingVisits': 0, 'motionSessions': 0, 'templateSelections': 0,
+        'firstAnimations': 0, 'glbExportsOk': 0, 'glbExportsFailed': 0,
+        'authSignIns': 0, 'oauthStarts': 0, 'passwordResets': 0,
+        'checkoutsStarted': 0, 'paymentsCompleted': 0,
+    }
+    motion_sessions = set()
+    for r in rows:
+        sid = r['sessionId']
+        props = r['props']
+        if r['kind'] == 'error':
+            errors += 1
+            if r['fatal']:
+                fatal_errors += 1
+                if sid:
+                    crashed.add(sid)
+            continue
+        name = r['name']
+        if name == 'session_interactive':
+            if sid:
+                sessions.add(sid)
+                if r['workspace'] == 'motion':
+                    motion_sessions.add(sid)
+            ms = props.get('initialInteractiveMs')
+            if isinstance(ms, (int, float)) and 0 <= ms < 120000:
+                interactive.append(float(ms))
+        elif name == 'session_end':
+            if sid:
+                sessions.add(sid)
+            if props.get('crashFree') is False and sid:
+                crashed.add(sid)
+        elif name in ('landing_view', 'motion_landing_view'):
+            funnel['landingVisits'] += 1
+        elif name == 'template_selected':
+            funnel['templateSelections'] += 1
+        elif name == 'first_animation_achieved':
+            funnel['firstAnimations'] += 1
+            sec = props.get('timeToFirstAnimationSec')
+            if isinstance(sec, (int, float)) and 0 <= sec < 86400:
+                ttfa.append(float(sec))
+        elif name == 'mocap_export_glb':
+            v2g_attempts += 1
+            if props.get('ok') is True:
+                v2g_ok += 1
+                funnel['glbExportsOk'] += 1
+            else:
+                funnel['glbExportsFailed'] += 1
+        elif name == 'auth_signed_in':
+            funnel['authSignIns'] += 1
+        elif name == 'auth_oauth_started':
+            funnel['oauthStarts'] += 1
+        elif name == 'auth_password_reset_requested':
+            funnel['passwordResets'] += 1
+        elif name == 'checkout_started':
+            funnel['checkoutsStarted'] += 1
+        elif name == 'payment_completed':
+            funnel['paymentsCompleted'] += 1
+
+    funnel['motionSessions'] = len(motion_sessions)
+    interactive.sort()
+    ttfa.sort()
+    med = lambda arr: None if not arr else (round(arr[len(arr) // 2], 2) if len(arr) % 2 else round((arr[len(arr) // 2 - 1] + arr[len(arr) // 2]) / 2, 2))
+    sess_count = len(sessions)
+    crashed_count = len(crashed & sessions) if sessions else len(crashed)
+    crash_free = round(max(0, sess_count - crashed_count) / sess_count * 100, 2) if sess_count else 100.0
+    v2g_pct = round(v2g_ok / v2g_attempts * 100, 2) if v2g_attempts else None
+    return {
+        "ok": True,
+        "storage": "dev-memory",
+        "environment": "development",
+        "sentryConfigured": bool(os.environ.get("SENTRY_DSN")),
+        "kpi": {
+            "sessions": sess_count,
+            "crashedSessions": crashed_count,
+            "crashFreePct": crash_free,
+            "fatalErrors": fatal_errors,
+            "errors": errors,
+            "videoToGlbAttempts": v2g_attempts,
+            "videoToGlbSuccesses": v2g_ok,
+            "videoToGlbSuccessPct": v2g_pct,
+            "medianInteractiveMs": med(interactive),
+            "medianTimeToFirstAnimationSec": med(ttfa),
+        },
+        "funnel": funnel,
+    }
 mocap_engine_error = None
 _mocap_load_attempted = False
 
@@ -2111,12 +2240,7 @@ class BlenderStudioHTTPRequestHandler(SimpleHTTPRequestHandler):
             return super().do_GET()
 
         if path == '/api/telemetry/summary':
-            return self._send_json(200, {
-                "ok": True,
-                "environment": "development",
-                "sentryConfigured": bool(os.environ.get("SENTRY_DSN")),
-                "kpi": {"sessions": 0, "crashFreePct": 100.0},
-            })
+            return self._send_json(200, _telemetry_summary())
 
         if path.startswith('/api/cloud/'):
             return self._handle_cloud('GET', path)
@@ -2522,9 +2646,10 @@ class BlenderStudioHTTPRequestHandler(SimpleHTTPRequestHandler):
 
         if path == '/api/telemetry/event':
             events = body.get('events', []) if isinstance(body, dict) else []
+            accepted = _record_telemetry_events(events, body.get('sessionId', '') if isinstance(body, dict) else '')
             return self._send_json(202, {
                 "ok": True,
-                "accepted": len(events) if isinstance(events, list) else 0,
+                "accepted": accepted,
             })
 
         # REST API: Headless Blender .blend -> .glb conversion

@@ -6,6 +6,7 @@ import {
   CloudClient,
   CloudApiError,
   parseAuthHash,
+  parseAuthQueryError,
   decodeJwtPayload,
   sessionStorageKey,
   bytesToBase64
@@ -394,6 +395,79 @@ await test('exportMyData, deleteMyAccount, and aiChat send expected endpoints an
   assert(aiCall.headers.Authorization === 'Bearer tok1', 'Bearer sent');
   await client.deleteMyAccount('DELETE');
   assert(!client.isSignedIn(), 'signed out after deleteMyAccount');
+});
+
+await test('OAuth URL builder supports Google/GitHub, rejects unsupported providers, and blocks cross-origin redirects', async () => {
+  let assignedUrl = '';
+  const fetchImpl = async (url) => {
+    if (url.endsWith('/api/cloud/status')) {
+      return response(200, {
+        success: true,
+        enabled: true,
+        supabase: { url: 'https://demo.supabase.co', anonKey: 'anon' },
+        authProviders: { email: true, google: true, github: true },
+      });
+    }
+    throw new Error(`unexpected ${url}`);
+  };
+  const client = new CloudClient({
+    fetchImpl,
+    storage: memoryStorage(),
+    origin: ORIGIN,
+    location: { origin: ORIGIN, pathname: '/index.html', assign: (u) => { assignedUrl = u; } },
+  });
+
+  const gUrl = await client.supabaseOAuthStart('google');
+  assert(gUrl.startsWith('https://demo.supabase.co/auth/v1/authorize?'), gUrl);
+  assert(gUrl.includes('provider=google'), gUrl);
+  assert(gUrl.includes(encodeURIComponent(`${ORIGIN}/index.html`)), gUrl);
+  assert(assignedUrl === gUrl, 'location.assign called');
+
+  const ghUrl = await client.getOAuthUrl('github', { redirectTo: 'https://evil.example/steal' });
+  assert(ghUrl.includes('provider=github'), ghUrl);
+  assert(!ghUrl.includes('evil.example'), 'cross-origin redirect stripped');
+
+  let badErr = null;
+  try { await client.getOAuthUrl('facebook'); } catch (e) { badErr = e; }
+  assert(badErr instanceof CloudApiError && badErr.code === 'E_INVALID_ARG', 'unsupported provider rejected');
+});
+
+await test('password reset, recovery hash parsing, OAuth query error, and updatePassword flow work end-to-end', async () => {
+  const seen = [];
+  const token = jwt({ sub: 'u-rec', email: 'rec@example.com' });
+  const fetchImpl = async (url, init = {}) => {
+    seen.push({ url, method: init.method || 'GET', headers: init.headers || {}, body: init.body });
+    if (url.endsWith('/api/cloud/status')) {
+      return response(200, { success: true, enabled: true, supabase: { url: 'https://demo.supabase.co', anonKey: 'anon' } });
+    }
+    if (url.includes('/auth/v1/recover')) return response(200, {});
+    if (url.endsWith('/auth/v1/user') && init.method === 'PUT') return response(200, { id: 'u-rec', email: 'rec@example.com' });
+    if (url.endsWith('/auth/v1/user')) return response(200, { id: 'u-rec', email: 'rec@example.com' });
+    throw new Error(`unexpected ${url}`);
+  };
+  const client = new CloudClient({
+    fetchImpl,
+    storage: memoryStorage(),
+    origin: ORIGIN,
+    location: { origin: ORIGIN, pathname: '/', search: '', hash: '' },
+  });
+
+  assert(parseAuthQueryError('?error=access_denied&error_description=User+cancelled') === 'User cancelled', 'query error parsed');
+  await client.supabaseResetPassword('rec@example.com');
+  const recCall = seen.find((c) => c.url.includes('/auth/v1/recover'));
+  assert(recCall && JSON.parse(recCall.body).email === 'rec@example.com', 'recover called with email');
+
+  const session = await client.handleAuthHash(`#access_token=${token}&refresh_token=rr&expires_in=3600&type=recovery`);
+  assert(session.authType === 'recovery', `expected recovery authType, got ${session.authType}`);
+
+  let shortErr = null;
+  try { await client.supabaseUpdatePassword('123'); } catch (e) { shortErr = e; }
+  assert(shortErr instanceof CloudApiError && shortErr.code === 'E_INVALID_ARG', 'short password rejected');
+
+  const upd = await client.supabaseUpdatePassword('new-strong-password');
+  assert(upd.updated === true, 'password updated');
+  const putCall = seen.find((c) => c.url.endsWith('/auth/v1/user') && c.method === 'PUT');
+  assert(putCall && putCall.headers.Authorization === `Bearer ${token}`, 'PUT user authorized');
 });
 
 if (failures.length) {

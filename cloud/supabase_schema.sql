@@ -75,6 +75,13 @@ create table if not exists public.cloud_payments (
 
 alter table public.cloud_payments add column if not exists expires_at timestamptz;
 
+create table if not exists public.cloud_refunded_externals (
+  provider text not null,
+  external_id text not null,
+  created_at timestamptz not null default now(),
+  primary key (provider, external_id)
+);
+
 create index if not exists idx_cloud_projects_user on public.cloud_projects(user_id, updated_at desc);
 create index if not exists idx_cloud_assets_user on public.cloud_assets(user_id, created_at desc);
 create index if not exists idx_cloud_assets_public on public.cloud_assets(public, category, created_at desc);
@@ -89,6 +96,7 @@ alter table public.cloud_projects enable row level security;
 alter table public.cloud_assets enable row level security;
 alter table public.cloud_ledger enable row level security;
 alter table public.cloud_payments enable row level security;
+alter table public.cloud_refunded_externals enable row level security;
 
 -- --------------------------------------------------------------------------
 -- Ledger functions (SECURITY DEFINER + per-user advisory lock = atomic credits)
@@ -211,6 +219,22 @@ begin
       'credits', public.cloud_balance(v_payment.user_id),
       'payment', to_jsonb(v_payment));
   end if;
+  -- Block crediting if an external-ID-only refund tombstone arrived before the paid webhook
+  if coalesce(p_external_id, '') <> '' and exists (
+    select 1 from public.cloud_refunded_externals
+    where provider = v_payment.provider and external_id = p_external_id
+  ) then
+    update public.cloud_payments
+      set status = 'refunded',
+          external_id = case when coalesce(external_id, '') = '' then p_external_id else external_id end
+      where id = v_payment.id
+      returning * into v_payment;
+    return jsonb_build_object(
+      'applied', false,
+      'reason', 'already_refunded',
+      'credits', public.cloud_balance(v_payment.user_id),
+      'payment', to_jsonb(v_payment));
+  end if;
   if v_payment.status = 'expired' or (v_payment.expires_at is not null and v_payment.expires_at < now()) then
     update public.cloud_payments set status = 'expired' where id = v_payment.id returning * into v_payment;
     return jsonb_build_object(
@@ -279,10 +303,25 @@ begin
       where provider = p_provider and external_id = p_external_id for update;
   end if;
   if not found then
+    if coalesce(p_external_id, '') <> '' and coalesce(p_provider, '') <> '' then
+      insert into public.cloud_refunded_externals (provider, external_id, created_at)
+      values (p_provider, p_external_id, now())
+      on conflict (provider, external_id) do nothing;
+      return jsonb_build_object(
+        'applied', true,
+        'reason', 'recorded_external_refund',
+        'credits', 0,
+        'payment', null);
+    end if;
     raise exception 'payment_not_found';
   end if;
   if coalesce(p_provider, '') <> '' and v_payment.provider <> p_provider then
     raise exception 'payment_provider_mismatch';
+  end if;
+  if coalesce(p_external_id, '') <> '' then
+    insert into public.cloud_refunded_externals (provider, external_id, created_at)
+    values (v_payment.provider, p_external_id, now())
+    on conflict (provider, external_id) do nothing;
   end if;
   if v_payment.status = 'refunded' then
     return jsonb_build_object(
@@ -304,7 +343,11 @@ begin
   end if;
 
   -- Persist early refunds so a later paid webhook cannot credit the order.
-  update public.cloud_payments set status = 'refunded' where id = v_payment.id returning * into v_payment;
+  update public.cloud_payments
+    set status = 'refunded',
+        external_id = case when coalesce(external_id, '') = '' then coalesce(p_external_id, '') else external_id end
+    where id = v_payment.id
+    returning * into v_payment;
   return jsonb_build_object(
     'applied', true,
     'reason', 'refunded',
@@ -388,7 +431,7 @@ end;
 $$;
 
 -- Revoke from PUBLIC, anon, and authenticated explicitly (Supabase default privileges grant to anon/authenticated).
-revoke all on table public.cloud_users, public.cloud_projects, public.cloud_assets, public.cloud_ledger, public.cloud_payments from anon, authenticated;
+revoke all on table public.cloud_users, public.cloud_projects, public.cloud_assets, public.cloud_ledger, public.cloud_payments, public.cloud_refunded_externals from anon, authenticated;
 revoke all on function public.cloud_balance(uuid) from public, anon, authenticated;
 revoke all on function public.cloud_grant_free(uuid, integer) from public, anon, authenticated;
 revoke all on function public.cloud_charge(uuid, integer, text, text, text) from public, anon, authenticated;

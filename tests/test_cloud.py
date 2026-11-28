@@ -950,6 +950,55 @@ class Wave4HardeningTests(CloudHttpBase):
         status, _, payment = self.call('GET', f'/api/cloud/payments/{code}', headers=headers)
         self.assertEqual(payment['payment']['status'], 'refunded')
 
+    def test_refund_external_id_only_before_paid_creates_tombstone_and_blocks_late_credit(self):
+        headers = self.login('ext-refund@example.com')
+        status, _, co = self.checkout(headers, 'starter', 'lemonsqueezy')
+        self.assertEqual(status, 200, co)
+        code = co['payment']['code']
+
+        # 1) order_refunded arrives BEFORE order_created with ONLY data.id (no custom_data.payment_code)
+        refund_payload = json.dumps({
+            'meta': {'event_name': 'order_refunded'},
+            'data': {'id': 'ord-ext-only-999', 'attributes': {'status': 'refunded', 'refunded': True}},
+        }).encode()
+        st, _, res = self.call(
+            'POST', '/api/cloud/webhook/lemonsqueezy',
+            headers={'X-Signature': lemon_signature(refund_payload)}, raw_body=refund_payload,
+        )
+        self.assertEqual(st, 200, res)
+        self.assertTrue(res['applied'])
+        self.assertEqual(res['reason'], 'recorded_external_refund')
+
+        # 2) Late order_created arrives with payment_code + matching external_id -> MUST NOT credit!
+        paid_payload = json.dumps({
+            'meta': {'event_name': 'order_created', 'custom_data': {'payment_code': code}},
+            'data': {
+                'id': 'ord-ext-only-999',
+                'attributes': {'status': 'paid', 'variant_id': '111', 'total': 69000, 'currency': 'VND'},
+            },
+        }).encode()
+        st2, _, late = self.call(
+            'POST', '/api/cloud/webhook/lemonsqueezy',
+            headers={'X-Signature': lemon_signature(paid_payload)}, raw_body=paid_payload,
+        )
+        self.assertEqual(st2, 200, late)
+        self.assertFalse(late['applied'])
+        self.assertEqual(late['reason'], 'already_refunded')
+        self.assertEqual(late['credits'], 100)
+        st3, _, payment = self.call('GET', f'/api/cloud/payments/{code}', headers=headers)
+        self.assertEqual(st3, 200)
+        self.assertEqual(payment['payment']['status'], 'refunded')
+
+    def test_expired_pending_payment_reports_expired_status_on_get(self):
+        headers = self.login('exp-read@example.com')
+        _, _, co = self.checkout(headers, 'starter', 'sepay')
+        code = co['payment']['code']
+        with self.service.store._tx() as conn:
+            conn.execute("UPDATE cloud_payments SET expires_at = '2020-01-01T00:00:00+00:00' WHERE code = ?", (code,))
+        st, _, payment = self.call('GET', f'/api/cloud/payments/{code}', headers=headers)
+        self.assertEqual(st, 200, payment)
+        self.assertEqual(payment['payment']['status'], 'expired')
+
     def test_sepay_checks_account_float_amount_expiry_and_duplicate_external_id(self):
         headers = self.login()
         _, _, co1 = self.checkout(headers, 'starter', 'sepay')

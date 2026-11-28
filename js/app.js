@@ -861,23 +861,43 @@ class BlenderApp {
     const params = new URLSearchParams(window.location.search);
     const paid = params.get('cloud') === 'paid';
     const paymentCode = params.get('code') || '';
+    const oauthError = params.get('error_description') || params.get('error') || '';
     const hash = window.location.hash || '';
     let notice = '';
     let noticeTone = '';
+    let recoveryMode = false;
+
+    if (oauthError && !/access_token=/.test(hash)) {
+      notice = `Cloud sign-in failed: ${String(oauthError).replace(/\+/g, ' ')}`;
+      noticeTone = 'err';
+      const url = new URL(window.location.href);
+      url.searchParams.delete('error');
+      url.searchParams.delete('error_code');
+      url.searchParams.delete('error_description');
+      try {
+        history.replaceState(null, '', url.pathname + url.search + url.hash);
+      } catch (_) {}
+      this.cloudPanel?.open('account');
+    }
 
     if (/access_token=|error_description=/.test(hash)) {
       try {
         await this.cloud.status();
         const session = await this.cloud.handleAuthHash(hash);
         if (session) {
-          notice = `Signed in to Cloud: ${session.user?.email || session.user?.id || ''}`.trim();
+          await this.cloud.syncCookieSession?.();
+          recoveryMode = session.authType === 'recovery';
+          telemetry.track('auth_signed_in', { method: session.authType || 'redirect' });
+          notice = recoveryMode
+            ? 'Recovery link verified. Set your new password below.'
+            : `Signed in to Cloud: ${session.user?.email || session.user?.id || ''}`.trim();
           noticeTone = 'ok';
         }
       } catch (error) {
         notice = `Cloud sign-in failed: ${error.message || error}`;
         noticeTone = 'err';
       }
-      this.cloudPanel?.open('account');
+      this.cloudPanel?.open('account', { recoveryMode });
     }
 
     if (paid) {
@@ -887,6 +907,7 @@ class BlenderApp {
       try {
         history.replaceState(null, '', url.pathname + url.search + url.hash);
       } catch (_) {}
+      telemetry.track('payment_return_redirect', { hasCode: Boolean(paymentCode) });
       this.cloudPanel?.open('credits', { paymentCode });
     }
 
