@@ -3,6 +3,7 @@
  * Talks to app.cloud (CloudClient); never sees the Supabase service key.
  */
 import { CloudApiError } from '../cloud/cloud-client.js';
+import { telemetry } from '../core/telemetry.js';
 
 const STYLE_ID = 'studio-cloud-styles';
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '0.0.0.0']);
@@ -215,7 +216,11 @@ export class CloudPanel {
                 </div>
               </div>
               <div class="cp-card" id="cp-auth-supabase" hidden>
-                <div class="cp-section-title">Supabase Sign In</div>
+                <div class="cp-section-title">Account Sign In</div>
+                <div class="cp-actions" id="cp-oauth-row" style="margin-top:0;margin-bottom:10px">
+                  <button class="cp-btn" type="button" id="cp-sb-oauth-google">Continue with Google</button>
+                  <button class="cp-btn" type="button" id="cp-sb-oauth-github">Continue with GitHub</button>
+                </div>
                 <label class="cp-field" for="cp-sb-email">Email
                   <input class="cp-input" id="cp-sb-email" type="email" autocomplete="email">
                 </label>
@@ -226,8 +231,9 @@ export class CloudPanel {
                   <button class="cp-btn primary" type="button" id="cp-sb-signin">Sign In</button>
                   <button class="cp-btn" type="button" id="cp-sb-signup">Sign Up</button>
                   <button class="cp-btn" type="button" id="cp-sb-magic">Send Magic Link</button>
+                  <button class="cp-btn" type="button" id="cp-sb-reset">Forgot Password</button>
                 </div>
-                <p class="cp-muted" style="margin:8px 0 0">Magic link reopens Studio via email; if Supabase requires email confirmation, confirm your email before signing in.</p>
+                <p class="cp-muted" style="margin:8px 0 0">Sign in with Google, GitHub, email/password, or a magic link. Use Forgot Password to send a recovery link to your email.</p>
               </div>
               <p class="cp-muted" id="cp-auth-none" hidden>Server has enabled Cloud but no authentication method is configured.</p>
             </div>
@@ -246,9 +252,23 @@ export class CloudPanel {
                 <div class="cp-meta cp-muted" id="cp-account-usage"></div>
                 <div class="cp-actions">
                   <button class="cp-btn" type="button" id="cp-refresh">Refresh</button>
+                  <button class="cp-btn" type="button" id="cp-toggle-password">Change Password</button>
                   <button class="cp-btn" type="button" id="cp-export-data">Export Data</button>
                   <button class="cp-btn danger" type="button" id="cp-logout">Sign Out</button>
                   <button class="cp-btn danger" type="button" id="cp-delete-account">Delete Account</button>
+                </div>
+              </div>
+              <div class="cp-card" id="cp-recovery-card" hidden>
+                <div class="cp-section-title">Set New Password</div>
+                <label class="cp-field" for="cp-new-password">New Password (min 6 characters)
+                  <input class="cp-input" id="cp-new-password" type="password" autocomplete="new-password">
+                </label>
+                <label class="cp-field" for="cp-new-password-confirm">Confirm New Password
+                  <input class="cp-input" id="cp-new-password-confirm" type="password" autocomplete="new-password">
+                </label>
+                <div class="cp-actions">
+                  <button class="cp-btn primary" type="button" id="cp-save-password">Update Password</button>
+                  <button class="cp-btn" type="button" id="cp-cancel-password">Cancel</button>
                 </div>
               </div>
               <div id="cp-warnings"></div>
@@ -383,7 +403,17 @@ export class CloudPanel {
       sbSignin: overlay.querySelector('#cp-sb-signin'),
       sbSignup: overlay.querySelector('#cp-sb-signup'),
       sbMagic: overlay.querySelector('#cp-sb-magic'),
+      sbReset: overlay.querySelector('#cp-sb-reset'),
+      oauthRow: overlay.querySelector('#cp-oauth-row'),
+      sbOAuthGoogle: overlay.querySelector('#cp-sb-oauth-google'),
+      sbOAuthGithub: overlay.querySelector('#cp-sb-oauth-github'),
       refresh: overlay.querySelector('#cp-refresh'),
+      togglePassword: overlay.querySelector('#cp-toggle-password'),
+      recoveryCard: overlay.querySelector('#cp-recovery-card'),
+      newPassword: overlay.querySelector('#cp-new-password'),
+      newPasswordConfirm: overlay.querySelector('#cp-new-password-confirm'),
+      savePassword: overlay.querySelector('#cp-save-password'),
+      cancelPassword: overlay.querySelector('#cp-cancel-password'),
       exportData: overlay.querySelector('#cp-export-data'),
       logout: overlay.querySelector('#cp-logout'),
       deleteAccount: overlay.querySelector('#cp-delete-account'),
@@ -429,6 +459,21 @@ export class CloudPanel {
     els.sbSignin.addEventListener('click', () => this._run(() => this._supabaseAuth('signin')));
     els.sbSignup.addEventListener('click', () => this._run(() => this._supabaseAuth('signup')));
     els.sbMagic.addEventListener('click', () => this._run(() => this._supabaseAuth('magic')));
+    els.sbReset.addEventListener('click', () => this._run(() => this._supabaseResetPassword()));
+    els.sbOAuthGoogle.addEventListener('click', () => this._run(() => this._supabaseOAuth('google')));
+    els.sbOAuthGithub.addEventListener('click', () => this._run(() => this._supabaseOAuth('github')));
+    els.togglePassword.addEventListener('click', () => {
+      if (els.recoveryCard) {
+        els.recoveryCard.hidden = !els.recoveryCard.hidden;
+        if (!els.recoveryCard.hidden) els.newPassword?.focus();
+      }
+    });
+    els.cancelPassword.addEventListener('click', () => {
+      if (els.recoveryCard) els.recoveryCard.hidden = true;
+      if (els.newPassword) els.newPassword.value = '';
+      if (els.newPasswordConfirm) els.newPasswordConfirm.value = '';
+    });
+    els.savePassword.addEventListener('click', () => this._run(() => this._updatePassword()));
     els.refresh.addEventListener('click', () => this._run(() => this.refreshAll()));
     els.exportData.addEventListener('click', () => this._run(() => this._exportAccountData()));
     els.deleteAccount.addEventListener('click', () => this._run(() => this._deleteAccount()));
@@ -494,6 +539,10 @@ export class CloudPanel {
     if (this._els?.deleteAccount) this._els.deleteAccount.textContent = 'Delete Account';
     this.overlay.hidden = false;
     this.pendingPaymentCode = options.paymentCode || '';
+    this._recoveryMode = Boolean(options.recoveryMode);
+    if (this._els?.recoveryCard) {
+      this._els.recoveryCard.hidden = !this._recoveryMode;
+    }
     this._setTab(tab || 'account');
     this._setStatus('');
     this.refreshAll();
@@ -652,6 +701,13 @@ export class CloudPanel {
     this._els.authLocal.hidden = !local;
     this._els.authSupabase.hidden = !supabase;
     this._els.authNone.hidden = local || supabase;
+    const authProviders = status.authProviders || {};
+    const showGoogle = supabase && authProviders.google !== false;
+    const showGithub = supabase && authProviders.github !== false;
+    if (this._els.sbOAuthGoogle) this._els.sbOAuthGoogle.hidden = !showGoogle;
+    if (this._els.sbOAuthGithub) this._els.sbOAuthGithub.hidden = !showGithub;
+    if (this._els.oauthRow) this._els.oauthRow.hidden = !(showGoogle || showGithub);
+    if (this._els.sbReset) this._els.sbReset.hidden = !(supabase && authProviders.passwordReset !== false);
     this._renderStatus();
     this._syncCommunityPublishCard();
   }
@@ -660,6 +716,11 @@ export class CloudPanel {
     this._els.setup.hidden = true;
     this._els.auth.hidden = true;
     this._els.account.hidden = false;
+    const isSupabase = this.client?.session?.provider === 'supabase';
+    if (this._els.togglePassword) this._els.togglePassword.hidden = !isSupabase;
+    if (this._els.recoveryCard) {
+      this._els.recoveryCard.hidden = !(isSupabase && this._recoveryMode);
+    }
     this._els.projectName.value = this._els.projectName.value
       || `Scene ${new Date().toLocaleString('en-US')}`;
   }
@@ -1091,21 +1152,65 @@ export class CloudPanel {
     this._setStatus('Processing…');
     if (mode === 'magic') {
       await this.client.supabaseMagicLink(email);
+      telemetry.track('auth_magic_link_requested', { provider: 'supabase' });
       this._setStatus('Magic link sent — check your email.', 'ok');
       return;
     }
     if (mode === 'signup') {
       const result = await this.client.supabaseSignUp(email, password);
+      telemetry.track('auth_signed_up', { provider: 'supabase', needsConfirmation: Boolean(result.needsConfirmation) });
       if (result.needsConfirmation) {
         this._setStatus('Account created — verify your email before signing in.', 'ok');
         return;
       }
     } else {
       await this.client.supabaseSignIn(email, password);
+      telemetry.track('auth_signed_in', { method: 'password' });
     }
     await this.client.syncCookieSession?.();
     this._setStatus('Signed in.', 'ok');
     await this.refreshAll();
+  }
+
+  async _supabaseOAuth(provider) {
+    this._setStatus(`Redirecting to ${provider === 'github' ? 'GitHub' : 'Google'} sign-in...`);
+    telemetry.track('auth_oauth_started', { provider });
+    await telemetry.flush?.();
+    await this.client.supabaseOAuthStart(provider);
+  }
+
+  async _supabaseResetPassword() {
+    const email = this._els.sbEmail.value.trim();
+    if (!email || !email.includes('@')) {
+      this._setStatus('Enter your account email first, then click Forgot Password.', 'err');
+      this._els.sbEmail?.focus();
+      return;
+    }
+    this._setStatus('Sending password recovery email...');
+    await this.client.supabaseResetPassword(email);
+    telemetry.track('auth_password_reset_requested', { provider: 'supabase' });
+    this._setStatus('Password recovery email sent — open the link in your inbox to set a new password.', 'ok');
+  }
+
+  async _updatePassword() {
+    const pwd = this._els.newPassword?.value || '';
+    const confirm = this._els.newPasswordConfirm?.value || '';
+    if (pwd.length < 6) {
+      this._setStatus('New password must be at least 6 characters.', 'err');
+      return;
+    }
+    if (pwd !== confirm) {
+      this._setStatus('Password confirmation does not match.', 'err');
+      return;
+    }
+    this._setStatus('Updating password...');
+    await this.client.supabaseUpdatePassword(pwd);
+    this._recoveryMode = false;
+    if (this._els.newPassword) this._els.newPassword.value = '';
+    if (this._els.newPasswordConfirm) this._els.newPasswordConfirm.value = '';
+    if (this._els.recoveryCard) this._els.recoveryCard.hidden = true;
+    telemetry.track('auth_password_updated', { provider: 'supabase' });
+    this._toast('Password updated successfully.');
   }
 
   async _exportAccountData() {
@@ -1200,6 +1305,7 @@ export class CloudPanel {
 
   async _buy(planId, provider) {
     this._setStatus('Creating payment…');
+    telemetry.track('checkout_started', { planId, provider });
     const result = await this.client.checkout(planId, provider);
     this.pendingPaymentCode = result.payment.code;
     this._renderCheckout(result);
@@ -1229,9 +1335,10 @@ export class CloudPanel {
       card.appendChild(img);
       const details = document.createElement('div');
       details.className = 'cp-muted';
+      const expiryNote = checkout.expiresAt ? `\nExpires at: ${formatDate(checkout.expiresAt)}` : '';
       details.textContent =
         `${checkout.bank} · ${checkout.account} · ${checkout.holder}\n` +
-        `Amount: ${formatVnd(checkout.amountVnd)}\nReference: ${checkout.transferContent}`;
+        `Amount: ${formatVnd(checkout.amountVnd)}\nReference: ${checkout.transferContent}${expiryNote}`;
       details.style.whiteSpace = 'pre-wrap';
       card.appendChild(details);
       const actions = document.createElement('div');
@@ -1296,7 +1403,23 @@ export class CloudPanel {
     if (payment.status === 'paid') {
       this._stopPolling();
       this.pendingPaymentCode = '';
+      telemetry.track('payment_completed', {
+        planId: payment.planId || '',
+        provider: payment.provider || '',
+        credits: Number(payment.credits || 0),
+        amountVnd: Number(payment.amountVnd || 0),
+      });
       this._setStatus(`Payment received · ${result.credits} credits.`, 'ok');
+      await this.refreshAll();
+    } else if (payment.status === 'expired') {
+      this._stopPolling();
+      this.pendingPaymentCode = '';
+      telemetry.track('payment_expired', { planId: payment.planId || '', provider: payment.provider || '' });
+      this._setStatus(`Transaction ${code} expired — select a plan above to create a new order.`, 'err');
+    } else if (payment.status === 'refunded') {
+      this._stopPolling();
+      this.pendingPaymentCode = '';
+      this._setStatus(`Transaction ${code} was refunded.`, 'err');
       await this.refreshAll();
     } else if (payment.status === 'underpaid') {
       this._stopPolling();
@@ -1320,6 +1443,16 @@ export class CloudPanel {
         this.pendingPaymentCode = '';
         this._setStatus(`Transaction ${code} is already paid.`, 'ok');
         await this.refreshAll();
+        return;
+      }
+      if (payment.status === 'expired') {
+        this.pendingPaymentCode = '';
+        this._setStatus(`Transaction ${code} expired — create a new order to top up.`, 'err');
+        return;
+      }
+      if (payment.status === 'refunded') {
+        this.pendingPaymentCode = '';
+        this._setStatus(`Transaction ${code} was refunded.`, 'err');
         return;
       }
       if (payment.status === 'underpaid') {

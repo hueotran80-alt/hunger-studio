@@ -19,8 +19,10 @@ const COMMUNITY_CATEGORIES = Object.freeze([
 ]);
 const AI_RATE_BUCKETS = new Map();
 
-function checkEdgeRateLimit(request, env, scope = 'ai', user = null) {
-  const limit = Math.max(1, parseIntEnv(env?.AI_RATE_LIMIT_PER_MIN, 30));
+function checkEdgeRateLimit(request, env, scope = 'ai', user = null, overrideLimit = null) {
+  const limit = overrideLimit !== null
+    ? Math.max(1, Number(overrideLimit) || 10)
+    : Math.max(1, parseIntEnv(env?.AI_RATE_LIMIT_PER_MIN, 30));
   const windowMs = 60_000;
   const now = Date.now();
   const ip = request.headers.get('cf-connecting-ip')
@@ -452,7 +454,17 @@ function mapAssetRow(row, viewerUserId = null, includePrivateUrl = false) {
   };
 }
 
+function isTimestampExpired(raw) {
+  if (!raw) return false;
+  const ms = Date.parse(String(raw));
+  return Number.isFinite(ms) && ms < Date.now();
+}
+
 function mapPaymentRow(row) {
+  const rawStatus = row.status || '';
+  const effectiveStatus = rawStatus === 'pending' && isTimestampExpired(row.expires_at)
+    ? 'expired'
+    : rawStatus;
   return {
     id: row.id,
     code: row.code || '',
@@ -460,7 +472,7 @@ function mapPaymentRow(row) {
     planId: row.plan_id || '',
     amountVnd: Number(row.amount_vnd) || 0,
     credits: Number(row.credits) || 0,
-    status: row.status || '',
+    status: effectiveStatus,
     createdAt: row.created_at,
     expiresAt: row.expires_at || null,
     paidAt: row.paid_at || null,
@@ -685,6 +697,8 @@ async function handleAiChat(request, env, cfg, user) {
 
 const TELEMETRY_RING_MAX = 200;
 const TELEMETRY_RING = [];
+const TELEMETRY_DO_KEY = '__telemetry_global__';
+const SYNTHETIC_SESSION_RE = /^(?:sentry-smoke|smoke-|ci-smoke|test-smoke)/i;
 const TELEMETRY_COUNTERS = {
   sessions: 0,
   crashedSessions: 0,
@@ -694,7 +708,30 @@ const TELEMETRY_COUNTERS = {
   videoToGlbSuccesses: 0,
   interactiveSamplesMs: [],
   ttfaSamplesSec: [],
+  funnel: {
+    landingVisits: 0,
+    motionSessions: 0,
+    templateSelections: 0,
+    byTemplate: { unity_humanoid: 0, vrm_avatar: 0, tiktok_dance: 0 },
+    firstAnimations: 0,
+    glbExportsOk: 0,
+    glbExportsFailed: 0,
+    authSignIns: 0,
+    oauthStarts: 0,
+    passwordResets: 0,
+    checkoutsStarted: 0,
+    paymentsCompleted: 0,
+  },
 };
+
+function getTelemetryStub(env) {
+  if (!env?.BRIDGE_HUB || typeof env.BRIDGE_HUB.getByName !== 'function') return null;
+  try {
+    return env.BRIDGE_HUB.getByName(TELEMETRY_DO_KEY);
+  } catch {
+    return null;
+  }
+}
 
 function parseSentryDsn(dsnRaw) {
   const dsn = String(dsnRaw || '').trim();
@@ -745,51 +782,85 @@ async function handleTelemetryEvent(request, env) {
   const { data } = await readJsonBody(request, 64 * 1024);
   const events = Array.isArray(data?.events) ? data.events.slice(0, 25) : [];
   if (!events.length) {
-    return jsonResponse({ ok: true, accepted: 0 }, 202, { 'Cache-Control': 'no-store' });
+    return jsonResponse({ ok: true, accepted: 0, persisted: false }, 202, { 'Cache-Control': 'no-store' });
   }
   const envName = String(env?.STUDIO_ENV || data?.environment || 'production').slice(0, 32);
+  const batchRelease = String(data?.release || 'hunger-motion@0.9.0-beta.2').slice(0, 64);
   let sentryForwarded = 0;
+  const normalized = [];
 
   for (const ev of events) {
     if (!ev || typeof ev !== 'object') continue;
     const kind = ev.kind === 'error' ? 'error' : 'analytics';
+    const sessionId = String(ev.sessionId || data.sessionId || '').slice(0, 64);
+    const props = ev.props && typeof ev.props === 'object' ? ev.props : {};
+    const isSynthetic = SYNTHETIC_SESSION_RE.test(sessionId) || props.synthetic === true;
     const record = {
       kind,
       name: String(ev.name || (kind === 'error' ? 'error_captured' : 'unknown')).slice(0, 64),
       ts: String(ev.ts || new Date().toISOString()).slice(0, 40),
-      sessionId: String(ev.sessionId || data.sessionId || '').slice(0, 32),
+      sessionId,
+      release: String(ev.release || batchRelease).slice(0, 64),
       environment: envName,
       workspace: String(ev.workspace || 'unknown').slice(0, 32),
-      props: ev.props && typeof ev.props === 'object' ? ev.props : undefined,
+      props,
       errorMessage: kind === 'error' ? String(ev.sentry?.exception?.values?.[0]?.value || '').slice(0, 240) : undefined,
       fatal: kind === 'error' ? ev.sentry?.level === 'fatal' : undefined,
     };
+    normalized.push(record);
 
     if (kind === 'error') {
-      TELEMETRY_COUNTERS.errors += 1;
-      if (record.fatal) TELEMETRY_COUNTERS.fatalErrors += 1;
+      if (!isSynthetic) {
+        TELEMETRY_COUNTERS.errors += 1;
+        if (record.fatal) TELEMETRY_COUNTERS.fatalErrors += 1;
+      }
       if (env?.SENTRY_DSN && ev.sentry) {
         const sent = await forwardErrorToSentry(env.SENTRY_DSN, { ...ev.sentry, environment: envName });
         if (sent) sentryForwarded += 1;
       }
-    } else if (record.name === 'session_interactive') {
-      TELEMETRY_COUNTERS.sessions += 1;
-      const ms = Number(record.props?.initialInteractiveMs);
-      if (Number.isFinite(ms) && ms >= 0 && ms < 120000) {
-        TELEMETRY_COUNTERS.interactiveSamplesMs.push(ms);
-        if (TELEMETRY_COUNTERS.interactiveSamplesMs.length > 200) TELEMETRY_COUNTERS.interactiveSamplesMs.shift();
+    } else if (!isSynthetic) {
+      if (record.name === 'session_interactive') {
+        TELEMETRY_COUNTERS.sessions += 1;
+        if (record.workspace === 'motion') TELEMETRY_COUNTERS.funnel.motionSessions += 1;
+        const ms = Number(record.props?.initialInteractiveMs);
+        if (Number.isFinite(ms) && ms >= 0 && ms < 120000) {
+          TELEMETRY_COUNTERS.interactiveSamplesMs.push(ms);
+          if (TELEMETRY_COUNTERS.interactiveSamplesMs.length > 200) TELEMETRY_COUNTERS.interactiveSamplesMs.shift();
+        }
+      } else if (record.name === 'session_end' && record.props?.crashFree === false) {
+        TELEMETRY_COUNTERS.crashedSessions += 1;
+      } else if (record.name === 'landing_view' || record.name === 'motion_landing_view') {
+        TELEMETRY_COUNTERS.funnel.landingVisits += 1;
+      } else if (record.name === 'template_selected') {
+        TELEMETRY_COUNTERS.funnel.templateSelections += 1;
+        const tpl = String(record.props?.templateId || '');
+        if (tpl in TELEMETRY_COUNTERS.funnel.byTemplate) TELEMETRY_COUNTERS.funnel.byTemplate[tpl] += 1;
+      } else if (record.name === 'first_animation_achieved') {
+        TELEMETRY_COUNTERS.funnel.firstAnimations += 1;
+        const sec = Number(record.props?.timeToFirstAnimationSec);
+        if (Number.isFinite(sec) && sec >= 0 && sec < 86400) {
+          TELEMETRY_COUNTERS.ttfaSamplesSec.push(sec);
+          if (TELEMETRY_COUNTERS.ttfaSamplesSec.length > 200) TELEMETRY_COUNTERS.ttfaSamplesSec.shift();
+        }
+      } else if (record.name === 'mocap_export_glb') {
+        TELEMETRY_COUNTERS.videoToGlbAttempts += 1;
+        if (record.props?.ok === true) {
+          TELEMETRY_COUNTERS.videoToGlbSuccesses += 1;
+          TELEMETRY_COUNTERS.funnel.glbExportsOk += 1;
+        } else {
+          TELEMETRY_COUNTERS.funnel.glbExportsFailed += 1;
+        }
+      } else if (record.name === 'auth_signed_in') {
+        TELEMETRY_COUNTERS.funnel.authSignIns += 1;
+      } else if (record.name === 'auth_oauth_started') {
+        TELEMETRY_COUNTERS.funnel.oauthStarts += 1;
+      } else if (record.name === 'auth_password_reset_requested') {
+        TELEMETRY_COUNTERS.funnel.passwordResets += 1;
+      } else if (record.name === 'checkout_started') {
+        TELEMETRY_COUNTERS.funnel.checkoutsStarted += 1;
+      } else if (record.name === 'payment_completed') {
+        TELEMETRY_COUNTERS.funnel.paymentsCompleted += 1;
       }
-    } else if (record.name === 'session_end' && record.props?.crashFree === false) {
-      TELEMETRY_COUNTERS.crashedSessions += 1;
-    } else if (record.name === 'first_animation_achieved') {
-      const sec = Number(record.props?.timeToFirstAnimationSec);
-      if (Number.isFinite(sec) && sec >= 0 && sec < 86400) {
-        TELEMETRY_COUNTERS.ttfaSamplesSec.push(sec);
-        if (TELEMETRY_COUNTERS.ttfaSamplesSec.length > 200) TELEMETRY_COUNTERS.ttfaSamplesSec.shift();
-      }
-    } else if (record.name === 'mocap_export_glb') {
-      TELEMETRY_COUNTERS.videoToGlbAttempts += 1;
-      if (record.props?.ok === true) TELEMETRY_COUNTERS.videoToGlbSuccesses += 1;
     }
 
     TELEMETRY_RING.push(record);
@@ -797,7 +868,25 @@ async function handleTelemetryEvent(request, env) {
     console.log(JSON.stringify({ telemetry: true, ...record }));
   }
 
-  return jsonResponse({ ok: true, accepted: events.length, sentryForwarded }, 202, { 'Cache-Control': 'no-store' });
+  let persisted = false;
+  const stub = getTelemetryStub(env);
+  if (stub && normalized.length) {
+    try {
+      const resp = await stub.fetch(new Request('https://telemetry.internal/telemetry/ingest', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ events: normalized }),
+      }));
+      if (resp.ok) {
+        const resJson = await resp.json().catch(() => null);
+        persisted = Boolean(resJson?.ok);
+      }
+    } catch {
+      persisted = false;
+    }
+  }
+
+  return jsonResponse({ ok: true, accepted: normalized.length, persisted, sentryForwarded }, 202, { 'Cache-Control': 'no-store' });
 }
 
 function medianOf(nums) {
@@ -807,27 +896,73 @@ function medianOf(nums) {
   return sorted.length % 2 ? sorted[mid] : Number(((sorted[mid - 1] + sorted[mid]) / 2).toFixed(1));
 }
 
-function handleTelemetrySummary(env) {
+function p95Of(nums) {
+  if (!nums.length) return null;
+  const sorted = [...nums].sort((a, b) => a - b);
+  const idx = Math.min(sorted.length - 1, Math.max(0, Math.ceil(0.95 * sorted.length) - 1));
+  return Number(sorted[idx].toFixed(1));
+}
+
+async function handleTelemetrySummary(env, url) {
+  const envName = String(env?.STUDIO_ENV || 'production');
+  const sentryConfigured = Boolean(parseSentryDsn(env?.SENTRY_DSN));
+  const stub = getTelemetryStub(env);
+  if (stub) {
+    try {
+      const qs = url?.search ? url.search : '';
+      const resp = await stub.fetch(new Request(`https://telemetry.internal/telemetry/summary${qs}`, { method: 'GET' }));
+      if (resp.ok) {
+        const body = await resp.json();
+        if (body && body.ok) {
+          return jsonResponse({
+            ...body,
+            environment: envName,
+            sentryConfigured,
+          }, 200, { 'Cache-Control': 'no-store' });
+        }
+      }
+    } catch {
+      // Fall back to isolate-local counters if DO unavailable
+    }
+  }
   const s = TELEMETRY_COUNTERS.sessions;
   const crashFreePct = s > 0 ? Number((((s - TELEMETRY_COUNTERS.crashedSessions) / s) * 100).toFixed(2)) : 100;
   const v2gAttempts = TELEMETRY_COUNTERS.videoToGlbAttempts;
   const videoToGlbPct = v2gAttempts > 0
     ? Number(((TELEMETRY_COUNTERS.videoToGlbSuccesses / v2gAttempts) * 100).toFixed(2))
     : null;
+  const medianInteractiveMs = medianOf(TELEMETRY_COUNTERS.interactiveSamplesMs);
+  const medianTimeToFirstAnimationSec = medianOf(TELEMETRY_COUNTERS.ttfaSamplesSec);
   return jsonResponse({
     ok: true,
-    environment: String(env?.STUDIO_ENV || 'production'),
-    sentryConfigured: Boolean(parseSentryDsn(env?.SENTRY_DSN)),
+    storage: 'isolate-memory',
+    environment: envName,
+    sentryConfigured,
     kpi: {
       sessions: s,
+      crashedSessions: TELEMETRY_COUNTERS.crashedSessions,
       crashFreePct,
       fatalErrors: TELEMETRY_COUNTERS.fatalErrors,
       errors: TELEMETRY_COUNTERS.errors,
       videoToGlbAttempts: v2gAttempts,
+      videoToGlbSuccesses: TELEMETRY_COUNTERS.videoToGlbSuccesses,
       videoToGlbSuccessPct: videoToGlbPct,
-      medianInteractiveMs: medianOf(TELEMETRY_COUNTERS.interactiveSamplesMs),
-      medianTimeToFirstAnimationSec: medianOf(TELEMETRY_COUNTERS.ttfaSamplesSec),
+      medianInteractiveMs,
+      p95InteractiveMs: p95Of(TELEMETRY_COUNTERS.interactiveSamplesMs),
+      medianTimeToFirstAnimationSec,
+      p95TimeToFirstAnimationSec: p95Of(TELEMETRY_COUNTERS.ttfaSamplesSec),
     },
+    targets: {
+      crashFreeTargetPct: 99,
+      crashFreePass: s > 0 ? crashFreePct >= 99 : null,
+      videoToGlbTargetPct: 90,
+      videoToGlbPass: videoToGlbPct !== null ? videoToGlbPct >= 90 : null,
+      ttfaTargetSec: 600,
+      ttfaPass: medianTimeToFirstAnimationSec !== null ? medianTimeToFirstAnimationSec <= 600 : null,
+      interactiveTargetMs: 5000,
+      interactivePass: medianInteractiveMs !== null ? medianInteractiveMs <= 5000 : null,
+    },
+    funnel: TELEMETRY_COUNTERS.funnel,
     recentEvents: TELEMETRY_RING.slice(-20),
   }, 200, { 'Cache-Control': 'no-store' });
 }
@@ -856,7 +991,7 @@ export async function handleCloudBff(request, env, url) {
       return await handleTelemetryEvent(request, env);
     }
     if (method === 'GET' && path === '/api/telemetry/summary') {
-      return handleTelemetrySummary(env);
+      return await handleTelemetrySummary(env, url);
     }
     if (method === 'GET' && path === '/api/status') {
       const sessionId = (url.searchParams.get('session') || request.headers.get('x-studio-session') || 'default').trim();
@@ -903,6 +1038,9 @@ export async function handleCloudBff(request, env, url) {
     // Cloud status (public, no secrets)
     if (method === 'GET' && path === '/api/cloud/status') {
       const freeMode = cfg.costs.save_project === 0 && cfg.costs.upload_asset === 0 && cfg.costs.ai_chat === 0;
+      const googleOAuth = cfg.enabled && String(env?.OAUTH_GOOGLE_ENABLED || 'true').toLowerCase() !== 'false';
+      const githubOAuth = cfg.enabled && String(env?.OAUTH_GITHUB_ENABLED || 'true').toLowerCase() !== 'false';
+      const billingEnabled = cfg.sepay.ready || cfg.lemon.ready;
       return jsonResponse({
         success: true,
         enabled: cfg.enabled,
@@ -911,10 +1049,23 @@ export async function handleCloudBff(request, env, url) {
         storage: env?.HUNGER_ASSETS ? 'cloudflare-r2' : 'supabase',
         devLogin: false,
         supabase: cfg.enabled ? { url: cfg.supabaseUrl, anonKey: cfg.supabaseAnonKey } : null,
+        authProviders: {
+          email: cfg.enabled,
+          magicLink: cfg.enabled,
+          passwordReset: cfg.enabled,
+          google: googleOAuth,
+          github: githubOAuth,
+        },
         costs: cfg.costs,
         plans: cfg.plans,
         providers: { sepay: cfg.sepay.ready, lemonsqueezy: cfg.lemon.ready },
-        billingEnabled: cfg.sepay.ready || cfg.lemon.ready,
+        billingEnabled,
+        billingReadiness: {
+          billingEnabled,
+          freeMode,
+          sepay: cfg.sepay.ready,
+          lemonsqueezy: cfg.lemon.ready,
+        },
         freeMode,
         categories: COMMUNITY_CATEGORIES,
         limits: {
@@ -1380,6 +1531,7 @@ export async function handleCloudBff(request, env, url) {
       return jsonResponse({ success: true, payment: mapPaymentRow(row), credits });
     }
     if (method === 'POST' && path === '/api/cloud/checkout') {
+      checkEdgeRateLimit(request, env, 'checkout', user, 10);
       const { data } = await readJsonBody(request, 16 * 1024);
       const plan = cfg.plans.find((p) => p.id === String(data.plan || '').trim().toLowerCase());
       if (!plan) throw new CloudError('E_INVALID_ARG', 'Gói credit không hợp lệ.', 400);

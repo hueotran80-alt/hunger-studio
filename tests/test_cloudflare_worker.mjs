@@ -20,6 +20,7 @@
 import assert from 'node:assert/strict';
 import worker, { __cloudflareWorkerInternals } from '../cloudflare/worker.js';
 import { __cloudBffInternals } from '../cloudflare/cloud-bff.js';
+import { StudioBridgeHub } from '../cloudflare/bridge-do.js';
 
 let passed = 0;
 let failed = 0;
@@ -710,6 +711,197 @@ await test('/mcp JSON-RPC 2.0 and CLI REST bridge route through BRIDGE_HUB Durab
 
   const badProxy = await worker.fetch(new Request('https://hunger.example/api/agent/proxy?url=https://169.254.169.254/latest'), env);
   assert.equal(badProxy.status, 403);
+});
+
+await test('Phase 2 Auth/Billing GA: /api/cloud/status exposes authProviders, expired payment status, external-ID-only refund, and checkout rate limit', async () => {
+  const userId = '11111111-1111-1111-1111-111111111111';
+  const secret = 'lemon-secret-ga';
+  const env = {
+    ...BASE_CLOUD_ENV,
+    OAUTH_GOOGLE_ENABLED: 'true',
+    OAUTH_GITHUB_ENABLED: 'false',
+    LEMONSQUEEZY_SIGNING_SECRET: secret,
+    LEMONSQUEEZY_API_KEY: 'ls-key',
+    LEMONSQUEEZY_STORE_ID: 'store-1',
+    LEMONSQUEEZY_VARIANT_STARTER: 'var-1',
+    SEPAY_BANK: 'MB',
+    SEPAY_ACCOUNT: '0123456789',
+    SEPAY_HOLDER: 'HUNGER STUDIO',
+    SEPAY_WEBHOOK_SECRET: 'sepay-sec',
+  };
+
+  // 1. /api/cloud/status advertises authProviders and billingReadiness
+  const stRes = await worker.fetch(new Request('https://hunger.example/api/cloud/status'), env);
+  const st = await stRes.json();
+  assert.equal(st.authProviders.email, true);
+  assert.equal(st.authProviders.passwordReset, true);
+  assert.equal(st.authProviders.google, true);
+  assert.equal(st.authProviders.github, false);
+  assert.equal(st.billingEnabled, true);
+  assert.equal(st.billingReadiness.sepay, true);
+  assert.equal(st.billingReadiness.lemonsqueezy, true);
+
+  // 2. GET /api/cloud/payments/:code maps past expires_at pending row to effective status="expired"
+  await withMockFetch(async (url, init) => {
+    const u = String(url);
+    if (u.endsWith('/auth/v1/user')) return new Response(JSON.stringify({ id: userId, email: 'ga@example.com' }), { status: 200 });
+    if (u.includes('/rest/v1/cloud_users') && init.method === 'POST') return new Response('', { status: 201 });
+    if (u.includes('/rest/v1/cloud_users') && init.method === 'GET') return new Response(JSON.stringify([{ id: userId, email: 'ga@example.com', created_at: '2026-11-28T00:00:00Z' }]), { status: 200 });
+    if (u.endsWith('/rpc/cloud_grant_free') || u.endsWith('/rpc/cloud_balance')) return new Response('100', { status: 200 });
+    if (u.includes('/rest/v1/cloud_payments?code=eq.WBSEXP12345')) {
+      return new Response(JSON.stringify([{
+        id: 'pay-1', code: 'WBSEXP12345', provider: 'sepay', plan_id: 'starter',
+        amount_vnd: 69000, credits: 300, status: 'pending',
+        created_at: '2026-01-01T00:00:00Z', expires_at: '2026-01-01T00:30:00Z', paid_at: null,
+      }]), { status: 200 });
+    }
+    throw new Error(`Unexpected fetch: ${u}`);
+  }, async () => {
+    const payRes = await worker.fetch(new Request('https://hunger.example/api/cloud/payments/WBSEXP12345', {
+      headers: { Authorization: 'Bearer jwt' },
+    }), env);
+    assert.equal(payRes.status, 200);
+    const payJson = await payRes.json();
+    assert.equal(payJson.payment.status, 'expired');
+  });
+
+  // 3. External-ID-only LemonSqueezy refund without payment_code forwards to cloud_refund_payment and returns recorded_external_refund
+  await withMockFetch(async (url, init) => {
+    assert.ok(String(url).endsWith('/rpc/cloud_refund_payment'));
+    const args = JSON.parse(init.body);
+    assert.equal(args.p_code, '');
+    assert.equal(args.p_external_id, 'ord-ext-only-77');
+    assert.equal(args.p_provider, 'lemonsqueezy');
+    return new Response(JSON.stringify({ applied: true, reason: 'recorded_external_refund', credits: 0 }), { status: 200 });
+  }, async () => {
+    const body = JSON.stringify({
+      meta: { test_mode: false, event_name: 'order_refunded' },
+      data: { id: 'ord-ext-only-77', attributes: { status: 'refunded', refunded: true } },
+    });
+    const sig = await __cloudBffInternals.hmacSha256Hex(secret, new TextEncoder().encode(body));
+    const res = await worker.fetch(new Request('https://hunger.example/api/cloud/webhook/lemonsqueezy', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Signature': sig },
+      body,
+    }), env);
+    assert.equal(res.status, 200);
+    const j = await res.json();
+    assert.equal(j.applied, true);
+    assert.equal(j.reason, 'recorded_external_refund');
+  });
+});
+
+await test('Phase 2 Persistent Real-User Telemetry DO: aggregates cross-isolate KPIs/funnel and excludes synthetic smoke sessions', async () => {
+  // Minimal SQLite cursor mock exercising StudioBridgeHub telemetry SQL paths
+  const rows = [];
+  let seq = 0;
+  const fakeSql = {
+    exec(sql, ...args) {
+      const q = sql.trim();
+      if (q.startsWith('CREATE TABLE') || q.startsWith('CREATE INDEX')) return { toArray: () => [] };
+      if (q.startsWith('INSERT INTO telemetry_events')) {
+        seq += 1;
+        rows.push({
+          id: seq, ts: args[0], ts_ms: args[1], kind: args[2], name: args[3], session_id: args[4],
+          release: args[5], environment: args[6], workspace: args[7], fatal: args[8], is_synthetic: args[9],
+          interactive_ms: args[10], ttfa_sec: args[11], v2g_ok: args[12], template_id: args[13],
+          effective_type: args[14], error_message: args[15], props_json: args[16],
+        });
+        return { toArray: () => [] };
+      }
+      if (q.startsWith('DELETE FROM telemetry_events WHERE ts_ms <')) {
+        const cutoff = args[0];
+        for (let i = rows.length - 1; i >= 0; i -= 1) if (rows[i].ts_ms < cutoff) rows.splice(i, 1);
+        return { toArray: () => [] };
+      }
+      if (q.startsWith('SELECT COUNT(*) AS cnt FROM telemetry_events')) {
+        return { toArray: () => [{ cnt: rows.length }] };
+      }
+      if (q.startsWith('SELECT id, ts, kind, name')) {
+        const sinceMs = args[0];
+        const excludeSynth = q.includes('is_synthetic = 0');
+        const releaseEq = q.includes('release = ?') ? args[1] : null;
+        const filtered = rows
+          .filter((r) => r.ts_ms >= sinceMs && (!excludeSynth || r.is_synthetic === 0) && (!releaseEq || r.release === releaseEq))
+          .slice()
+          .reverse();
+        return { toArray: () => filtered };
+      }
+      return { toArray: () => [] };
+    },
+  };
+  const ctx = {
+    storage: { sql: fakeSql },
+    blockConcurrencyWhile(fn) { return fn(); },
+  };
+  const hub = new StudioBridgeHub(ctx, {});
+  const env = {
+    STUDIO_ENV: 'staging',
+    BRIDGE_HUB: { getByName: () => hub },
+  };
+
+  // Real user session 1: motion + template + first animation + GLB export + checkout + payment
+  const ingest1 = await worker.fetch(new Request('https://hunger.example/api/telemetry/event', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      release: 'hunger-motion@0.9.0-beta.2',
+      sessionId: 'real-user-1',
+      events: [
+        { kind: 'analytics', name: 'landing_view', workspace: 'landing', props: {} },
+        { kind: 'analytics', name: 'session_interactive', workspace: 'motion', props: { initialInteractiveMs: 1850, effectiveType: '4g' } },
+        { kind: 'analytics', name: 'template_selected', workspace: 'motion', props: { templateId: 'unity_humanoid' } },
+        { kind: 'analytics', name: 'first_animation_achieved', workspace: 'motion', props: { timeToFirstAnimationSec: 42 } },
+        { kind: 'analytics', name: 'mocap_export_glb', workspace: 'motion', props: { ok: true, sizeKB: 780 } },
+        { kind: 'analytics', name: 'auth_signed_in', workspace: 'motion', props: { method: 'google' } },
+        { kind: 'analytics', name: 'checkout_started', workspace: 'motion', props: { planId: 'starter', provider: 'sepay' } },
+        { kind: 'analytics', name: 'payment_completed', workspace: 'motion', props: { planId: 'starter', provider: 'sepay', credits: 300 } },
+      ],
+    }),
+  }), env);
+  assert.equal(ingest1.status, 202);
+  const j1 = await ingest1.json();
+  assert.equal(j1.persisted, true);
+
+  // Synthetic Sentry smoke fatal event MUST NOT lower real-user crashFreePct
+  const ingestSmoke = await worker.fetch(new Request('https://hunger.example/api/telemetry/event', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      release: 'hunger-motion@0.9.0-beta.2',
+      sessionId: 'sentry-smoke-check',
+      events: [
+        { kind: 'error', workspace: 'motion', sentry: { level: 'fatal', exception: { values: [{ value: 'Smoke test' }] } } },
+      ],
+    }),
+  }), env);
+  assert.equal(ingestSmoke.status, 202);
+
+  const sumRes = await worker.fetch(new Request('https://hunger.example/api/telemetry/summary?hours=24'), env);
+  assert.equal(sumRes.status, 200);
+  const sum = await sumRes.json();
+  assert.equal(sum.storage, 'durable-object-sqlite');
+  assert.equal(sum.kpi.sessions, 1);
+  assert.equal(sum.kpi.crashFreePct, 100);
+  assert.equal(sum.kpi.fatalErrors, 0);
+  assert.equal(sum.kpi.videoToGlbSuccessPct, 100);
+  assert.equal(sum.kpi.medianInteractiveMs, 1850);
+  assert.equal(sum.kpi.medianTimeToFirstAnimationSec, 42);
+  assert.equal(sum.targets.crashFreePass, true);
+  assert.equal(sum.targets.videoToGlbPass, true);
+  assert.equal(sum.targets.ttfaPass, true);
+  assert.equal(sum.targets.interactivePass, true);
+  assert.equal(sum.funnel.landingVisits, 1);
+  assert.equal(sum.funnel.motionSessions, 1);
+  assert.equal(sum.funnel.byTemplate.unity_humanoid, 1);
+  assert.equal(sum.funnel.authSignIns, 1);
+  assert.equal(sum.funnel.checkoutsStarted, 1);
+  assert.equal(sum.funnel.paymentsCompleted, 1);
+  assert.equal(sum.networkBreakdown['4g'].medianMs, 1850);
+
+  // Including smoke explicitly reveals the synthetic fatal event
+  const sumSmoke = await (await worker.fetch(new Request('https://hunger.example/api/telemetry/summary?hours=24&includeSmoke=1'), env)).json();
+  assert.equal(sumSmoke.kpi.fatalErrors, 1);
 });
 
 console.log(`\nCloudflare Worker: ${passed} passed, ${failed} failed`);

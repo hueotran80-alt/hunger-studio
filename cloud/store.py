@@ -135,6 +135,12 @@ class LocalStore:
                     expires_at TEXT NOT NULL DEFAULT '',
                     paid_at TEXT
                 );
+                CREATE TABLE IF NOT EXISTS cloud_refunded_externals (
+                    provider TEXT NOT NULL,
+                    external_id TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY (provider, external_id)
+                );
                 CREATE INDEX IF NOT EXISTS idx_projects_user ON cloud_projects(user_id, updated_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_assets_user ON cloud_assets(user_id, created_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_ledger_user ON cloud_ledger(user_id, id DESC);
@@ -715,6 +721,8 @@ class LocalStore:
     def _payment_row(self, row):
         keys = row.keys()
         exp = row['expires_at'] if 'expires_at' in keys and row['expires_at'] else None
+        raw_status = row['status']
+        effective_status = 'expired' if raw_status == 'pending' and _is_expired(exp) else raw_status
         return {
             'id': row['id'],
             'code': row['code'],
@@ -722,7 +730,7 @@ class LocalStore:
             'planId': row['plan_id'],
             'amountVnd': int(row['amount_vnd']),
             'credits': int(row['credits']),
-            'status': row['status'],
+            'status': effective_status,
             'createdAt': row['created_at'],
             'expiresAt': exp,
             'paidAt': row['paid_at'],
@@ -788,6 +796,24 @@ class LocalStore:
                     'payment': self._payment_row(row),
                     'credits': self._balance(conn, row['user_id']),
                 }
+            # Block crediting if an external-ID-only refund tombstone arrived before the paid webhook
+            if ext:
+                tomb = conn.execute(
+                    'SELECT 1 FROM cloud_refunded_externals WHERE provider = ? AND external_id = ?',
+                    (row['provider'], ext),
+                ).fetchone()
+                if tomb:
+                    conn.execute(
+                        "UPDATE cloud_payments SET status = 'refunded', external_id = CASE WHEN external_id = '' THEN ? ELSE external_id END WHERE code = ?",
+                        (ext, code),
+                    )
+                    updated = conn.execute('SELECT * FROM cloud_payments WHERE code = ?', (code,)).fetchone()
+                    return {
+                        'applied': False,
+                        'reason': 'already_refunded',
+                        'payment': self._payment_row(updated),
+                        'credits': self._balance(conn, row['user_id']),
+                    }
             exp = row['expires_at'] if 'expires_at' in row.keys() else ''
             if row['status'] == 'expired' or _is_expired(exp):
                 if row['status'] != 'expired':
@@ -869,9 +895,25 @@ class LocalStore:
                     (provider, ext),
                 ).fetchone()
             if not row:
+                if ext and provider:
+                    conn.execute(
+                        'INSERT OR IGNORE INTO cloud_refunded_externals (provider, external_id, created_at) VALUES (?, ?, ?)',
+                        (provider, ext, utc_now()),
+                    )
+                    return {
+                        'applied': True,
+                        'reason': 'recorded_external_refund',
+                        'payment': None,
+                        'credits': 0,
+                    }
                 raise CloudError('E_NOT_FOUND', 'Không tìm thấy giao dịch.', 404)
             if provider and row['provider'] != provider:
                 raise CloudError('E_INVALID_ARG', 'Provider không khớp giao dịch.', 400)
+            if ext:
+                conn.execute(
+                    'INSERT OR IGNORE INTO cloud_refunded_externals (provider, external_id, created_at) VALUES (?, ?, ?)',
+                    (row['provider'], ext, utc_now()),
+                )
             if row['status'] == 'refunded':
                 return {
                     'applied': False,
@@ -887,7 +929,10 @@ class LocalStore:
                     f"refund:{row['code']}",
                 )
             # Persist early refunds so a later paid webhook cannot credit the order.
-            conn.execute("UPDATE cloud_payments SET status = 'refunded' WHERE code = ?", (row['code'],))
+            conn.execute(
+                "UPDATE cloud_payments SET status = 'refunded', external_id = CASE WHEN external_id = '' THEN ? ELSE external_id END WHERE code = ?",
+                (ext, row['code']),
+            )
             updated = conn.execute('SELECT * FROM cloud_payments WHERE code = ?', (row['code'],)).fetchone()
             return {
                 'applied': True,

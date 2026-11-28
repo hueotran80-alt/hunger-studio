@@ -7,6 +7,7 @@
 const SESSION_KEY = 'wbs_cloud_session_v1';
 const STATUS_TTL_MS = 30_000;
 const REFRESH_AHEAD_MS = 60_000;
+const OAUTH_PROVIDERS = new Set(['google', 'github']);
 
 export class CloudApiError extends Error {
   constructor(message, { code = 'E_CLOUD', status = 0, hint = '' } = {}) {
@@ -71,7 +72,8 @@ export function decodeJwtPayload(token) {
 
 /**
  * Parses a Supabase implicit-flow redirect such as
- * `#access_token=...&refresh_token=...&expires_in=3600&type=magiclink`.
+ * `#access_token=...&refresh_token=...&expires_in=3600&type=magiclink`
+ * or `#access_token=...&type=recovery` or OAuth callback hash.
  * @param {string} hash
  * @param {number} [nowMs]
  */
@@ -80,8 +82,9 @@ export function parseAuthHash(hash, nowMs = Date.now()) {
   if (!raw) return null;
   const params = new URLSearchParams(raw);
   const error = params.get('error_description') || params.get('error');
+  const authType = String(params.get('type') || '').trim().toLowerCase();
   if (error) {
-    return { error: String(error).replace(/\+/g, ' '), session: null };
+    return { error: String(error).replace(/\+/g, ' '), type: authType, session: null };
   }
   const accessToken = params.get('access_token');
   if (!accessToken) return null;
@@ -89,8 +92,10 @@ export function parseAuthHash(hash, nowMs = Date.now()) {
   const payload = decodeJwtPayload(accessToken) || {};
   return {
     error: null,
+    type: authType,
     session: {
       provider: 'supabase',
+      authType,
       accessToken,
       refreshToken: params.get('refresh_token') || '',
       expiresAt: nowMs + Math.max(30, expiresIn) * 1000,
@@ -100,6 +105,19 @@ export function parseAuthHash(hash, nowMs = Date.now()) {
       }
     }
   };
+}
+
+/**
+ * Parses OAuth/Auth error query parameters (`?error=...&error_description=...`).
+ * @param {string} search
+ */
+export function parseAuthQueryError(search) {
+  const raw = String(search || '').replace(/^\?/, '');
+  if (!raw) return null;
+  const params = new URLSearchParams(raw);
+  const err = params.get('error_description') || params.get('error');
+  if (!err) return null;
+  return String(err).replace(/\+/g, ' ');
 }
 
 async function responseJson(response) {
@@ -286,13 +304,116 @@ export class CloudClient {
   }
 
   async supabaseMagicLink(email, redirectTo = '') {
-    const target = redirectTo || (this.location ? this.location.origin + this.location.pathname : '');
+    const target = this._safeRedirectTo(redirectTo);
     const query = target ? `?redirect_to=${encodeURIComponent(target)}` : '';
     return this._supabase(`/auth/v1/otp${query}`, {
       email,
       create_user: true,
       gotrue_meta_security: {}
     });
+  }
+
+  _safeRedirectTo(redirectTo = '') {
+    const fallback = this.location ? this.location.origin + (this.location.pathname || '/') : '';
+    const candidate = String(redirectTo || fallback || '').trim();
+    if (!candidate) return '';
+    try {
+      const parsed = new URL(candidate, this.origin || fallback || undefined);
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return '';
+      if (this.origin && parsed.origin !== new URL(this.origin).origin) return '';
+      return parsed.origin + parsed.pathname;
+    } catch (_) {
+      return '';
+    }
+  }
+
+  /**
+   * Builds a Supabase GoTrue OAuth authorize URL for Google or GitHub sign-in.
+   * @param {'google'|'github'} provider
+   * @param {{ redirectTo?: string, scopes?: string }} [options]
+   */
+  async getOAuthUrl(provider, { redirectTo = '', scopes = '' } = {}) {
+    const clean = String(provider || '').trim().toLowerCase();
+    if (!OAUTH_PROVIDERS.has(clean)) {
+      throw new CloudApiError(`Unsupported OAuth provider: ${clean || 'empty'}`, { code: 'E_INVALID_ARG', status: 400 });
+    }
+    const status = await this.status();
+    if (!status.supabase?.url) {
+      throw new CloudApiError('Supabase Auth is not configured.', { code: 'E_PROVIDER', status: 503 });
+    }
+    if (status.authProviders && status.authProviders[clean] === false) {
+      throw new CloudApiError(`OAuth provider "${clean}" is disabled on this server.`, { code: 'E_FORBIDDEN', status: 403 });
+    }
+    const params = new URLSearchParams({ provider: clean });
+    const target = this._safeRedirectTo(redirectTo);
+    if (target) params.set('redirect_to', target);
+    if (scopes) params.set('scopes', String(scopes).trim());
+    return `${status.supabase.url}/auth/v1/authorize?${params.toString()}`;
+  }
+
+  /**
+   * Starts OAuth sign-in by redirecting the current window to Supabase GoTrue.
+   * @param {'google'|'github'} provider
+   * @param {{ redirectTo?: string, scopes?: string }} [options]
+   */
+  async supabaseOAuthStart(provider, options = {}) {
+    const url = await this.getOAuthUrl(provider, options);
+    if (this.location && typeof this.location.assign === 'function') {
+      this.location.assign(url);
+    }
+    return url;
+  }
+
+  /**
+   * Sends a password recovery email via Supabase GoTrue (`/auth/v1/recover`).
+   * @param {string} email
+   * @param {string} [redirectTo]
+   */
+  async supabaseResetPassword(email, redirectTo = '') {
+    const cleanEmail = String(email || '').trim();
+    if (!cleanEmail || !cleanEmail.includes('@')) {
+      throw new CloudApiError('Please enter a valid email address.', { code: 'E_INVALID_ARG', status: 400 });
+    }
+    const target = this._safeRedirectTo(redirectTo);
+    const query = target ? `?redirect_to=${encodeURIComponent(target)}` : '';
+    return this._supabase(`/auth/v1/recover${query}`, { email: cleanEmail });
+  }
+
+  /**
+   * Updates the signed-in user's password via Supabase GoTrue (`PUT /auth/v1/user`).
+   * Used both for `#type=recovery` password reset links and normal password updates.
+   * @param {string} newPassword
+   */
+  async supabaseUpdatePassword(newPassword) {
+    const pwd = String(newPassword || '');
+    if (pwd.length < 6) {
+      throw new CloudApiError('New password must be at least 6 characters.', { code: 'E_INVALID_ARG', status: 400 });
+    }
+    await this._ensureFresh();
+    if (!this._session?.accessToken || this._session.provider !== 'supabase') {
+      throw new CloudApiError('Sign in with your Supabase account or recovery link first.', { code: 'E_AUTH_REQUIRED', status: 401 });
+    }
+    const status = await this.status();
+    if (!status.supabase?.url || !status.supabase?.anonKey) {
+      throw new CloudApiError('Supabase Auth is not configured.', { code: 'E_PROVIDER', status: 503 });
+    }
+    const response = await this.fetchImpl(`${status.supabase.url}/auth/v1/user`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        apikey: status.supabase.anonKey,
+        Authorization: `Bearer ${this._session.accessToken}`,
+      },
+      body: JSON.stringify({ password: pwd }),
+    });
+    const data = await responseJson(response);
+    if (!response.ok) {
+      throw new CloudApiError(
+        data.error_description || data.msg || data.message || data.error || 'Password update failed.',
+        { code: data.error_code || data.code || 'E_AUTH', status: response.status }
+      );
+    }
+    return { updated: true, user: data };
   }
 
   async refreshSession() {

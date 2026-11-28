@@ -251,4 +251,24 @@ await test('8. Cloudflare Edge forwards fatal errors in Sentry Envelope v7 forma
   }
 });
 
+await test('9. Telemetry summary exposes KPI targets and excludes synthetic smoke sessions in fallback mode', async () => {
+  const fakeEnv = { STUDIO_ENV: 'staging' };
+  await worker.fetch(new Request('https://hunger-studio-staging.workers.dev/api/telemetry/event', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      sessionId: 'sentry-smoke-check',
+      events: [{ kind: 'error', workspace: 'motion', sentry: buildSentryEventPayload(new Error('Synthetic smoke'), { fatal: true }) }],
+    }),
+  }), fakeEnv);
+  const sum = await (await worker.fetch(new Request('https://hunger-studio-staging.workers.dev/api/telemetry/summary'), fakeEnv)).json();
+  assert.equal(sum.ok, true);
+  assert.equal(sum.targets.crashFreeTargetPct, 99);
+  assert.equal(sum.targets.videoToGlbTargetPct, 90);
+  assert.equal(sum.targets.ttfaTargetSec, 600);
+  assert.equal(sum.targets.interactiveTargetMs, 5000);
+  assert.equal(typeof sum.funnel.authSignIns, 'number');
+  assert.equal(typeof sum.funnel.checkoutsStarted, 'number');
+});
+
 console.log(`\nALL ${passed} BETA MOTION & TELEMETRY TESTS PASSED`);
