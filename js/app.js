@@ -320,6 +320,10 @@ class BlenderApp {
           deferredPanels: true,
         });
 
+        this._handleCloudDeepLink().catch((err) => {
+          console.warn('[BlenderApp] Cloud deep-link error:', err);
+        });
+
         if (initialTemplate && this.mocapUI) {
           this.mocapUI.applyTemplate(initialTemplate.id).catch((err) => {
             telemetry.captureException(err, { subsystem: 'motion-template' });
@@ -857,12 +861,17 @@ class BlenderApp {
   // TOP MENU BAR
   // =========================================================================
   async _handleCloudDeepLink() {
-    if (!this.cloud) return;
+    if (!this.cloud || this._cloudDeepLinkHandled) return;
     const params = new URLSearchParams(window.location.search);
     const paid = params.get('cloud') === 'paid';
     const paymentCode = params.get('code') || '';
     const oauthError = params.get('error_description') || params.get('error') || '';
     const hash = window.location.hash || '';
+    const hasHashAuth = /access_token=|error_description=/.test(hash);
+    if (!paid && !oauthError && !hasHashAuth) return;
+
+    this._cloudDeepLinkHandled = true;
+    const panel = await this._ensureCloudPanel();
     let notice = '';
     let noticeTone = '';
     let recoveryMode = false;
@@ -877,10 +886,10 @@ class BlenderApp {
       try {
         history.replaceState(null, '', url.pathname + url.search + url.hash);
       } catch (_) {}
-      this.cloudPanel?.open('account');
+      panel?.open('account');
     }
 
-    if (/access_token=|error_description=/.test(hash)) {
+    if (hasHashAuth) {
       try {
         await this.cloud.status();
         const session = await this.cloud.handleAuthHash(hash);
@@ -897,7 +906,7 @@ class BlenderApp {
         notice = `Cloud sign-in failed: ${error.message || error}`;
         noticeTone = 'err';
       }
-      this.cloudPanel?.open('account', { recoveryMode });
+      panel?.open('account', { recoveryMode });
     }
 
     if (paid) {
@@ -908,10 +917,29 @@ class BlenderApp {
         history.replaceState(null, '', url.pathname + url.search + url.hash);
       } catch (_) {}
       telemetry.track('payment_return_redirect', { hasCode: Boolean(paymentCode) });
-      this.cloudPanel?.open('credits', { paymentCode });
+      panel?.open('credits', { paymentCode });
     }
 
-    if (notice) this.cloudPanel?.notice(notice, noticeTone);
+    if (notice) panel?.notice(notice, noticeTone);
+  }
+
+  async _ensureCloudPanel() {
+    if (this.cloudPanel) return this.cloudPanel;
+    if (!this._cloudPanelPromise) {
+      this._cloudPanelPromise = import('./ui/cloud-panel.js')
+        .then(({ CloudPanel }) => {
+          if (!this.cloudPanel) {
+            this.cloudPanel = new CloudPanel(this);
+            window.cloudPanel = this.cloudPanel;
+          }
+          return this.cloudPanel;
+        })
+        .catch((err) => {
+          this._cloudPanelPromise = null;
+          throw err;
+        });
+    }
+    return this._cloudPanelPromise;
   }
 
   async _ensureShareDialog() {
@@ -1028,12 +1056,22 @@ class BlenderApp {
       }
     });
 
-    document.getElementById('btn-file-cloud')?.addEventListener('click', () => {
-      this.cloudPanel?.open('account');
+    document.getElementById('btn-file-cloud')?.addEventListener('click', async () => {
+      try {
+        const panel = await this._ensureCloudPanel();
+        panel.open('account');
+      } catch (err) {
+        console.error('[CloudPanel] Failed to open account panel:', err);
+      }
     });
 
-    document.getElementById('btn-file-publish')?.addEventListener('click', () => {
-      this.cloudPanel?.open('community');
+    document.getElementById('btn-file-publish')?.addEventListener('click', async () => {
+      try {
+        const panel = await this._ensureCloudPanel();
+        panel.open('community');
+      } catch (err) {
+        console.error('[CloudPanel] Failed to open community panel:', err);
+      }
     });
 
     // Universal Blender Import Listeners

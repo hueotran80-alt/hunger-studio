@@ -271,4 +271,14 @@ await test('9. Telemetry summary exposes KPI targets and excludes synthetic smok
   assert.equal(typeof sum.funnel.checkoutsStarted, 'number');
 });
 
+await test('10. Motion workspace lazy-loads CloudPanel on demand and handles auth/payment deep links', () => {
+  const src = fs.readFileSync(path.join(ROOT, 'js/app.js'), 'utf8');
+  assert.ok(src.includes('async _ensureCloudPanel()'), 'app.js must define _ensureCloudPanel()');
+  const motionBlock = src.slice(src.indexOf('if (startInMotionMode) {'), src.indexOf('// Full Studio Mode'));
+  assert.ok(motionBlock.includes('this._handleCloudDeepLink()'), 'Motion fast-path must process OAuth/recovery/payment deep links');
+  assert.ok(!motionBlock.includes("import('./ui/cloud-panel.js')"), 'Motion fast-path must not eagerly import cloud-panel.js');
+  const menuBlock = src.slice(src.indexOf("getElementById('btn-file-cloud')"), src.indexOf('// Universal Blender Import Listeners'));
+  assert.ok(menuBlock.includes('await this._ensureCloudPanel()'), 'File -> Cloud and Publish menus must lazy-load CloudPanel');
+});
+
 console.log(`\nALL ${passed} BETA MOTION & TELEMETRY TESTS PASSED`);
