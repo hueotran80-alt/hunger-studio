@@ -4,6 +4,7 @@
  */
 import { CloudApiError } from '../cloud/cloud-client.js';
 import { telemetry } from '../core/telemetry.js';
+import { applyTranslations, onLangChange } from '../core/i18n.js';
 
 const STYLE_ID = 'studio-cloud-styles';
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '0.0.0.0']);
@@ -531,12 +532,14 @@ export class CloudPanel {
         else this._run(() => this._supabaseAuth('signin'));
       });
     });
+    applyTranslations(this.overlay);
+    this._unsubLang = onLangChange(() => this.overlay && applyTranslations(this.overlay));
   }
 
   open(tab = 'account', options = {}) {
     if (!this.overlay) this._buildDom();
     this._confirmDeleteAccount = false;
-    if (this._els?.deleteAccount) this._els.deleteAccount.textContent = 'Delete Account';
+    applyTranslations(this.overlay);
     this.overlay.hidden = false;
     this.pendingPaymentCode = options.paymentCode || '';
     this._recoveryMode = Boolean(options.recoveryMode);

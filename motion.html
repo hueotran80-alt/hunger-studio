@@ -5,7 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Hunger Motion — Browser Video-to-3D Mocap for Unity, VRM &amp; TikTok</title>
   <meta name="description" content="Turn any phone or TikTok video into clean 3D character animation directly in your browser. Zero server GPU, Foot-Lock IK, Face &amp; Hand tracking, 1-click GLB/FBX/BVH/MP4 export.">
-  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2316181f'/%3E%3Ccircle cx='16' cy='16' r='8' fill='none' stroke='%23f97316' stroke-width='3'/%3E%3Ccircle cx='16' cy='16' r='3' fill='%2338bdf8'/%3E%3C/svg%3E">
+  <meta property="og:image" content="/assets/brand/hunger-logo-512.png">
+  <link rel="icon" type="image/png" href="/assets/brand/hunger-logo-64.png">
+  <link rel="apple-touch-icon" href="/assets/brand/hunger-logo-128.png">
   <style>
     :root {
       --bg: #0c0e14;
@@ -43,6 +45,19 @@
       height: 64px; gap: 16px;
     }
     .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 16px; letter-spacing: -0.2px; }
+    .brand-logo { width: 28px; height: 28px; border-radius: 7px; object-fit: cover; display: block; flex-shrink: 0; }
+    .nav-actions { display: flex; align-items: center; gap: 10px; }
+    .lang-toggle {
+      display: inline-flex; align-items: center; gap: 3px;
+      padding: 5px 9px; border-radius: 8px;
+      border: 1px solid var(--border); background: var(--bg-elev); color: var(--muted);
+      font-size: 12px; font-weight: 600; cursor: pointer;
+    }
+    .lang-toggle:hover { border-color: #3f4d6b; color: var(--text); }
+    .lang-toggle [data-lang-opt].active {
+      background: #4772b3; color: #fff; border-radius: 5px; padding: 1px 6px;
+    }
+    .lang-toggle .lang-sep { opacity: 0.45; }
     .brand-badge {
       font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.6px;
       padding: 2px 7px; border-radius: 999px;
@@ -179,58 +194,57 @@
   <header>
     <div class="container nav">
       <a class="brand" href="/motion">
-        <svg width="24" height="24" viewBox="0 0 32 32" aria-hidden="true">
-          <rect width="32" height="32" rx="8" fill="#1b2130"/>
-          <circle cx="16" cy="16" r="8" fill="none" stroke="#f97316" stroke-width="3"/>
-          <circle cx="16" cy="16" r="3" fill="#38bdf8"/>
-        </svg>
+        <img class="brand-logo" src="/assets/brand/hunger-logo-128.png" alt="Hunger Motion" width="28" height="28">
         <span>Hunger Motion</span>
-        <span class="brand-badge">Public Beta</span>
+        <span class="brand-badge" data-ml="badge">Public Beta</span>
       </a>
       <nav class="nav-links" aria-label="Primary">
-        <a href="#templates">Templates</a>
-        <a href="#why">Why Browser Mocap</a>
-        <a href="/?workspace=layout">Full 3D Studio</a>
+        <a href="#templates" data-ml="nav.templates">Templates</a>
+        <a href="#why" data-ml="nav.why">Why Browser Mocap</a>
+        <a href="/?workspace=layout" data-ml="nav.studio">Full 3D Studio</a>
       </nav>
-      <a class="btn btn-primary btn-sm" href="/?workspace=motion" data-cta="nav-launch">Launch Motion Studio →</a>
+      <div class="nav-actions">
+        <button type="button" class="lang-toggle" id="motion-lang-toggle" data-lang="en" title="Switch Language (English / Vietnamese)" aria-label="Switch Language"><span data-lang-opt="en" class="active">EN</span><span class="lang-sep">/</span><span data-lang-opt="vi">VI</span></button>
+        <a class="btn btn-primary btn-sm" href="/?workspace=motion" data-cta="nav-launch" data-ml="nav.launch">Launch Motion Studio →</a>
+      </div>
     </div>
   </header>
 
   <main class="container">
     <section class="hero">
-      <div class="eyebrow">100% Client-Side Rust WASM + WebCodecs · Zero Server GPU</div>
-      <h1>Video to <span>Game-Ready 3D Motion</span> in Your Browser.</h1>
-      <p>
+      <div class="eyebrow" data-ml="hero.eyebrow">100% Client-Side Rust WASM + WebCodecs · Zero Server GPU</div>
+      <h1 data-ml-html="hero.h1">Video to <span>Game-Ready 3D Motion</span> in Your Browser.</h1>
+      <p data-ml-html="hero.p">
         Drop any phone or TikTok video, extract full-body pose + 21-point hands + 52 ARKit facial blendshapes with
         Foot-Lock IK, and export clean <strong>.GLB / .FBX / .BVH / 9:16 .MP4</strong> in minutes — your video never leaves your device.
       </p>
       <div class="hero-cta">
-        <a class="btn btn-primary" href="/?workspace=motion" data-cta="hero-motion">Open Hunger Motion (Free Beta)</a>
-        <a class="btn" href="/?workspace=motion&amp;template=unity_humanoid" data-cta="hero-unity">Try Unity Humanoid Demo</a>
-        <a class="btn" href="/?workspace=layout" data-cta="hero-advanced">Open Full 3D Studio</a>
+        <a class="btn btn-primary" href="/?workspace=motion" data-cta="hero-motion" data-ml="hero.ctaMotion">Open Hunger Motion (Free Beta)</a>
+        <a class="btn" href="/?workspace=motion&amp;template=unity_humanoid" data-cta="hero-unity" data-ml="hero.ctaUnity">Try Unity Humanoid Demo</a>
+        <a class="btn" href="/?workspace=layout" data-cta="hero-advanced" data-ml="hero.ctaStudio">Open Full 3D Studio</a>
       </div>
       <div class="trust-strip">
-        <span><i class="dot"></i> No install · Runs on Mac, Windows &amp; Chromebook</span>
-        <span><i class="dot"></i> Foot-Lock IK anti-sliding (0.00 m drift)</span>
-        <span><i class="dot"></i> Mixamo · Unity Humanoid · VRM (J_Bip) · Godot</span>
-        <span><i class="dot"></i> Commercial-safe CC0 rigs included</span>
+        <span><i class="dot"></i> <span data-ml="trust.1">No install · Runs on Mac, Windows &amp; Chromebook</span></span>
+        <span><i class="dot"></i> <span data-ml="trust.2">Foot-Lock IK anti-sliding (0.00 m drift)</span></span>
+        <span><i class="dot"></i> <span data-ml="trust.3">Mixamo · Unity Humanoid · VRM (J_Bip) · Godot</span></span>
+        <span><i class="dot"></i> <span data-ml="trust.4">Commercial-safe CC0 rigs included</span></span>
       </div>
 
       <div class="pipeline" aria-label="3-step workflow">
         <div class="step-card">
           <div class="step-num">1</div>
-          <h3>Pick a Template or Drop a Video</h3>
-          <p>Start with Unity Humanoid, VRM/VTuber, or TikTok Dance — or upload any local MP4/WebM/MOV clip.</p>
+          <h3 data-ml="step1.h">Pick a Template or Drop a Video</h3>
+          <p data-ml="step1.p">Start with Unity Humanoid, VRM/VTuber, or TikTok Dance — or upload any local MP4/WebM/MOV clip.</p>
         </div>
         <div class="step-card">
           <div class="step-num">2</div>
-          <h3>1-Click Browser AI Mocap</h3>
-          <p>WebCodecs decodes 5x faster while Rust WASM applies 1-Euro smoothing, Foot-Lock IK, and anti-twist stabilization.</p>
+          <h3 data-ml="step2.h">1-Click Browser AI Mocap</h3>
+          <p data-ml="step2.p">WebCodecs decodes 5x faster while Rust WASM applies 1-Euro smoothing, Foot-Lock IK, and anti-twist stabilization.</p>
         </div>
         <div class="step-card">
           <div class="step-num">3</div>
-          <h3>Export Clean GLB, FBX, BVH or MP4</h3>
-          <p>Download a single self-contained animated GLB for Unity/Godot/Blender, or render 9:16 vertical MP4 with audio.</p>
+          <h3 data-ml="step3.h">Export Clean GLB, FBX, BVH or MP4</h3>
+          <p data-ml="step3.p">Download a single self-contained animated GLB for Unity/Godot/Blender, or render 9:16 vertical MP4 with audio.</p>
         </div>
       </div>
     </section>
@@ -238,8 +252,8 @@
     <section class="block" id="templates">
       <div class="section-head">
         <div>
-          <h2>Start in 60 Seconds with 3 Production Templates</h2>
-          <p>Each template pre-loads a verified CC0/CC-BY rig, tuned Foot-Lock IK, camera framing, and export settings.</p>
+          <h2 data-ml="tpl.h">Start in 60 Seconds with 3 Production Templates</h2>
+          <p data-ml="tpl.p">Each template pre-loads a verified CC0/CC-BY rig, tuned Foot-Lock IK, camera framing, and export settings.</p>
         </div>
       </div>
       <div class="templates">
@@ -249,13 +263,13 @@
             <span class="tpl-badge">Game Dev · GLB / FBX</span>
           </div>
           <h3>Unity Humanoid</h3>
-          <p>Full-body locomotion retargeted to a clean humanoid rig with grounded feet, root hip motion, and finger tracking ready for Unity &amp; Godot.</p>
+          <p data-ml="tpl.unity.p">Full-body locomotion retargeted to a clean humanoid rig with grounded feet, root hip motion, and finger tracking ready for Unity &amp; Godot.</p>
           <ul class="tpl-specs">
             <li>Mannequin CC0</li>
             <li>Foot-Lock IK</li>
             <li>GLB + Binary FBX 7.4</li>
           </ul>
-          <a class="btn btn-primary" href="/?workspace=motion&amp;template=unity_humanoid" data-cta="tpl-unity">Open Unity Template →</a>
+          <a class="btn btn-primary" href="/?workspace=motion&amp;template=unity_humanoid" data-cta="tpl-unity" data-ml="tpl.unity.cta">Open Unity Template →</a>
         </article>
 
         <article class="tpl-card">
@@ -264,13 +278,13 @@
             <span class="tpl-badge">VTuber · Face + Hands</span>
           </div>
           <h3>VRM / VTuber Avatar</h3>
-          <p>Pre-tuned for VRM (<code>J_Bip_*</code> 18/18 bone mapping) with 52 ARKit face blendshapes and 21-point finger solving. Drag-and-drop your own <code>.vrm</code> anytime.</p>
+          <p data-ml="tpl.vrm.p">Pre-tuned for VRM (J_Bip_* 18/18 bone mapping) with 52 ARKit face blendshapes and 21-point finger solving. Drag-and-drop your own .vrm anytime.</p>
           <ul class="tpl-specs">
             <li>ARKit 52 Face</li>
             <li>30 Finger Bones</li>
             <li>Drop Custom .VRM</li>
           </ul>
-          <a class="btn btn-primary" href="/?workspace=motion&amp;template=vrm_avatar" data-cta="tpl-vrm">Open VRM Template →</a>
+          <a class="btn btn-primary" href="/?workspace=motion&amp;template=vrm_avatar" data-cta="tpl-vrm" data-ml="tpl.vrm.cta">Open VRM Template →</a>
         </article>
 
         <article class="tpl-card">
@@ -279,13 +293,13 @@
             <span class="tpl-badge">Creator · 9:16 MP4 + Audio</span>
           </div>
           <h3>TikTok / Shorts Dance</h3>
-          <p>Fast-beat shuffle dance preset with camera pan/zoom compensation, crisp 25% SLERP smoothing, and 1080×1920 vertical MP4 export with music.</p>
+          <p data-ml="tpl.tiktok.p">Fast-beat shuffle dance preset with camera pan/zoom compensation, crisp 25% SLERP smoothing, and 1080x1920 vertical MP4 export with music.</p>
           <ul class="tpl-specs">
             <li>9:16 Vertical MP4</li>
             <li>Cam Pan Comp.</li>
             <li>Source Audio Mux</li>
           </ul>
-          <a class="btn btn-primary" href="/?workspace=motion&amp;template=tiktok_dance" data-cta="tpl-tiktok">Open TikTok Template →</a>
+          <a class="btn btn-primary" href="/?workspace=motion&amp;template=tiktok_dance" data-cta="tpl-tiktok" data-ml="tpl.tiktok.cta">Open TikTok Template →</a>
         </article>
       </div>
     </section>
@@ -293,30 +307,30 @@
     <section class="block" id="why">
       <div class="section-head">
         <div>
-          <h2>Built for Reliability — Not Another Fragile Web Demo</h2>
-          <p>Clean Motion workspace up front; full Blender-style 3D editing, Graph Editor, Sculpt, and Path Tracing one click away under <strong>Advanced</strong>.</p>
+          <h2 data-ml="why.h">Built for Reliability — Not Another Fragile Web Demo</h2>
+          <p data-ml-html="why.p">Clean Motion workspace up front; full Blender-style 3D editing, Graph Editor, Sculpt, and Path Tracing one click away under <strong>Advanced</strong>.</p>
         </div>
       </div>
       <div class="features">
         <div class="feat">
-          <h3>100% Local Privacy</h3>
-          <p>MediaPipe + Rust <code>mocap_kernel.wasm</code> run directly in your browser. Your raw videos are never uploaded to third-party GPU farms.</p>
+          <h3 data-ml="feat1.h">100% Local Privacy</h3>
+          <p data-ml="feat1.p">MediaPipe + Rust mocap_kernel.wasm run directly in your browser. Your raw videos are never uploaded to third-party GPU farms.</p>
         </div>
         <div class="feat">
-          <h3>True Foot-Lock IK &amp; Bone Heat</h3>
-          <p>Anchors planted feet to eliminate moonwalking, with 1-Euro filtering and circular-median facing alignment for clean loops.</p>
+          <h3 data-ml="feat2.h">True Foot-Lock IK &amp; Bone Heat</h3>
+          <p data-ml="feat2.p">Anchors planted feet to eliminate moonwalking, with 1-Euro filtering and circular-median facing alignment for clean loops.</p>
         </div>
         <div class="feat">
-          <h3>Full DCC Suite Under Advanced</h3>
-          <p>Unlock F-Curve Bezier Graph Editor, NLA Mixer, Manual Bone Posing (FK/IK), UV/Shader Nodes, WebGPU Cycles-style Path Tracing, and AI Copilot.</p>
+          <h3 data-ml="feat3.h">Full DCC Suite Under Advanced</h3>
+          <p data-ml="feat3.p">Unlock F-Curve Bezier Graph Editor, NLA Mixer, Manual Bone Posing (FK/IK), UV/Shader Nodes, WebGPU Cycles-style Path Tracing, and AI Copilot.</p>
         </div>
       </div>
     </section>
 
     <section class="cta-box">
-      <h2>Go from Phone Clip to Playable 3D Animation Today</h2>
-      <p>Free during Public Beta. No credit card required, no software download, commercial-safe CC0 starter rigs included.</p>
-      <a class="btn btn-primary" href="/?workspace=motion" data-cta="footer-launch">Launch Hunger Motion Now</a>
+      <h2 data-ml="cta.h">Go from Phone Clip to Playable 3D Animation Today</h2>
+      <p data-ml="cta.p">Free during Public Beta. No credit card required, no software download, commercial-safe CC0 starter rigs included.</p>
+      <a class="btn btn-primary" href="/?workspace=motion" data-cta="footer-launch" data-ml="cta.btn">Launch Hunger Motion Now</a>
     </section>
   </main>
 
@@ -324,16 +338,163 @@
     <div class="container foot-row">
       <div>© 2026 Hunger 3D Studio · Release <code>v0.9.0-beta.2</code></div>
       <div class="foot-links">
-        <a href="/?workspace=motion">Motion Workspace</a>
-        <a href="/?workspace=layout">Advanced 3D Studio</a>
-        <a href="/TERMS.md">Terms</a>
-        <a href="/PRIVACY.md">Privacy</a>
-        <a href="/THIRD_PARTY_LICENSES.md">Licenses</a>
+        <a href="/?workspace=motion" data-ml="foot.motion">Motion Workspace</a>
+        <a href="/?workspace=layout" data-ml="foot.studio">Advanced 3D Studio</a>
+        <a href="/TERMS.md" data-ml="foot.terms">Terms</a>
+        <a href="/PRIVACY.md" data-ml="foot.privacy">Privacy</a>
+        <a href="/THIRD_PARTY_LICENSES.md" data-ml="foot.licenses">Licenses</a>
       </div>
     </div>
   </footer>
 
   <script type="module">
+    const LANG_KEY = 'hunger_lang';
+    const COPY = {
+      en: {
+        title: 'Hunger Motion — Browser Video-to-3D Mocap for Unity, VRM & TikTok',
+        badge: 'Public Beta',
+        'nav.templates': 'Templates',
+        'nav.why': 'Why Browser Mocap',
+        'nav.studio': 'Full 3D Studio',
+        'nav.launch': 'Launch Motion Studio →',
+        'hero.eyebrow': '100% Client-Side Rust WASM + WebCodecs · Zero Server GPU',
+        'hero.h1': 'Video to <span>Game-Ready 3D Motion</span> in Your Browser.',
+        'hero.p': 'Drop any phone or TikTok video, extract full-body pose + 21-point hands + 52 ARKit facial blendshapes with Foot-Lock IK, and export clean <strong>.GLB / .FBX / .BVH / 9:16 .MP4</strong> in minutes — your video never leaves your device.',
+        'hero.ctaMotion': 'Open Hunger Motion (Free Beta)',
+        'hero.ctaUnity': 'Try Unity Humanoid Demo',
+        'hero.ctaStudio': 'Open Full 3D Studio',
+        'trust.1': 'No install · Runs on Mac, Windows & Chromebook',
+        'trust.2': 'Foot-Lock IK anti-sliding (0.00 m drift)',
+        'trust.3': 'Mixamo · Unity Humanoid · VRM (J_Bip) · Godot',
+        'trust.4': 'Commercial-safe CC0 rigs included',
+        'step1.h': 'Pick a Template or Drop a Video',
+        'step1.p': 'Start with Unity Humanoid, VRM/VTuber, or TikTok Dance — or upload any local MP4/WebM/MOV clip.',
+        'step2.h': '1-Click Browser AI Mocap',
+        'step2.p': 'WebCodecs decodes 5x faster while Rust WASM applies 1-Euro smoothing, Foot-Lock IK, and anti-twist stabilization.',
+        'step3.h': 'Export Clean GLB, FBX, BVH or MP4',
+        'step3.p': 'Download a single self-contained animated GLB for Unity/Godot/Blender, or render 9:16 vertical MP4 with audio.',
+        'tpl.h': 'Start in 60 Seconds with 3 Production Templates',
+        'tpl.p': 'Each template pre-loads a verified CC0/CC-BY rig, tuned Foot-Lock IK, camera framing, and export settings.',
+        'tpl.unity.p': 'Full-body locomotion retargeted to a clean humanoid rig with grounded feet, root hip motion, and finger tracking ready for Unity & Godot.',
+        'tpl.unity.cta': 'Open Unity Template →',
+        'tpl.vrm.p': 'Pre-tuned for VRM (J_Bip_* 18/18 bone mapping) with 52 ARKit face blendshapes and 21-point finger solving. Drag-and-drop your own .vrm anytime.',
+        'tpl.vrm.cta': 'Open VRM Template →',
+        'tpl.tiktok.p': 'Fast-beat shuffle dance preset with camera pan/zoom compensation, crisp 25% SLERP smoothing, and 1080x1920 vertical MP4 export with music.',
+        'tpl.tiktok.cta': 'Open TikTok Template →',
+        'why.h': 'Built for Reliability — Not Another Fragile Web Demo',
+        'why.p': 'Clean Motion workspace up front; full Blender-style 3D editing, Graph Editor, Sculpt, and Path Tracing one click away under <strong>Advanced</strong>.',
+        'feat1.h': '100% Local Privacy',
+        'feat1.p': 'MediaPipe + Rust mocap_kernel.wasm run directly in your browser. Your raw videos are never uploaded to third-party GPU farms.',
+        'feat2.h': 'True Foot-Lock IK & Bone Heat',
+        'feat2.p': 'Anchors planted feet to eliminate moonwalking, with 1-Euro filtering and circular-median facing alignment for clean loops.',
+        'feat3.h': 'Full DCC Suite Under Advanced',
+        'feat3.p': 'Unlock F-Curve Bezier Graph Editor, NLA Mixer, Manual Bone Posing (FK/IK), UV/Shader Nodes, WebGPU Cycles-style Path Tracing, and AI Copilot.',
+        'cta.h': 'Go from Phone Clip to Playable 3D Animation Today',
+        'cta.p': 'Free during Public Beta. No credit card required, no software download, commercial-safe CC0 starter rigs included.',
+        'cta.btn': 'Launch Hunger Motion Now',
+        'foot.motion': 'Motion Workspace',
+        'foot.studio': 'Advanced 3D Studio',
+        'foot.terms': 'Terms',
+        'foot.privacy': 'Privacy',
+        'foot.licenses': 'Licenses',
+      },
+      vi: {
+        title: 'Hunger Motion — Chuyển Video sang Hoạt cảnh 3D ngay trên Trình duyệt',
+        badge: 'Beta Miễn Phí',
+        'nav.templates': 'Mẫu dựng sẵn',
+        'nav.why': 'Vì sao chạy trên trình duyệt',
+        'nav.studio': 'Studio 3D đầy đủ',
+        'nav.launch': 'Mở Motion Studio →',
+        'hero.eyebrow': '100% Rust WASM + WebCodecs trên trình duyệt · 0 VNĐ GPU Server',
+        'hero.h1': 'Chuyển Video thành <span>Hoạt cảnh 3D sẵn sàng cho Game</span> ngay trên Trình duyệt.',
+        'hero.p': 'Kéo thả video điện thoại hoặc TikTok, trích xuất chuyển động toàn thân + 21 điểm bàn tay + 52 biểu cảm khuôn mặt ARKit kèm Khóa chân IK, xuất sạch <strong>.GLB / .FBX / .BVH / .MP4 dọc 9:16</strong> trong vài phút — video không rời khỏi máy bạn.',
+        'hero.ctaMotion': 'Mở Hunger Motion (Beta miễn phí)',
+        'hero.ctaUnity': 'Thử mẫu Unity Humanoid',
+        'hero.ctaStudio': 'Mở Studio 3D đầy đủ',
+        'trust.1': 'Không cần cài đặt · Chạy trên Mac, Windows & Chromebook',
+        'trust.2': 'Khóa chân IK chống trượt (độ trượt 0,00 m)',
+        'trust.3': 'Mixamo · Unity Humanoid · VRM (J_Bip) · Godot',
+        'trust.4': 'Tích hợp sẵn nhân vật CC0 sạch bản quyền thương mại',
+        'step1.h': 'Chọn mẫu hoặc thả video',
+        'step1.p': 'Bắt đầu nhanh với Unity Humanoid, VRM/VTuber hoặc TikTok Dance — hoặc tải lên video MP4/WebM/MOV của bạn.',
+        'step2.h': 'AI Mocap 1 bấm trên trình duyệt',
+        'step2.p': 'WebCodecs giải mã nhanh gấp 5 lần, lõi Rust WASM lọc 1-Euro, Khóa chân IK và chống xoắn trục tự động.',
+        'step3.h': 'Xuất sạch GLB, FBX, BVH hoặc MP4',
+        'step3.p': 'Tải 1 tệp GLB kèm đầy đủ khung xương và hoạt cảnh cho Unity/Godot/Blender, hoặc kết xuất MP4 dọc 9:16 kèm nhạc.',
+        'tpl.h': 'Bắt đầu trong 60 giây với 3 mẫu thực chiến',
+        'tpl.p': 'Mỗi mẫu nạp sẵn nhân vật CC0 sạch bản quyền, tham số Khóa chân IK, góc máy quay và cấu hình xuất tối ưu.',
+        'tpl.unity.p': 'Chuyển động toàn thân ánh xạ chuẩn nhân vật humanoid, bám sàn chắc, giữ chuyển động hông gốc và ngón tay cho Unity & Godot.',
+        'tpl.unity.cta': 'Mở mẫu Unity →',
+        'tpl.vrm.p': 'Tinh chỉnh sẵn cho chuẩn VRM (khớp 18/18 xương J_Bip_*) cùng 52 blendshape khuôn mặt ARKit và 21 điểm bàn tay. Kéo thả .vrm riêng bất cứ lúc nào.',
+        'tpl.vrm.cta': 'Mở mẫu VRM →',
+        'tpl.tiktok.p': 'Preset nhảy nhịp nhanh tích hợp bù lia/zoom máy quay, làm mượt SLERP 25% và xuất video MP4 dọc 1080x1920 giữ nguyên nhạc gốc.',
+        'tpl.tiktok.cta': 'Mở mẫu TikTok →',
+        'why.h': 'Thiết kế cho công việc thật — không phải bản demo web mong manh',
+        'why.p': 'Không gian Motion gọn gàng ở mặt trước; toàn bộ công cụ 3D chuẩn Blender (Graph Editor, Điêu khắc, Path Tracing) mở ngay chỉ 1 bấm tại tab <strong>Nâng cao</strong>.',
+        'feat1.h': 'Riêng tư 100% trên máy bạn',
+        'feat1.p': 'MediaPipe và lõi Rust mocap_kernel.wasm chạy trực tiếp trong trình duyệt. Video gốc của bạn không bao giờ bị tải lên máy chủ ngoài.',
+        'feat2.h': 'Khóa chân IK & Căn hướng thực thụ',
+        'feat2.p': 'Neo chắc bàn chân chạm sàn để loại bỏ trượt chân, kết hợp lọc 1-Euro và căn hướng mặt vòng tròn cho chu kỳ mượt mà.',
+        'feat3.h': 'Đầy đủ bộ công cụ 3D trong Nâng cao',
+        'feat3.p': 'Mở khóa Graph Editor đường cong Bezier, NLA Mixer, chỉnh xương thủ công FK/IK, Shader Nodes, Path Tracing và AI Copilot.',
+        'cta.h': 'Biến clip điện thoại thành hoạt cảnh 3D ngay hôm nay',
+        'cta.p': 'Miễn phí trong giai đoạn Public Beta. Không cần thẻ thanh toán, không cần cài phần mềm, kèm sẵn rig CC0 thương mại.',
+        'cta.btn': 'Bắt đầu dùng Hunger Motion ngay',
+        'foot.motion': 'Không gian Motion',
+        'foot.studio': 'Studio 3D nâng cao',
+        'foot.terms': 'Điều khoản',
+        'foot.privacy': 'Quyền riêng tư',
+        'foot.licenses': 'Giấy phép',
+      },
+    };
+
+    const normalize = (v) => {
+      const s = String(v || '').trim().toLowerCase();
+      return s === 'vi' || s.startsWith('vi-') ? 'vi' : (s === 'en' || s.startsWith('en-') ? 'en' : null);
+    };
+    const detectLang = () => {
+      try {
+        const q = normalize(new URLSearchParams(location.search).get('lang'));
+        if (q) { localStorage.setItem(LANG_KEY, q); return q; }
+      } catch (_) {}
+      try {
+        const saved = normalize(localStorage.getItem(LANG_KEY));
+        if (saved) return saved;
+      } catch (_) {}
+      return 'en';
+    };
+
+    let lang = detectLang();
+    const langBtn = document.getElementById('motion-lang-toggle');
+    const applyLandingLang = (next, persist = false) => {
+      lang = normalize(next) || 'en';
+      if (persist) {
+        try { localStorage.setItem(LANG_KEY, lang); } catch (_) {}
+      }
+      const dict = COPY[lang] || COPY.en;
+      document.documentElement.lang = lang;
+      document.title = dict.title;
+      document.querySelectorAll('[data-ml]').forEach((el) => {
+        const k = el.getAttribute('data-ml');
+        if (dict[k]) el.textContent = dict[k];
+      });
+      document.querySelectorAll('[data-ml-html]').forEach((el) => {
+        const k = el.getAttribute('data-ml-html');
+        if (dict[k]) el.innerHTML = dict[k];
+      });
+      if (langBtn) {
+        langBtn.setAttribute('data-lang', lang);
+        langBtn.querySelectorAll('[data-lang-opt]').forEach((p) => {
+          p.classList.toggle('active', p.getAttribute('data-lang-opt') === lang);
+        });
+      }
+    };
+    applyLandingLang(lang, false);
+    langBtn?.addEventListener('click', () => {
+      applyLandingLang(lang === 'vi' ? 'en' : 'vi', true);
+      send('language_changed', { lang });
+    });
+
     const sid = Math.random().toString(16).slice(2, 10) + Date.now().toString(16).slice(-6);
     const send = (name, props = {}) => {
       if (navigator.doNotTrack === '1') return;
@@ -348,9 +509,9 @@
         else fetch('/api/telemetry/event', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, keepalive: true }).catch(() => {});
       } catch (_) {}
     };
-    send('landing_view', { loadMs: Math.round(performance.now()) });
+    send('landing_view', { loadMs: Math.round(performance.now()), lang });
     document.querySelectorAll('[data-cta]').forEach((el) => {
-      el.addEventListener('click', () => send('landing_cta_click', { cta: el.getAttribute('data-cta'), href: el.getAttribute('href') }));
+      el.addEventListener('click', () => send('landing_cta_click', { cta: el.getAttribute('data-cta'), href: el.getAttribute('href'), lang }));
     });
   </script>
 </body>

@@ -27,6 +27,7 @@ import { resolveEditableMesh, syncViewportModeOptions, switchViewportMode } from
 import { bindLightHelpers } from './core/light-helper.js';
 import { getSharedVoiceCoordinator } from './ai/voice-wake-router.js';
 import { telemetry } from './core/telemetry.js';
+import { getLang, setLang, toggleLang, applyTranslations, onLangChange, t } from './core/i18n.js';
 import { resolveTemplateFromSearch } from './animation/motion-templates.js';
 import {
   saveDraft,
@@ -103,6 +104,7 @@ class BlenderApp {
     try {
       telemetry.workspace = this.currentWorkspace;
       telemetry.installGlobalHandlers();
+      window.hungerI18n = { getLang, setLang, toggleLang, applyTranslations, onLangChange, t };
       window.hungerTelemetry = telemetry;
       this._installStaleBundleBanner();
     } catch (_) {}
@@ -309,6 +311,7 @@ class BlenderApp {
         this._bindResizers();
         this._bindShortcuts();
         this._bindSceneStats();
+        applyTranslations(document);
 
         try { this._createDefaultScene(); } catch (e) { console.error('[BlenderApp] Default scene error:', e); }
         try { this._startAutosave(); } catch (e) { console.warn('[BlenderApp] Autosave init error:', e); }
@@ -821,7 +824,7 @@ class BlenderApp {
   }
 
   /** Non-blocking accessible info modal replacing synchronous window.alert(). */
-  _showInfoDialog(title, bodyText) {
+  _showInfoDialog(title, bodyText, { logoSrc = '' } = {}) {
     if (typeof document === 'undefined') return;
     let backdrop = document.getElementById('wbs-info-dialog-backdrop');
     if (backdrop) backdrop.remove();
@@ -833,8 +836,19 @@ class BlenderApp {
     card.setAttribute('aria-modal', 'true');
     card.style.cssText = 'background:#1e2228;border:1px solid #3c424c;border-radius:8px;padding:18px 20px;width:460px;max-width:92vw;max-height:82vh;overflow:auto;color:#e6e9ef;font:13px/1.55 -apple-system,Segoe UI,Roboto,sans-serif;box-shadow:0 16px 40px rgba(0,0,0,0.55);';
     const heading = document.createElement('div');
-    heading.style.cssText = 'font-weight:600;font-size:14px;margin-bottom:10px;color:#fff;';
-    heading.textContent = title;
+    heading.style.cssText = 'display:flex;align-items:center;gap:10px;font-weight:600;font-size:15px;margin-bottom:10px;color:#fff;';
+    if (logoSrc) {
+      const img = document.createElement('img');
+      img.src = logoSrc;
+      img.alt = 'Hunger';
+      img.width = 32;
+      img.height = 32;
+      img.style.cssText = 'border-radius:7px;object-fit:cover;display:block;flex-shrink:0;';
+      heading.appendChild(img);
+    }
+    const titleSpan = document.createElement('span');
+    titleSpan.textContent = title;
+    heading.appendChild(titleSpan);
     const pre = document.createElement('div');
     pre.style.cssText = 'white-space:pre-wrap;color:#c9d1d9;margin-bottom:14px;';
     pre.textContent = bodyText;
@@ -1266,6 +1280,14 @@ class BlenderApp {
       }
     });
 
+    const switchLanguage = () => {
+      const next = toggleLang();
+      telemetry.track('language_changed', { lang: next });
+      document.getElementById('menu-help')?.classList.remove('open');
+    };
+    document.getElementById('btn-lang-toggle')?.addEventListener('click', switchLanguage);
+    document.getElementById('btn-help-lang')?.addEventListener('click', switchLanguage);
+
     const openFeedback = async () => {
       try {
         const dialog = await this._ensureFeedbackDialog();
@@ -1279,10 +1301,9 @@ class BlenderApp {
 
     document.getElementById('btn-help-about')?.addEventListener('click', () => {
       this._showInfoDialog(
-        'About Hunger',
-        '3D web-native studio: modeling, rigging, AI mocap, animation, simulation, path tracing & interchange.\n' +
-        'Familiar 3D workflow & shortcuts built for the web.\n\n' +
-        'Open Help → Keyboard Shortcuts to view the full searchable shortcut list.'
+        t('about.title'),
+        t('about.body'),
+        { logoSrc: 'assets/brand/hunger-logo-128.png' }
       );
     });
 
