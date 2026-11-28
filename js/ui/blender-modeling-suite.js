@@ -1972,12 +1972,20 @@ export class BlenderModelingSuite {
         </div>
         <div class="submenu-flyout">
           <div class="dropdown-item" id="btn-add-head-bust"><span>Human Head Bust</span></div>
-          <div class="dropdown-item" id="btn-add-michelle"><span>Mannequin Character (CC0)</span></div>
-          <div class="dropdown-item" id="btn-add-soldier"><span>Bot Character (CC0)</span></div>
+          <div class="dropdown-item" id="btn-add-michelle"><span>Studio Athlete (CC0)</span></div>
+          <div class="dropdown-item" id="btn-add-soldier"><span>Cyber Droid (CC0)</span></div>
           <div class="dropdown-item" id="btn-add-mannequin"><span>Articulated Mannequin</span></div>
           <div class="dropdown-divider"></div>
-          <div class="dropdown-item" id="btn-add-armature"><span>Humanoid Armature</span></div>
-          <div class="dropdown-item" id="btn-bind-armature"><span>Bind Armature to Mesh</span></div>
+          <div class="dropdown-item" id="btn-add-armature"><span>Humanoid Standard Rig (22 Bones)</span></div>
+          <div class="dropdown-item" id="btn-add-rig-humanoid-pro" data-skeleton-template="humanoid_pro"><span>Humanoid Pro Rig (56 Bones)</span></div>
+          <div class="dropdown-item" id="btn-add-rig-quadruped" data-skeleton-template="quadruped"><span>Quadruped Animal Rig (Dog/Cat/Horse)</span></div>
+          <div class="dropdown-item" id="btn-add-rig-bird" data-skeleton-template="bird"><span>Bird / Winged Creature Rig</span></div>
+          <div class="dropdown-item" id="btn-add-rig-fish" data-skeleton-template="fish"><span>Fish / Aquatic Swimmer Rig</span></div>
+          <div class="dropdown-item" id="btn-add-rig-serpent" data-skeleton-template="serpent"><span>Snake / Dragon Spine Rig</span></div>
+          <div class="dropdown-item" id="btn-add-rig-arachnid" data-skeleton-template="arachnid"><span>Spider / Multi-Legged Mech Rig</span></div>
+          <div class="dropdown-item" id="btn-add-rig-vehicle" data-skeleton-template="vehicle"><span>Vehicle / Rover &amp; Turret Rig</span></div>
+          <div class="dropdown-divider"></div>
+          <div class="dropdown-item" id="btn-bind-armature"><span>Auto-Rig / Bind Armature to Mesh</span></div>
         </div>
       </div>
 
@@ -2077,7 +2085,20 @@ export class BlenderModelingSuite {
     document.getElementById('btn-add-image-reference')?.addEventListener('click', () => promptAndAddImage('reference'));
     document.getElementById('btn-add-image-background')?.addEventListener('click', () => promptAndAddImage('background'));
     document.getElementById('btn-add-image-plane')?.addEventListener('click', () => promptAndAddImage('plane'));
-    document.getElementById('btn-add-armature')?.addEventListener('click', () => { closeTopMenus(); this.studio?.createHumanoidArmature({ height: 1.8, y: 0 }); });
+    document.getElementById('btn-add-armature')?.addEventListener('click', () => { closeTopMenus(); this.studio?.createSkeletonTemplate?.('humanoid_standard', { height: 1.72, y: 0 }) || this.studio?.createHumanoidArmature({ height: 1.8, y: 0 }); });
+    addDropdown.querySelectorAll('[data-skeleton-template]').forEach((item) => {
+      item.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const tplId = item.getAttribute('data-skeleton-template');
+        closeTopMenus();
+        const res = this.studio?.createSkeletonTemplate?.(tplId, { y: 0 });
+        if (res?.armatureGroup) {
+          this.sceneManager?.select(res.armatureGroup);
+          this.engine?.focusOn?.(res.armatureGroup);
+          this.app?.codeEditor?.log?.('info', `Added skeleton template [${res.template?.name || tplId}] (${res.bones?.length || 0} bones).`);
+        }
+      });
+    });
     document.getElementById('btn-add-mannequin')?.addEventListener('click', () => { closeTopMenus(); this.studio?.createRiggedMannequin({ height: 1.8, y: 0 }); });
     document.getElementById('btn-add-head-bust')?.addEventListener('click', async () => {
       closeTopMenus();
@@ -2102,13 +2123,29 @@ export class BlenderModelingSuite {
     document.getElementById('btn-bind-armature')?.addEventListener('click', () => {
       closeTopMenus();
       const active = this.sceneManager.getActiveObject();
-      const mesh = resolveEditableMesh(active, this.sceneManager);
-      if (!mesh) {
-        this._notify('Select a Mesh object before binding an Armature.', 'warning');
+      if (!active) {
+        this._notify('Select a Mesh or Character Group before Auto-Rigging / Binding.', 'warning');
         return;
       }
-      const skinned = this.studio?.autoSkinMesh(mesh);
-      if (skinned) this.sceneManager.select(skinned);
+      // If a standalone armature already exists in scene and user selected a single Mesh, bind to it;
+      // otherwise run silhouette-fitted Auto-Rig Character cleanly.
+      const mesh = resolveEditableMesh(active, this.sceneManager);
+      const hasActiveSkel = Boolean(window.rigSystem?.activeSkeleton?.bones?.length);
+      if (mesh && hasActiveSkel && active.isMesh) {
+        const skinned = this.studio?.autoSkinMesh(mesh);
+        if (skinned) this.sceneManager.select(skinned);
+        return;
+      }
+      const rigged = this.studio?.autoRigCharacter?.(active, { templateId: 'humanoid_pro', mode: 'heat' });
+      if (rigged?.character) {
+        this.sceneManager.select(rigged.character);
+        this.app?.codeEditor?.log?.('success', `Auto-Rigged "${rigged.character.name}" (${rigged.quality?.boneCount || 56} bones, ${rigged.silhouette?.detectedPose || 'Standard'}).`);
+      } else if (mesh) {
+        const skinned = this.studio?.autoSkinMesh(mesh);
+        if (skinned) this.sceneManager.select(skinned);
+      } else {
+        this._notify('Select a Mesh object before binding an Armature.', 'warning');
+      }
     });
     document.getElementById('btn-add-hunyuan3d')?.addEventListener('click', () => {
       closeTopMenus();

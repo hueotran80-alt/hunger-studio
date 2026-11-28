@@ -34,7 +34,7 @@ import {
   retargetHumanoidWasm,
 } from './mocap-kernel-bridge.js';
 import { solveHandAndFingerTracks, applyTwistDistribution } from './hand-solver.js';
-import { solveFaceAndExpressionTracks } from './face-solver.js';
+import { solveFaceAndExpressionTracks, collectFaceMorphBindings } from './face-solver.js';
 import { exportClipToBVH } from './bvh-exporter.js';
 import { exportClipToFBX } from './fbx-exporter.js';
 
@@ -177,7 +177,7 @@ export class MocapRetargeter {
 
     const stripName = (raw) => {
       let s = String(raw || '').toLowerCase();
-      s = s.replace(/^(mixamorig[_:-]?|armature[_:-]?|bip01[_:-]?|def[_:-]?|org[_:-]?|mch[_:-]?|chr[_:-]?|cc(base|game)[_:-]?)/i, '');
+      s = s.replace(/^(mixamorig[_:-]?|armature[_:-]?|valvebiped[_:-]?bip01[_:-]?|bip01[_:-]?|def[_:-]?|org[_:-]?|mch[_:-]?|chr[_:-]?|cc(base|game)[_:-]?|rl[_:-]?)/i, '');
       s = s.replace(/[^a-z0-9]/g, '');
       // Rigify spine.001 / spine.002 / spine.003 normalization -> spine1 / spine2
       s = s.replace(/^spine00([1-6])$/, 'spine$1');
@@ -190,31 +190,31 @@ export class MocapRetargeter {
     };
 
     const isFingerOrEnd = (clean) =>
-      /thumb|index|middle|ring|pinky|toeend|headtopend|eye|jaw|roll|twist/i.test(clean);
+      /thumb|index|middle|ring|pinky|little|toeend|headtopend|eye|jaw|roll|twist|pectoral|breast|carpal|metacarpal/i.test(clean);
 
     const aliases = {
-      hips: ['hips', 'pelvis', 'hip'],
-      spine: ['spine', 'waist', 'abdomen', 'torso'],
-      spine1: ['spine1', 'spine01', 'chest1'],
-      spine2: ['spine2', 'spine02', 'spine03', 'spine3', 'chest', 'upperchest'],
-      neck: ['neck', 'neck01', 'neck1'],
+      hips: ['hips', 'pelvis', 'hip', 'rootpelvis'],
+      spine: ['spine', 'waist', 'abdomen', 'abdomenlower', 'torso'],
+      spine1: ['spine1', 'spine01', 'chest1', 'abdomenupper', 'chestlower'],
+      spine2: ['spine2', 'spine02', 'spine03', 'spine3', 'chest', 'upperchest', 'chestupper'],
+      neck: ['neck', 'neck01', 'neck1', 'necklower'],
       head: ['head'],
-      leftShoulder: ['leftshoulder', 'claviclel', 'shoulderl', 'lshoulder', 'lclavicle'],
-      leftArm: ['leftarm', 'leftupperarm', 'upperarml', 'arml', 'lupperarm', 'larm'],
-      leftForearm: ['leftforearm', 'leftlowerarm', 'lowerarml', 'forearml', 'llowerarm', 'lforearm'],
+      leftShoulder: ['leftshoulder', 'claviclel', 'shoulderl', 'lshoulder', 'lclavicle', 'lcollar', 'leftcollar'],
+      leftArm: ['leftarm', 'leftupperarm', 'upperarml', 'arml', 'lupperarm', 'larm', 'lshldrbend', 'lshldr', 'leftshldr'],
+      leftForearm: ['leftforearm', 'leftlowerarm', 'lowerarml', 'forearml', 'llowerarm', 'lforearm', 'lforearmbend'],
       leftHand: ['lefthand', 'handl', 'wristl', 'lhand', 'lwrist'],
-      rightShoulder: ['rightshoulder', 'clavicler', 'shoulderr', 'rshoulder', 'rclavicle'],
-      rightArm: ['rightarm', 'rightupperarm', 'upperarmr', 'armr', 'rupperarm', 'rarm'],
-      rightForearm: ['rightforearm', 'rightlowerarm', 'lowerarmr', 'forearmr', 'rlowerarm', 'rforearm'],
+      rightShoulder: ['rightshoulder', 'clavicler', 'shoulderr', 'rshoulder', 'rclavicle', 'rcollar', 'rightcollar'],
+      rightArm: ['rightarm', 'rightupperarm', 'upperarmr', 'armr', 'rupperarm', 'rarm', 'rshldrbend', 'rshldr', 'rightshldr'],
+      rightForearm: ['rightforearm', 'rightlowerarm', 'lowerarmr', 'forearmr', 'rlowerarm', 'rforearm', 'rforearmbend'],
       rightHand: ['righthand', 'handr', 'wristr', 'rhand', 'rwrist'],
-      leftUpLeg: ['leftupleg', 'leftthigh', 'thighl', 'upperlegl', 'lupleg', 'lthigh', 'leftupperleg'],
-      leftLeg: ['leftleg', 'leftcalf', 'calfl', 'lowerlegl', 'shinl', 'lleg', 'lcalf', 'leftlowerleg'],
+      leftUpLeg: ['leftupleg', 'leftthigh', 'thighl', 'upperlegl', 'lupleg', 'lthigh', 'leftupperleg', 'lthighbend'],
+      leftLeg: ['leftleg', 'leftcalf', 'calfl', 'lowerlegl', 'shinl', 'lleg', 'lcalf', 'lshin', 'leftshin', 'leftlowerleg'],
       leftFoot: ['leftfoot', 'footl', 'anklel', 'lfoot', 'lankle'],
-      leftToeBase: ['lefttoebase', 'lefttoe', 'toebasel', 'toel', 'ltoe', 'ltoebase', 'balll', 'leftball', 'toebase_l'],
-      rightUpLeg: ['rightupleg', 'rightthigh', 'thighr', 'upperlegr', 'rupleg', 'rthigh', 'rightupperleg'],
-      rightLeg: ['rightleg', 'rightcalf', 'calfr', 'lowerlegr', 'shinr', 'rleg', 'rcalf', 'rightlowerleg'],
+      leftToeBase: ['lefttoebase', 'lefttoe', 'toebasel', 'toel', 'ltoe', 'ltoebase', 'balll', 'leftball', 'toebase_l', 'lmetatarsals'],
+      rightUpLeg: ['rightupleg', 'rightthigh', 'thighr', 'upperlegr', 'rupleg', 'rthigh', 'rightupperleg', 'rthighbend'],
+      rightLeg: ['rightleg', 'rightcalf', 'calfr', 'lowerlegr', 'shinr', 'rleg', 'rcalf', 'rshin', 'rightshin', 'rightlowerleg'],
       rightFoot: ['rightfoot', 'footr', 'ankler', 'rfoot', 'rankle'],
-      rightToeBase: ['righttoebase', 'righttoe', 'toebaser', 'toer', 'rtoe', 'rtoebase', 'ballr', 'rightball', 'toebase_r'],
+      rightToeBase: ['righttoebase', 'righttoe', 'toebaser', 'toer', 'rtoe', 'rtoebase', 'ballr', 'rightball', 'toebase_r', 'rmetatarsals'],
     };
 
     const mapped = {};
@@ -392,6 +392,190 @@ export class MocapRetargeter {
     }
 
     return { fingers, twists, jaw };
+  }
+
+  /**
+   * Inspect any scene character (SkinnedMesh, rigged Group, or static unrigged mesh)
+   * and produce a standardized readiness & quality report for AI Mocap retargeting.
+   */
+  diagnoseRig(character) {
+    if (!character) {
+      return {
+        hasSkeleton: false,
+        totalBones: 0,
+        standard: 'None',
+        restPose: 'Unknown',
+        mappedCore: 0,
+        maxCore: 22,
+        criticalMatched: 0,
+        criticalTotal: 14,
+        missingCritical: [],
+        fingerBones: 0,
+        twistBones: 0,
+        hasJaw: false,
+        faceMorphs: 0,
+        score: 0,
+        grade: 'Needs Auto-Rig',
+        needsAutoRig: true,
+        mappedKeys: [],
+      };
+    }
+
+    const allBones = [];
+    let skinnedMeshCount = 0;
+    let staticMeshCount = 0;
+    character.traverse((child) => {
+      if (child.isBone) allBones.push(child);
+      if (child.isSkinnedMesh) skinnedMeshCount++;
+      else if (child.isMesh) staticMeshCount++;
+    });
+
+    const morphBindings = collectFaceMorphBindings(character);
+    const faceMorphs = new Set(morphBindings.map((b) => b.morphName)).size;
+
+    if (allBones.length === 0) {
+      return {
+        hasSkeleton: false,
+        totalBones: 0,
+        skinnedMeshCount,
+        staticMeshCount,
+        standard: 'Unrigged Mesh',
+        restPose: 'Static',
+        mappedCore: 0,
+        maxCore: 22,
+        criticalMatched: 0,
+        criticalTotal: 14,
+        missingCritical: [
+          'hips', 'spine', 'head',
+          'leftArm', 'leftForearm', 'leftHand',
+          'rightArm', 'rightForearm', 'rightHand',
+          'leftUpLeg', 'leftLeg', 'leftFoot',
+          'rightUpLeg', 'rightLeg', 'rightFoot',
+        ],
+        fingerBones: 0,
+        twistBones: 0,
+        hasJaw: false,
+        faceMorphs,
+        score: 0,
+        grade: 'Needs Auto-Rig',
+        needsAutoRig: true,
+        mappedKeys: [],
+      };
+    }
+
+    const prevMap = new Map(this.boneMap);
+    const prevExt = this.extBoneMap;
+    const mapped = this._mapBones(character);
+    const ext = this.extBoneMap || { fingers: {}, twists: {}, jaw: null };
+    this.boneMap = prevMap;
+    this.extBoneMap = prevExt;
+
+    const names = allBones.map((b) => String(b.name || ''));
+    let standard = 'Custom Humanoid';
+    if (names.some((n) => /^mixamorig/i.test(n))) standard = 'Mixamo';
+    else if (names.some((n) => /^j_bip_/i.test(n))) standard = 'VRM / VRoid';
+    else if (names.some((n) => /^cc_base_/i.test(n))) standard = 'Character Creator';
+    else if (names.some((n) => /^def[-_]/i.test(n))) standard = 'Blender Rigify';
+    else if (names.some((n) => /^(?:pelvis|thigh_l|upperarm_l|spine_01)$/i.test(n))) standard = 'Unreal Engine';
+    else if (names.some((n) => /^(?:lshldrbend|rshldrbend|abdomenlower|lthighbend)$/i.test(n))) standard = 'Daz3D Genesis';
+    else if (names.some((n) => /^rl_/i.test(n))) standard = 'AccuRIG / ActorCore';
+    else if (names.some((n) => /^valvebiped/i.test(n))) standard = 'Valve Biped';
+    else if (
+      mapped.hips && mapped.leftArm && mapped.rightArm &&
+      Object.keys(ext.fingers || {}).length >= 20 &&
+      Object.keys(ext.twists || {}).length >= 2
+    ) {
+      standard = 'Studio Pro Humanoid';
+    } else if (mapped.hips && mapped.leftArm && mapped.leftUpLeg) {
+      standard = 'Standard Humanoid';
+    }
+
+    const criticalKeys = [
+      'hips', 'spine', 'head',
+      'leftArm', 'leftForearm', 'leftHand',
+      'rightArm', 'rightForearm', 'rightHand',
+      'leftUpLeg', 'leftLeg', 'leftFoot',
+      'rightUpLeg', 'rightLeg', 'rightFoot',
+    ];
+    const missingCritical = criticalKeys.filter((k) => !mapped[k]);
+    const criticalMatched = criticalKeys.length - missingCritical.length;
+    const mappedKeys = Object.keys(mapped);
+    const mappedCore = mappedKeys.length;
+    const fingerBones = Object.keys(ext.fingers || {}).length;
+    const twistBones = Object.keys(ext.twists || {}).length;
+    const hasJaw = Boolean(ext.jaw);
+
+    // Measure rest pose (T-Pose vs A-Pose) from Left/Right Arm -> Forearm angle
+    let restPose = 'Standard';
+    character.updateMatrixWorld(true);
+    const armAngles = [];
+    for (const [aKey, fKey] of [['leftArm', 'leftForearm'], ['rightArm', 'rightForearm']]) {
+      const bA = mapped[aKey];
+      const bF = mapped[fKey];
+      if (!bA || !bF) continue;
+      const pA = bA.getWorldPosition(new THREE.Vector3());
+      const pF = bF.getWorldPosition(new THREE.Vector3());
+      const v = pF.sub(pA);
+      const horiz = Math.hypot(v.x, v.z);
+      if (horiz > 1e-4) {
+        armAngles.push(THREE.MathUtils.radToDeg(Math.atan2(-v.y, horiz)));
+      }
+    }
+    if (armAngles.length > 0) {
+      const avgDrop = armAngles.reduce((s, a) => s + a, 0) / armAngles.length;
+      if (avgDrop < 16) restPose = 'T-Pose';
+      else if (avgDrop <= 62) restPose = 'A-Pose';
+      else restPose = 'Arms-Down';
+    }
+
+    // Readiness score (0..100):
+    // 65 pts critical body joints, 15 pts secondary core (spine1/2, neck, clavicles, toes),
+    // 10 pts fingers, 5 pts twist helpers, 5 pts face blendshapes/jaw
+    const secondaryMatched = Math.max(0, mappedCore - criticalMatched);
+    let score = Math.round(
+      (criticalMatched / criticalKeys.length) * 65 +
+      Math.min(1, secondaryMatched / 7) * 15 +
+      Math.min(1, fingerBones / 24) * 10 +
+      Math.min(1, twistBones / 4) * 5 +
+      Math.min(1, (faceMorphs >= 4 ? 1 : (hasJaw ? 0.5 : 0))) * 5
+    );
+    if (!mapped.hips) score = Math.min(score, 20);
+    score = THREE.MathUtils.clamp(score, 0, 100);
+
+    const needsAutoRig = !mapped.hips || criticalMatched < 10;
+    let grade = 'Needs Auto-Rig';
+    if (!needsAutoRig) {
+      if (score >= 90) grade = 'Pro';
+      else if (score >= 75) grade = 'Good';
+      else grade = 'Basic';
+    }
+
+    return {
+      hasSkeleton: true,
+      totalBones: allBones.length,
+      skinnedMeshCount,
+      staticMeshCount,
+      standard,
+      restPose,
+      mappedCore,
+      maxCore: 22,
+      criticalMatched,
+      criticalTotal: criticalKeys.length,
+      missingCritical,
+      fingerBones,
+      twistBones,
+      hasJaw,
+      faceMorphs,
+      score,
+      grade,
+      needsAutoRig,
+      mappedKeys,
+    };
+  }
+
+  static diagnoseRig(character) {
+    const tmp = new MocapRetargeter(null, null, null);
+    return tmp.diagnoseRig(character);
   }
 
   /**
@@ -1322,7 +1506,7 @@ export class MocapRetargeter {
         }
       }
 
-      // D. Stabilize & Solve Arms
+      // D. Stabilize & Solve Arms (with natural overhead clavicle lift)
       {
         const lSh = v3(f.leftShoulder).applyQuaternion(alignQ);
         const lElb = v3(f.leftElbow).applyQuaternion(alignQ);
@@ -1331,7 +1515,9 @@ export class MocapRetargeter {
         const dLower = this._constrainForearmVector(lWri.clone().sub(lElb), dUpper, hipsFwd);
 
         if (bones.leftShoulder) {
-          solveBone(bones.leftShoulder, dUpper, 0.15, THREE.MathUtils.degToRad(15));
+          const elev = THREE.MathUtils.clamp(dUpper.clone().normalize().dot(torsoUpM), 0, 1);
+          const clavW = 0.16 + elev * 0.22;
+          solveBone(bones.leftShoulder, dUpper, clavW, THREE.MathUtils.degToRad(24));
         }
         solveBone(bones.leftArm, dUpper);
         solveBone(bones.leftForearm, dLower);
@@ -1351,7 +1537,9 @@ export class MocapRetargeter {
         const dLower = this._constrainForearmVector(rWri.clone().sub(rElb), dUpper, hipsFwd);
 
         if (bones.rightShoulder) {
-          solveBone(bones.rightShoulder, dUpper, 0.15, THREE.MathUtils.degToRad(15));
+          const elev = THREE.MathUtils.clamp(dUpper.clone().normalize().dot(torsoUpM), 0, 1);
+          const clavW = 0.16 + elev * 0.22;
+          solveBone(bones.rightShoulder, dUpper, clavW, THREE.MathUtils.degToRad(24));
         }
         solveBone(bones.rightArm, dUpper);
         solveBone(bones.rightForearm, dLower);

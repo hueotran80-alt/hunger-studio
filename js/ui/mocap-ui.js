@@ -25,7 +25,8 @@ import { shouldBlockViewportShortcut } from '../core/interaction-guard.js';
 import { listMotionTemplates, getMotionTemplate } from '../animation/motion-templates.js';
 import { resolveCdnAssetUrl } from '../core/asset-cdn.js';
 import { telemetry } from '../core/telemetry.js';
-import { applyTranslations, onLangChange } from '../core/i18n.js';
+import { applyTranslations, onLangChange, t } from '../core/i18n.js';
+import { listSkeletonTemplates } from '../animation/skeleton-templates.js';
 
 export class MocapUI {
   constructor(app, containerId = 'dock-mocap') {
@@ -61,7 +62,12 @@ export class MocapUI {
 
     this._initUI();
     applyTranslations(this.container);
-    this._unsubLang = onLangChange(() => this.container && applyTranslations(this.container));
+    this._unsubLang = onLangChange(() => {
+      if (!this.container) return;
+      applyTranslations(this.container);
+      this._refreshRigTemplateLabels();
+      this._updateRigDiagnostics(this._resolveTargetCharacter({ includeUnrigged: true }));
+    });
     this._bindEvents();
   }
 
@@ -202,7 +208,7 @@ export class MocapUI {
                 </button>
               </div>
 
-              <div>
+              <div id="mocap-char-dropzone" class="mp-char-dropzone">
                 <label class="mp-label" for="mocap-target-character">Target 3D Character</label>
                 <div class="mp-row" style="margin-bottom: 8px;">
                   <select id="mocap-target-character" class="mp-field" style="flex: 1;">
@@ -210,9 +216,34 @@ export class MocapUI {
                   </select>
                   <button id="btn-mocap-refresh-targets" class="mp-btn mp-btn--icon" title="Rescan scene characters">Refresh</button>
                 </div>
-                <div class="mp-row">
-                  <button id="btn-mocap-load-michelle" class="mp-btn" style="flex: 1;" title="Load Mannequin CC0 rigged humanoid character">+ Mannequin CC0</button>
-                  <button id="btn-mocap-load-soldier" class="mp-btn" style="flex: 1;" title="Load Bot CC0 rigged character">+ Bot CC0</button>
+                <input type="file" id="mocap-char-upload" accept=".glb,.gltf,.vrm,.fbx,.obj,.zip" hidden>
+                <button id="btn-mocap-upload-character" type="button" class="mp-btn mp-btn--upload-char" style="width: 100%; margin-bottom: 8px;" title="Upload your own 3D character (.glb, .gltf, .vrm, .fbx, .obj) or drag &amp; drop here">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M9 16h6v-6h4l-7-7-7 7h4zm-4 2h14v2H5z"/></svg>
+                  <span data-i18n="mocap.uploadChar">Upload 3D Character (.glb, .vrm, .fbx, .obj)</span>
+                </button>
+                <div class="mp-row" style="margin-bottom: 8px;">
+                  <button id="btn-mocap-load-michelle" class="mp-btn" style="flex: 1;" title="Load Studio Athlete CC0 rigged humanoid character (56 bones, 8 ARKit morphs)">+ Studio Athlete (CC0)</button>
+                  <button id="btn-mocap-load-soldier" class="mp-btn" style="flex: 1;" title="Load Cyber Droid CC0 rigged humanoid character (56 bones, ceramic armor)">+ Cyber Droid (CC0)</button>
+                </div>
+
+                <!-- Live Rig Quality Diagnostics + 1-Click Auto-Rig & Skeleton Templates -->
+                <div id="mocap-rig-diagnostics" class="mp-rig-diag">
+                  <div class="mp-rig-diag-head">
+                    <span id="mocap-rig-standard" class="mp-rig-title">No character selected</span>
+                    <span id="mocap-rig-badge" class="mp-rig-badge mp-rig-badge--muted">--</span>
+                  </div>
+                  <div id="mocap-rig-summary" class="mp-rig-summary">Upload a custom .glb/.vrm/.fbx/.obj character or load a CC0 starter rig.</div>
+                  <div class="mp-row" style="margin-top: 6px; gap: 6px;">
+                    <select id="mocap-rig-template" class="mp-field" style="flex: 1; font-size: 11px; padding: 4px 6px;" title="Skeleton template for Auto-Rig or spawning a standalone rig">
+                      ${listSkeletonTemplates().map((tpl) => `<option value="${tpl.id}">${tpl.name}</option>`).join('')}
+                    </select>
+                    <button id="btn-mocap-autorig" type="button" class="mp-btn mp-btn--autorig" style="padding: 4px 9px; font-size: 11px;" title="Auto-fit and bind a pro humanoid skeleton onto an unrigged mesh">
+                      <span data-i18n="mocap.autoRig">Auto-Rig</span>
+                    </button>
+                    <button id="btn-mocap-add-rig-template" type="button" class="mp-btn" style="padding: 4px 8px; font-size: 11px;" title="Spawn selected skeleton template (Human, Animal, Creature, Vehicle) into the 3D scene">
+                      <span data-i18n="mocap.addRig">+ Rig</span>
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>
@@ -631,10 +662,41 @@ export class MocapUI {
     uploadBtn?.addEventListener('click', () => fileInput?.click());
     fileInput?.addEventListener('change', (e) => this._handleFileUpload(e));
 
-    // Target characters
+    // Target characters & Custom 3D Character Upload + Auto-Rig
+    const charUploadBtn = document.getElementById('btn-mocap-upload-character');
+    const charFileInput = document.getElementById('mocap-char-upload');
+    const charDropzone = document.getElementById('mocap-char-dropzone');
+    const autoRigBtn = document.getElementById('btn-mocap-autorig');
+    const addRigTplBtn = document.getElementById('btn-mocap-add-rig-template');
+
+    charUploadBtn?.addEventListener('click', () => charFileInput?.click());
+    charFileInput?.addEventListener('change', (e) => this._handleCharacterUpload(e));
+    if (charDropzone) {
+      charDropzone.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        charDropzone.classList.add('is-dragover');
+      });
+      charDropzone.addEventListener('dragleave', () => {
+        charDropzone.classList.remove('is-dragover');
+      });
+      charDropzone.addEventListener('drop', (e) => {
+        e.preventDefault();
+        charDropzone.classList.remove('is-dragover');
+        const file = e.dataTransfer?.files?.[0];
+        if (file) this.uploadCharacterFile(file);
+      });
+    }
+
+    autoRigBtn?.addEventListener('click', () => this.autoRigSelectedCharacter());
+    addRigTplBtn?.addEventListener('click', () => this.spawnSelectedRigTemplate());
+
     refreshTargetsBtn?.addEventListener('click', () => this.refreshTargetList());
     targetSelect?.addEventListener('change', () => {
-      if (this.mocapData) this.applyRetargeting();
+      const chosen = this._resolveTargetCharacter({ includeUnrigged: true });
+      this._updateRigDiagnostics(chosen);
+      if (this.mocapData && chosen && !this.retargeter.diagnoseRig(chosen).needsAutoRig) {
+        this.applyRetargeting();
+      }
     });
     loadMichelleBtn?.addEventListener('click', () => this._loadPresetCharacter('models/Mannequin_CC0.glb', 'Mannequin_CC0'));
     loadSoldierBtn?.addEventListener('click', () => this._loadPresetCharacter('models/Bot_CC0.glb', 'Bot_CC0'));
@@ -1242,7 +1304,7 @@ export class MocapUI {
   // Manual skeleton editing
   // ---------------------------------------------------------------- //
 
-  _resolveTargetCharacter() {
+  _resolveTargetCharacter({ includeUnrigged = false } = {}) {
     const sm = this.app?.sceneManager || window.sceneManager;
     const targetSelect = document.getElementById('mocap-target-character');
     let target = null;
@@ -1258,8 +1320,25 @@ export class MocapUI {
         obj.traverse((child) => { if (child.isBone) hasBone = true; });
         if (hasBone) { target = obj; break; }
       }
+      if (!target && includeUnrigged) {
+        const active = sm.getActiveObject?.();
+        if (active && this._isCharacterMeshCandidate(active)) target = active;
+      }
     }
     return target;
+  }
+
+  _isCharacterMeshCandidate(obj) {
+    if (!obj || obj.userData?.isSkeletonHelper || obj.userData?.isJointHandle || obj.userData?.isIKHandle) return false;
+    if (obj.isLight || obj.isCamera || obj.userData?.isFloor || obj.userData?.isCyclorama) return false;
+    if (obj.name === 'Cube' && obj.userData?.primitiveType === 'cube' && obj.userData?._autoHiddenForMocap) return false;
+    let hasMesh = false;
+    obj.traverse?.((c) => {
+      if (c.isMesh && !c.userData?.isSkeletonHelper && c.geometry?.attributes?.position?.count >= 8) {
+        hasMesh = true;
+      }
+    });
+    return hasMesh;
   }
 
   async _ensurePoseEditor() {
@@ -3188,6 +3267,7 @@ export class MocapUI {
     select.innerHTML = '';
     const objects = sm.getAllObjects();
     let riggedCount = 0;
+    let unriggedCount = 0;
 
     for (const obj of objects) {
       let boneCount = 0;
@@ -3205,13 +3285,296 @@ export class MocapUI {
       }
     }
 
-    if (riggedCount === 0) {
+    for (const obj of objects) {
+      let boneCount = 0;
+      obj.traverse((child) => { if (child.isBone) boneCount++; });
+      if (boneCount === 0 && obj.userData?.isCustomMocapUpload && this._isCharacterMeshCandidate(obj)) {
+        unriggedCount++;
+        const opt = document.createElement('option');
+        opt.value = obj.id;
+        opt.textContent = `${obj.name} (${t('mocap.unriggedTag', 'Unrigged - Auto-Rig')})`;
+        if (String(obj.id) === String(prevSelected)) opt.selected = true;
+        select.appendChild(opt);
+      }
+    }
+
+    if (riggedCount === 0 && unriggedCount === 0) {
       const opt = document.createElement('option');
       opt.value = '';
-      opt.textContent = '(Auto-load Mannequin CC0 when clicking Analyze & Apply)';
+      opt.textContent = t('mocap.autoLoadPlaceholder', '(Auto-load Studio Athlete CC0 when clicking Analyze & Apply)');
       select.appendChild(opt);
       this._restoreAutoHiddenDefaultCube();
     }
+
+    this._updateRigDiagnostics(this._resolveTargetCharacter({ includeUnrigged: true }));
+  }
+
+  _refreshRigTemplateLabels() {
+    const sel = document.getElementById('mocap-rig-template');
+    if (!sel) return;
+    const isVi = (document.documentElement?.lang || 'en') === 'vi';
+    const cur = sel.value;
+    const templates = listSkeletonTemplates();
+    sel.innerHTML = templates
+      .map((tpl) => `<option value="${tpl.id}">${isVi ? tpl.nameVi : tpl.name}</option>`)
+      .join('');
+    if (cur) sel.value = cur;
+  }
+
+  _updateRigDiagnostics(character) {
+    const stdEl = document.getElementById('mocap-rig-standard');
+    const badgeEl = document.getElementById('mocap-rig-badge');
+    const sumEl = document.getElementById('mocap-rig-summary');
+    const autoRigBtn = document.getElementById('btn-mocap-autorig');
+    if (!stdEl || !badgeEl || !sumEl) return;
+
+    if (!character) {
+      stdEl.textContent = t('mocap.rigNoChar', 'No character selected');
+      badgeEl.textContent = '--';
+      badgeEl.className = 'mp-rig-badge mp-rig-badge--muted';
+      sumEl.textContent = t('mocap.rigEmptyHint', 'Upload a custom .glb/.vrm/.fbx/.obj character or load a CC0 starter rig.');
+      autoRigBtn?.classList.remove('is-highlighted');
+      return;
+    }
+
+    const diag = this.retargeter.diagnoseRig(character);
+    stdEl.textContent = `${character.name || 'Character'} · ${diag.standard}`;
+
+    if (diag.needsAutoRig) {
+      badgeEl.textContent = diag.hasSkeleton ? `${diag.score}/100` : t('mocap.rigUnrigged', 'Unrigged');
+      badgeEl.className = 'mp-rig-badge mp-rig-badge--warn';
+      sumEl.textContent = diag.hasSkeleton
+        ? `${t('mocap.rigIncomplete', 'Missing key humanoid joints')} (${diag.criticalMatched}/${diag.criticalTotal}) — ${t('mocap.rigClickAutoRig', 'click Auto-Rig to bind a pro skeleton.')}`
+        : t('mocap.rigStaticHint', 'Static 3D mesh detected. Click Auto-Rig to automatically fit a 56-bone humanoid skeleton.');
+      autoRigBtn?.classList.add('is-highlighted');
+      return;
+    }
+
+    autoRigBtn?.classList.remove('is-highlighted');
+    badgeEl.textContent = `${diag.grade} ${diag.score}/100`;
+    badgeEl.className = diag.score >= 90
+      ? 'mp-rig-badge mp-rig-badge--pro'
+      : (diag.score >= 75 ? 'mp-rig-badge mp-rig-badge--good' : 'mp-rig-badge mp-rig-badge--warn');
+
+    const parts = [
+      diag.restPose,
+      `${diag.mappedCore}/${diag.maxCore} core`,
+      `${diag.fingerBones} fingers`,
+      `${diag.twistBones} twist`,
+    ];
+    if (diag.faceMorphs > 0) parts.push(`${diag.faceMorphs} face`);
+    sumEl.textContent = parts.join(' · ');
+  }
+
+  _normalizeUploadedCharacter(root) {
+    if (!root) return root;
+    root.updateMatrixWorld(true);
+    const box = new THREE.Box3().setFromObject(root);
+    if (box.isEmpty()) return root;
+
+    const size = box.getSize(new THREE.Vector3());
+    const height = Math.max(1e-4, size.y);
+
+    // Normalize extreme cm/mm/tiny DCC export scales cleanly into human studio scale (~1.72m)
+    if (height > 8.0 || height < 0.25) {
+      const targetScale = 1.72 / height;
+      root.scale.multiplyScalar(targetScale);
+      root.updateMatrixWorld(true);
+      box.setFromObject(root);
+    }
+
+    // Center X/Z around origin and ground lowest foot/sole cleanly onto Y = 0
+    const center = box.getCenter(new THREE.Vector3());
+    root.position.x -= center.x;
+    root.position.z -= center.z;
+    root.position.y -= box.min.y;
+    root.updateMatrixWorld(true);
+    return root;
+  }
+
+  async _handleCharacterUpload(event) {
+    const file = event?.target?.files?.[0];
+    if (event?.target) event.target.value = '';
+    if (!file) return;
+    await this.uploadCharacterFile(file);
+  }
+
+  async uploadCharacterFile(file) {
+    if (!file) return null;
+    const ext = String(file.name || '').split('.').pop().toLowerCase();
+    const supported = new Set(['glb', 'gltf', 'vrm', 'fbx', 'obj', 'zip']);
+    if (!supported.has(ext)) {
+      this._log(`Unsupported 3D character format ".${ext}". Use .glb, .gltf, .vrm, .fbx, .obj, or .zip.`, '#e74c3c');
+      return null;
+    }
+
+    const sm = this.app?.sceneManager || window.sceneManager;
+    const exporter = this.app?.exporter || window.exporter;
+    const cleanName = String(file.name || 'CustomCharacter').replace(/\.[^.]+$/, '').replace(/[^\w.-]+/g, '_') || 'CustomCharacter';
+
+    this._log(`Importing custom 3D character: ${file.name} (${(file.size / 1024 / 1024).toFixed(2)} MB)...`, '#3498db');
+
+    try {
+      let imported = null;
+      if (exporter && typeof exporter.importUniversal === 'function') {
+        const res = await exporter.importUniversal(file, { select: false });
+        imported = res?.object || res?.scene || res || null;
+      } else if (ext === 'glb' || ext === 'gltf' || ext === 'vrm') {
+        const { GLTFLoader } = await import('three/addons/loaders/GLTFLoader.js');
+        const blobUrl = URL.createObjectURL(file);
+        try {
+          const gltf = await new GLTFLoader().loadAsync(blobUrl);
+          imported = gltf.scene || gltf.scenes?.[0] || null;
+          if (imported && sm) sm.addObject(imported);
+        } finally {
+          URL.revokeObjectURL(blobUrl);
+        }
+      } else {
+        throw new Error('Studio model importer is not initialized.');
+      }
+
+      if (!imported || !imported.isObject3D) {
+        throw new Error('No 3D mesh or skeleton found inside uploaded file.');
+      }
+
+      imported.name = cleanName;
+      imported.userData = imported.userData || {};
+      imported.userData.isCustomMocapUpload = true;
+
+      this._normalizeUploadedCharacter(imported);
+      MocapRetargeter.captureBindPose(imported);
+      this._hideUntouchedDefaultCube();
+
+      if (sm) {
+        if (!imported.parent) sm.addObject(imported);
+        sm.setSelection?.([imported]);
+      }
+
+      this.refreshTargetList();
+      const select = document.getElementById('mocap-target-character');
+      if (select) select.value = String(imported.id);
+
+      const diag = this.retargeter.diagnoseRig(imported);
+      this._updateRigDiagnostics(imported);
+
+      const autoCam = document.getElementById('mocap-auto-camera')?.checked !== false;
+      if (autoCam) {
+        this.frameCameraToVideo({
+          target: imported,
+          mode: this.mocapData ? undefined : 'three-quarter',
+          auto: true,
+          silent: true,
+        });
+      }
+
+      telemetry.track('custom_character_uploaded', {
+        ext,
+        standard: diag.standard,
+        score: diag.score,
+        hasSkeleton: diag.hasSkeleton,
+      });
+
+      if (diag.needsAutoRig) {
+        this._log(
+          `Loaded "${cleanName}" (${diag.standard}). Click "Auto-Rig" to automatically fit a 56-bone humanoid skeleton for Mocap.`,
+          '#f39c12'
+        );
+      } else {
+        this._log(
+          `Loaded custom character "${cleanName}" — ${diag.standard} (${diag.grade} ${diag.score}/100 · ${diag.restPose} · ${diag.mappedCore}/22 core, ${diag.fingerBones} fingers).`,
+          '#2ecc71'
+        );
+        if (this.mocapData) {
+          await this.applyRetargeting();
+        }
+      }
+      return imported;
+    } catch (err) {
+      this._log(`Failed to import character "${file.name}": ${err?.message || err}`, '#e74c3c');
+      return null;
+    }
+  }
+
+  async autoRigSelectedCharacter() {
+    const rigSystem = this.app?.rigSystem || window.rigSystem;
+    const sm = this.app?.sceneManager || window.sceneManager;
+    if (!rigSystem || typeof rigSystem.autoRigCharacter !== 'function') {
+      this._log('Rigging engine is not ready.', '#e74c3c');
+      return null;
+    }
+
+    const target = this._resolveTargetCharacter({ includeUnrigged: true }) || sm?.getActiveObject?.();
+    if (!target || !this._isCharacterMeshCandidate(target)) {
+      this._log('Select or upload a 3D mesh character before clicking Auto-Rig.', '#e67e22');
+      return null;
+    }
+
+    const tplSelect = document.getElementById('mocap-rig-template');
+    const selectedTpl = tplSelect?.value || 'humanoid_pro';
+    const templateId = (selectedTpl === 'humanoid_standard' || selectedTpl === 'humanoid_pro')
+      ? selectedTpl
+      : 'humanoid_pro';
+
+    this._log(`Auto-Rigging "${target.name}" with ${templateId} (silhouette joint fitting + Bone Heat weights)...`, '#3498db');
+
+    try {
+      const res = rigSystem.autoRigCharacter(target, {
+        templateId,
+        mode: 'heat',
+        reRig: false,
+      });
+      if (!res?.character) {
+        this._log(`Could not auto-rig "${target.name}" (ensure mesh has static geometry).`, '#e67e22');
+        return null;
+      }
+
+      const riggedChar = res.character;
+      riggedChar.userData = riggedChar.userData || {};
+      riggedChar.userData.isCustomMocapUpload = true;
+      riggedChar.updateMatrixWorld(true);
+      MocapRetargeter.captureBindPose(riggedChar);
+
+      sm?.setSelection?.([riggedChar]);
+      this.refreshTargetList();
+      const select = document.getElementById('mocap-target-character');
+      if (select) select.value = String(riggedChar.id);
+      this._updateRigDiagnostics(riggedChar);
+
+      const poseLabel = res.silhouette?.detectedPose || 'Standard';
+      const q = res.quality || {};
+      this._log(
+        `Auto-Rig complete for "${riggedChar.name}": ${q.boneCount || 56} bones (${poseLabel}), ${q.totalVertices || 0} verts, valid=${q.valid !== false}.`,
+        '#2ecc71'
+      );
+
+      if (this.mocapData) {
+        await this.applyRetargeting();
+      }
+      return res;
+    } catch (err) {
+      this._log(`Auto-Rig failed: ${err?.message || err}`, '#e74c3c');
+      return null;
+    }
+  }
+
+  spawnSelectedRigTemplate() {
+    const rigSystem = this.app?.rigSystem || window.rigSystem;
+    const sm = this.app?.sceneManager || window.sceneManager;
+    const engine = this.app?.engine || window.studioEngine || window.engine;
+    if (!rigSystem || typeof rigSystem.createSkeletonFromTemplate !== 'function') {
+      this._log('Rigging engine is not ready.', '#e74c3c');
+      return null;
+    }
+    const tplId = document.getElementById('mocap-rig-template')?.value || 'humanoid_pro';
+    const res = rigSystem.createSkeletonFromTemplate(tplId, { addToScene: true });
+    if (res?.armatureGroup) {
+      this._hideUntouchedDefaultCube();
+      sm?.setSelection?.([res.armatureGroup]);
+      engine?.focusOn?.(res.armatureGroup);
+      this.refreshTargetList();
+      this._log(`Spawned skeleton template "${res.template?.name || tplId}" (${res.bones?.length || 0} bones).`, '#2ecc71');
+    }
+    return res;
   }
 
   _loadPresetCharacter(url, defaultName, { autoApply = true } = {}) {
@@ -3246,6 +3609,7 @@ export class MocapUI {
           this.refreshTargetList();
           const select = document.getElementById('mocap-target-character');
           if (select) select.value = String(root.id);
+          this._updateRigDiagnostics(root);
 
           // Auto-frame camera cleanly onto loaded character
           const autoCam = document.getElementById('mocap-auto-camera')?.checked !== false;

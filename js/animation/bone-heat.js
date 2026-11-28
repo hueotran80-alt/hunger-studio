@@ -250,7 +250,7 @@ function buildFallbackOcclusionChecker(geom, charScale) {
   const posAttr = geom.attributes.position;
   const idxAttr = geom.index;
   const triCount = idxAttr ? Math.floor(idxAttr.count / 3) : Math.floor(posAttr.count / 3);
-  if (triCount <= 0 || triCount > 35000) return () => false;
+  if (triCount <= 0 || triCount > 65000) return () => false;
 
   const triVerts = new Float32Array(triCount * 9);
   const triGrid = new Map();
@@ -357,6 +357,16 @@ export function computeLaplacianBoneHeatWeights(geom, boneInfos, options = {}) {
   const boneCount = boneInfos.length;
   const charScale = Math.max(0.05, options.charScale || diagSize);
   const sideDeadband = options.sideDeadband || charScale * 0.03;
+  let symmetryCenterX = Number(options.symmetryCenterX);
+  if (!Number.isFinite(symmetryCenterX)) {
+    let minX = Infinity, maxX = -Infinity;
+    for (let li = 0; li < logicalCount; li++) {
+      const x = logicalCoords[li * 3];
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+    }
+    symmetryCenterX = Number.isFinite(minX) && Number.isFinite(maxX) ? (minX + maxX) * 0.5 : 0;
+  }
   const isSegmentOccluded = typeof options.isSegmentOccluded === 'function'
     ? options.isSegmentOccluded
     : buildFallbackOcclusionChecker(geom, charScale);
@@ -377,7 +387,8 @@ export function computeLaplacianBoneHeatWeights(geom, boneInfos, options = {}) {
     const ny = logicalNormals[li * 3 + 1];
     const nz = logicalNormals[li * 3 + 2];
 
-    const vertSide = px > sideDeadband ? 'left' : (px < -sideDeadband ? 'right' : 'center');
+    const relX = px - symmetryCenterX;
+    const vertSide = relX > sideDeadband ? 'left' : (relX < -sideDeadband ? 'right' : 'center');
     const ox = px - nx * charScale * 0.004;
     const oy = py - ny * charScale * 0.004;
     const oz = pz - nz * charScale * 0.004;
@@ -459,7 +470,8 @@ export function computeLaplacianBoneHeatWeights(geom, boneInfos, options = {}) {
       for (let q = 0; q < qTail; q++) {
         const li = queue[q];
         const px = logicalCoords[li * 3], py = logicalCoords[li * 3 + 1], pz = logicalCoords[li * 3 + 2];
-        const vertSide = px > sideDeadband ? 'left' : (px < -sideDeadband ? 'right' : 'center');
+        const relX = px - symmetryCenterX;
+        const vertSide = relX > sideDeadband ? 'left' : (relX < -sideDeadband ? 'right' : 'center');
         let bestBi = 0, bestD = Infinity;
         for (let bi = 0; bi < boneCount; bi++) {
           const b = boneInfos[bi];
@@ -549,4 +561,65 @@ export function computeLaplacianBoneHeatWeights(geom, boneInfos, options = {}) {
   }
 
   return { skinIndices, skinWeights, logicalCount };
+}
+
+/**
+ * Validate normalized skin weights on a SkinnedMesh BufferGeometry.
+ * Reports unbound vertices, NaNs, weight-sum drift, and average active influences.
+ */
+export function validateSkinWeights(geom, boneCount = 0) {
+  const posAttr = geom?.attributes?.position;
+  const idxAttr = geom?.attributes?.skinIndex;
+  const wgtAttr = geom?.attributes?.skinWeight;
+  const vertexCount = posAttr ? posAttr.count : 0;
+  if (!posAttr || !idxAttr || !wgtAttr || vertexCount === 0) {
+    return {
+      valid: false,
+      vertexCount,
+      unboundCount: vertexCount,
+      nanCount: 0,
+      outOfRangeIndexCount: 0,
+      maxSumDrift: 1,
+      avgInfluences: 0,
+    };
+  }
+
+  let unboundCount = 0;
+  let nanCount = 0;
+  let outOfRangeIndexCount = 0;
+  let maxSumDrift = 0;
+  let totalActive = 0;
+
+  for (let i = 0; i < vertexCount; i++) {
+    const w0 = wgtAttr.getX(i), w1 = wgtAttr.getY(i), w2 = wgtAttr.getZ(i), w3 = wgtAttr.getW(i);
+    if (!Number.isFinite(w0) || !Number.isFinite(w1) || !Number.isFinite(w2) || !Number.isFinite(w3)) {
+      nanCount++;
+      continue;
+    }
+    const sum = w0 + w1 + w2 + w3;
+    if (sum < 1e-4) unboundCount++;
+    const drift = Math.abs(sum - 1.0);
+    if (drift > maxSumDrift) maxSumDrift = drift;
+
+    const ws = [w0, w1, w2, w3];
+    const idxs = [idxAttr.getX(i), idxAttr.getY(i), idxAttr.getZ(i), idxAttr.getW(i)];
+    for (let k = 0; k < 4; k++) {
+      if (ws[k] > 1e-4) {
+        totalActive++;
+        if (boneCount > 0 && (idxs[k] < 0 || idxs[k] >= boneCount)) {
+          outOfRangeIndexCount++;
+        }
+      }
+    }
+  }
+
+  return {
+    valid: nanCount === 0 && unboundCount === 0 && outOfRangeIndexCount === 0 && maxSumDrift < 0.02,
+    vertexCount,
+    unboundCount,
+    nanCount,
+    outOfRangeIndexCount,
+    maxSumDrift: Number(maxSumDrift.toFixed(5)),
+    avgInfluences: Number((totalActive / vertexCount).toFixed(2)),
+  };
 }

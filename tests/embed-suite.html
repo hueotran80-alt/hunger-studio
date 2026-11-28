@@ -143,7 +143,7 @@
       assert(Math.abs(viewer.getState().time - pausedAt) < 1e-6, 'pause did not stop time');
       assert(viewer.seek(5) && Math.abs(viewer.getState().time - 5) < 1e-3, 'seek failed');
       viewer.play();
-      await sleep(250);
+      await waitFor(() => viewer.getState().time > 5, 2500);
       assert(viewer.getState().time > 5, 'play did not advance after seek');
       viewer.dispose();
       assert(!frame.contentDocument.querySelector('#embed-host canvas'), 'dispose left the canvas');

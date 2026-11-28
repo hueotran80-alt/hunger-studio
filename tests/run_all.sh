@@ -554,6 +554,7 @@ if command -v node >/dev/null 2>&1; then
   node --import ./tests/three-resolve-hooks.mjs tests/test_agent_shortcuts.mjs || status=1
   node --import ./tests/three-resolve-hooks.mjs tests/test_p1_hardening.mjs || status=1
   node --import ./tests/three-resolve-hooks.mjs tests/test_beta_motion_telemetry.mjs || status=1
+  node --import ./tests/three-resolve-hooks.mjs tests/test_skeleton_templates_and_rig_pro.mjs || status=1
 else
   echo "SKIP: node not found"
 fi

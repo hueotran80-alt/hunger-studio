@@ -64,13 +64,26 @@ export class PoseShelf {
           <button class="shelf-tool-btn" id="btn-shelf-reset" title="Reset all bones to original Rest Pose">
             🔄 Reset Pose
           </button>
+          <select id="sel-shelf-rig-template" title="Skeleton Template Preset (Human, Animal, Creature, Vehicle)" style="background: var(--b-bg-input); color: var(--b-text-primary); border: 1px solid var(--b-border-dark); border-radius: 3px; padding: 2px 4px; font-size: 11px;">
+            <option value="humanoid_pro">Rig: Humanoid Pro (56)</option>
+            <option value="humanoid_standard">Rig: Humanoid Std (22)</option>
+            <option value="quadruped">Rig: Quadruped (34)</option>
+            <option value="bird">Rig: Bird / Winged (28)</option>
+            <option value="fish">Rig: Fish / Aquatic (14)</option>
+            <option value="serpent">Rig: Snake / Dragon (15)</option>
+            <option value="arachnid">Rig: Spider / Mech (38)</option>
+            <option value="vehicle">Rig: Vehicle / Rover (11)</option>
+          </select>
+          <button class="shelf-tool-btn" id="btn-shelf-add-rig" title="Add selected skeleton template to scene">
+            + Add Rig
+          </button>
           <select id="sel-shelf-skin-mode" title="Automatic Skinning Weight Solver" style="background: var(--b-bg-input); color: var(--b-text-primary); border: 1px solid var(--b-border-dark); border-radius: 3px; padding: 2px 4px; font-size: 11px;">
             <option value="heat" selected>Bone Heat</option>
             <option value="geodesic">Geodesic</option>
             <option value="euclidean">Distance</option>
           </select>
-          <button class="shelf-tool-btn highlight" id="btn-shelf-auto-skin" title="Automatically compute weights and bind armature to selected mesh">
-            🔗 Auto-Skin
+          <button class="shelf-tool-btn highlight" id="btn-shelf-auto-skin" title="Automatically fit/bind skeleton and compute weights for selected mesh or character group">
+            Auto-Rig / Skin
           </button>
           <button class="btn-toggle-pose-mode" id="btn-toggle-pose-mode" title="Toggle Pose Mode (Click bones to rotate)">
             <span class="mode-dot"></span>
@@ -591,29 +604,54 @@ export class PoseShelf {
       }
     });
 
-    // Auto-Skinning
+    // Add Skeleton Template
+    this.panel.querySelector('#btn-shelf-add-rig')?.addEventListener('click', () => {
+      if (!this.rigSystem) return;
+      const tplId = this.panel.querySelector('#sel-shelf-rig-template')?.value || 'humanoid_pro';
+      const res = this.rigSystem.createSkeletonFromTemplate(tplId, { addToScene: true });
+      if (res?.armatureGroup && this.sceneManager) {
+        this.sceneManager.select(res.armatureGroup);
+      }
+      if (res && window.codeEditor) {
+        window.codeEditor.log('success', `Added skeleton template [${res.template?.name || tplId}] (${res.bones?.length || 0} bones).`);
+      }
+    });
+
+    // Auto-Rig / Auto-Skinning (handles both single Mesh + existing armature and full Group Auto-Rig)
     this.panel.querySelector('#btn-shelf-auto-skin')?.addEventListener('click', () => {
-      if (this.rigSystem) {
-        let target = this.sceneManager ? this.sceneManager.getActiveObject() : null;
-        if (!target || !target.isMesh) {
-          if (window.codeEditor) {
-            window.codeEditor.log('warn', '⚠️ Select a Mesh object in the scene before running Auto-Skin!');
+      if (!this.rigSystem) return;
+      const target = this.sceneManager ? this.sceneManager.getActiveObject() : null;
+      if (!target) {
+        if (window.codeEditor) {
+          window.codeEditor.log('warn', 'Select a Mesh or Character Group in the scene before running Auto-Rig / Skin.');
+        }
+        return;
+      }
+      const mode = this.panel.querySelector('#sel-shelf-skin-mode')?.value || 'heat';
+      const tplId = this.panel.querySelector('#sel-shelf-rig-template')?.value || 'humanoid_pro';
+      let sceneArmature = null;
+      if (window.scene) {
+        window.scene.traverse(o => {
+          if (!sceneArmature && (o.userData?.isArmature || o.userData?.skeleton || o.isSkeleton)) {
+            sceneArmature = o;
           }
-          return;
-        }
-        let sceneArmature = null;
-        if (window.scene) {
-          window.scene.traverse(o => {
-            if (!sceneArmature && (o.userData?.isArmature || o.userData?.skeleton || o.isSkeleton)) {
-              sceneArmature = o;
-            }
-          });
-        }
-        const mode = this.panel.querySelector('#sel-shelf-skin-mode')?.value || 'heat';
+        });
+      }
+      if (target.isMesh && sceneArmature) {
         const skinned = this.rigSystem.autoSkinMesh(target, sceneArmature, { mode });
         if (skinned && this.sceneManager) {
           this.sceneManager.select(skinned);
         }
+        return;
+      }
+      const rigged = this.rigSystem.autoRigCharacter(target, { templateId: tplId, mode });
+      if (rigged?.character) {
+        this.sceneManager?.select(rigged.character);
+        if (window.codeEditor) {
+          window.codeEditor.log('success', `Auto-Rigged "${rigged.character.name}" (${rigged.quality?.boneCount || 0} bones, ${rigged.silhouette?.detectedPose || 'Standard'}).`);
+        }
+      } else if (window.codeEditor) {
+        window.codeEditor.log('warn', 'Select a Mesh or Character Group with geometry to Auto-Rig.');
       }
     });
 

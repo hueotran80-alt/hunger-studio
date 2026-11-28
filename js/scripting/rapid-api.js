@@ -2523,6 +2523,36 @@ export class RapidStudio {
   }
 
   /**
+   * Create a skeleton armature from any multi-asset template:
+   * 'humanoid_standard', 'humanoid_pro', 'quadruped', 'bird', 'fish', 'serpent', 'arachnid', 'vehicle'.
+   */
+  createSkeletonTemplate(templateId = 'humanoid_pro', { size, height, pose = 't-pose', x = 0, y = 0, z = 0, name } = {}) {
+    if (typeof window !== 'undefined' && window.rigSystem) {
+      const res = window.rigSystem.createSkeletonFromTemplate(templateId, {
+        size: size ?? height,
+        pose,
+        addToScene: false,
+        name,
+      });
+      res.armatureGroup.position.set(x, y, z);
+      this._register(res.armatureGroup, res.armatureGroup.name);
+      window.rigSystem.createSkeletonVisualizer(res.skeleton, res.armatureGroup);
+      return res;
+    }
+    return null;
+  }
+
+  /**
+   * Automatically fit & bind a skeleton to any static mesh or multi-mesh character Group.
+   */
+  autoRigCharacter(target, options = {}) {
+    if (typeof window !== 'undefined' && window.rigSystem) {
+      return window.rigSystem.autoRigCharacter(target, options);
+    }
+    return null;
+  }
+
+  /**
    * Create and register a fully articulated Anatomical Mannequin (ready for posing)
    */
   createRiggedMannequin({ height = 1.8, skinned = true, x = 0, y = 0, z = 0, name = 'Articulated_Mannequin' } = {}) {
