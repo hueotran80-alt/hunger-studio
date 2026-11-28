@@ -942,6 +942,25 @@ class BlenderApp {
     return this._cloudPanelPromise;
   }
 
+  async _ensureFeedbackDialog() {
+    if (this.feedbackDialog) return this.feedbackDialog;
+    if (!this._feedbackDialogPromise) {
+      this._feedbackDialogPromise = import('./ui/feedback-dialog.js')
+        .then(({ FeedbackDialog }) => {
+          if (!this.feedbackDialog) {
+            this.feedbackDialog = new FeedbackDialog(this);
+            window.feedbackDialog = this.feedbackDialog;
+          }
+          return this.feedbackDialog;
+        })
+        .catch((err) => {
+          this._feedbackDialogPromise = null;
+          throw err;
+        });
+    }
+    return this._feedbackDialogPromise;
+  }
+
   async _ensureShareDialog() {
     if (!this.shareDialog) {
       const { ShareDialog } = await import('./ui/share-dialog.js');
@@ -1246,6 +1265,17 @@ class BlenderApp {
         this.aiCopilot.openSettings();
       }
     });
+
+    const openFeedback = async () => {
+      try {
+        const dialog = await this._ensureFeedbackDialog();
+        dialog.open();
+      } catch (err) {
+        console.error('[FeedbackDialog] Failed to open:', err);
+      }
+    };
+    document.getElementById('btn-beta-feedback')?.addEventListener('click', openFeedback);
+    document.getElementById('btn-help-feedback')?.addEventListener('click', openFeedback);
 
     document.getElementById('btn-help-about')?.addEventListener('click', () => {
       this._showInfoDialog(

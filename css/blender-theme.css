@@ -453,6 +453,23 @@ html, body {
   font-family: var(--b-font-mono);
 }
 
+.header-feedback-btn {
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--b-border-light);
+  background: var(--b-bg-panel);
+  color: var(--b-text-primary);
+  font-size: var(--b-font-size-xs);
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.header-feedback-btn:hover {
+  background: var(--b-accent-blue);
+  border-color: var(--b-accent-blue);
+  color: #fff;
+}
+
 /* ==========================================================================
    Main Workspace Layout
    ========================================================================== */

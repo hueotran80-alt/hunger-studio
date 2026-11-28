@@ -20,7 +20,7 @@ export { StudioBridgeHub } from './bridge-do.js';
 
 const EXEC_WORKER_RE = /^\/(?:assets\/(?:agent|copilot)-exec-worker-[A-Za-z0-9_-]+\.js|js\/(?:agent\/agent|ai\/copilot)-exec-worker\.js)$/;
 const R2_PREFIXES = ['/models/', '/vendor/mediapipe/', '/assets/characters/', '/assets/environments/'];
-const NATIVE_API_PATHS = new Set(['/healthz', '/api/status', '/api/config', '/api/ai/chat', '/api/telemetry/event', '/api/telemetry/summary']);
+const NATIVE_API_PATHS = new Set(['/healthz', '/api/status', '/api/config', '/api/ai/chat', '/api/telemetry/event', '/api/telemetry/summary', '/api/telemetry/feedback']);
 const LANDING_PATHS = new Set(['/motion', '/motion/', '/motion.html', '/landing', '/landing/']);
 
 const EXEC_WORKER_CSP =

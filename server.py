@@ -91,7 +91,88 @@ mocap_engine = None
 
 _TELEMETRY_LOCK = threading.Lock()
 _TELEMETRY_EVENTS = deque(maxlen=500)
+_FEEDBACK_ITEMS = deque(maxlen=500)
+_FEEDBACK_SEQ = 0
 _TELEMETRY_SYNTHETIC_RE = re.compile(r'^(?:sentry-smoke|smoke-|ci-smoke|test-smoke)', re.IGNORECASE)
+_FEEDBACK_CATEGORIES = frozenset(('bug', 'mocap', 'export', 'performance', 'feature', 'other'))
+_PII_EMAIL_RE = re.compile(r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}')
+_PII_TOKEN_RE = re.compile(r'(?:Bearer\s+|eyJ)[A-Za-z0-9._-]{12,}', re.IGNORECASE)
+_PII_PATH_RE = re.compile(r'(?:/Users/[^/\s]+|/home/[^/\s]+|[A-Za-z]:\\Users\\[^\\\s]+)')
+
+
+def _sanitize_feedback_text(raw, max_len=1500):
+    text = str(raw or '').strip()
+    text = _PII_EMAIL_RE.sub('[redacted-email]', text)
+    text = _PII_TOKEN_RE.sub('[redacted-token]', text)
+    text = _PII_PATH_RE.sub('[redacted-path]', text)
+    return text[:max_len]
+
+
+def _record_feedback_item(payload, user_agent=''):
+    global _FEEDBACK_SEQ
+    if not isinstance(payload, dict):
+        return None
+    message = _sanitize_feedback_text(payload.get('message', ''), 1500)
+    if len(message) < 3:
+        return None
+    category = str(payload.get('category') or 'bug').strip().lower()
+    if category not in _FEEDBACK_CATEGORIES:
+        category = 'other'
+    raw_rating = payload.get('rating')
+    rating = None
+    if raw_rating is not None and raw_rating != '':
+        try:
+            r = int(raw_rating)
+            if 1 <= r <= 5:
+                rating = r
+        except (TypeError, ValueError):
+            rating = None
+    with _TELEMETRY_LOCK:
+        _FEEDBACK_SEQ += 1
+        item = {
+            'id': _FEEDBACK_SEQ,
+            'ts': str(payload.get('ts') or time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()))[:40],
+            'sessionId': str(payload.get('sessionId') or '')[:64],
+            'release': str(payload.get('release') or 'hunger-motion@0.9.0-beta.2')[:64],
+            'environment': 'development',
+            'workspace': str(payload.get('workspace') or 'unknown')[:32],
+            'templateId': str(payload.get('templateId') or '')[:48] or None,
+            'category': category,
+            'rating': rating,
+            'message': message,
+            'userAgent': str(user_agent or '')[:180],
+        }
+        _FEEDBACK_ITEMS.append(item)
+        return item
+
+
+def _list_feedback_items(limit=50, category=''):
+    cat = str(category or '').strip().lower()
+    with _TELEMETRY_LOCK:
+        items = list(_FEEDBACK_ITEMS)
+    if cat:
+        items = [it for it in items if it.get('category') == cat]
+    items.reverse()
+    items = items[:max(1, min(200, int(limit or 50)))]
+    return {
+        'ok': True,
+        'storage': 'dev-memory',
+        'count': len(items),
+        'items': items,
+    }
+
+
+def _check_telemetry_admin_header(headers):
+    import hmac
+    expected = (os.environ.get('TELEMETRY_ADMIN_TOKEN') or '').strip()
+    if not expected:
+        return True
+    provided = (headers.get('X-Telemetry-Admin-Token') or '').strip()
+    if not provided:
+        auth = (headers.get('Authorization') or '').strip()
+        if auth.lower().startswith('bearer '):
+            provided = auth[7:].strip()
+    return bool(provided) and hmac.compare_digest(provided, expected)
 
 
 def _record_telemetry_events(events, batch_session_id=''):
@@ -124,6 +205,7 @@ def _record_telemetry_events(events, batch_session_id=''):
 def _telemetry_summary():
     with _TELEMETRY_LOCK:
         rows = [r for r in _TELEMETRY_EVENTS if not r.get('isSynthetic')]
+        fb_count = len(_FEEDBACK_ITEMS)
     sessions = set()
     crashed = set()
     fatal_errors = 0
@@ -203,6 +285,7 @@ def _telemetry_summary():
         "storage": "dev-memory",
         "environment": "development",
         "sentryConfigured": bool(os.environ.get("SENTRY_DSN")),
+        "feedbackCount": fb_count,
         "kpi": {
             "sessions": sess_count,
             "crashedSessions": crashed_count,
@@ -215,7 +298,7 @@ def _telemetry_summary():
             "medianInteractiveMs": med(interactive),
             "medianTimeToFirstAnimationSec": med(ttfa),
         },
-        "funnel": funnel,
+        "funnel": {**funnel, "feedbackSubmitted": fb_count},
     }
 mocap_engine_error = None
 _mocap_load_attempted = False
@@ -2240,7 +2323,17 @@ class BlenderStudioHTTPRequestHandler(SimpleHTTPRequestHandler):
             return super().do_GET()
 
         if path == '/api/telemetry/summary':
+            if not _check_telemetry_admin_header(self.headers):
+                return self._send_json(401, {"ok": False, "error": "Telemetry admin token required."})
             return self._send_json(200, _telemetry_summary())
+
+        if path == '/api/telemetry/feedback':
+            if not _check_telemetry_admin_header(self.headers):
+                return self._send_json(401, {"ok": False, "error": "Telemetry admin token required."})
+            qs = parse_qs(urlparse(self.path).query)
+            limit = int((qs.get('limit') or ['50'])[0]) if str((qs.get('limit') or ['50'])[0]).isdigit() else 50
+            category = (qs.get('category') or [''])[0]
+            return self._send_json(200, _list_feedback_items(limit=limit, category=category))
 
         if path.startswith('/api/cloud/'):
             return self._handle_cloud('GET', path)
@@ -2651,6 +2744,12 @@ class BlenderStudioHTTPRequestHandler(SimpleHTTPRequestHandler):
                 "ok": True,
                 "accepted": accepted,
             })
+
+        if path == '/api/telemetry/feedback':
+            item = _record_feedback_item(body if isinstance(body, dict) else {}, self.headers.get('User-Agent', ''))
+            if not item:
+                return self._send_json(400, {"ok": False, "error": "Please provide at least 3 characters of feedback."})
+            return self._send_json(201, {"ok": True, "id": item['id'], "persisted": True})
 
         # REST API: Headless Blender .blend -> .glb conversion
         if path == '/api/import/blend':

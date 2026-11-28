@@ -64,7 +64,13 @@ export default defineConfig(({ mode } = {} as { mode?: string }) => {
       MOTAPIS_API_KEYS: bindings.secret(),
       GEMINI_API_KEY: bindings.secret(),
       OPENAI_API_KEY: bindings.secret(),
-      ...(isStaging ? { SENTRY_DSN: bindings.secret() } : {}),
+      ...(isStaging ? {
+        SENTRY_DSN: bindings.secret(),
+        TELEMETRY_ADMIN_TOKEN: bindings.secret(),
+      } : {}),
+      ...(!isStaging && process.env.TELEMETRY_ADMIN_BIND_SECRET === '1' ? {
+        TELEMETRY_ADMIN_TOKEN: bindings.secret(),
+      } : {}),
       // Public non-secret AI defaults, environment tag & credit pricing
       STUDIO_ENV: bindings.text(isStaging ? 'staging' : 'production'),
       AI_RATE_LIMIT_PER_MIN: bindings.text(isStaging ? '60' : '30'),
@@ -77,8 +83,9 @@ export default defineConfig(({ mode } = {} as { mode?: string }) => {
       COST_SAVE_PROJECT: bindings.text(process.env.COST_SAVE_PROJECT || '0'),
       COST_UPLOAD_ASSET: bindings.text(process.env.COST_UPLOAD_ASSET || '0'),
       COST_AI_CHAT: bindings.text(process.env.COST_AI_CHAT || '0'),
-      OAUTH_GOOGLE_ENABLED: bindings.text(process.env.OAUTH_GOOGLE_ENABLED || 'true'),
-      OAUTH_GITHUB_ENABLED: bindings.text(process.env.OAUTH_GITHUB_ENABLED || 'true'),
+      // Default "auto" syncs Google/GitHub OAuth visibility directly from Supabase /auth/v1/settings
+      OAUTH_GOOGLE_ENABLED: bindings.text(process.env.OAUTH_GOOGLE_ENABLED || 'auto'),
+      OAUTH_GITHUB_ENABLED: bindings.text(process.env.OAUTH_GITHUB_ENABLED || 'auto'),
       ...(process.env.ALLOW_TEST_BILLING ? { ALLOW_TEST_BILLING: bindings.text(process.env.ALLOW_TEST_BILLING) } : {}),
       ...(process.env.SEPAY_BANK ? { SEPAY_BANK: bindings.text(process.env.SEPAY_BANK) } : {}),
       ...(process.env.SEPAY_ACCOUNT ? { SEPAY_ACCOUNT: bindings.text(process.env.SEPAY_ACCOUNT) } : {}),
