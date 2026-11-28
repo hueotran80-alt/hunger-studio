@@ -25,6 +25,7 @@ import { shouldBlockViewportShortcut } from '../core/interaction-guard.js';
 import { listMotionTemplates, getMotionTemplate } from '../animation/motion-templates.js';
 import { resolveCdnAssetUrl } from '../core/asset-cdn.js';
 import { telemetry } from '../core/telemetry.js';
+import { applyTranslations, onLangChange } from '../core/i18n.js';
 
 export class MocapUI {
   constructor(app, containerId = 'dock-mocap') {
@@ -59,6 +60,8 @@ export class MocapUI {
     this.boneConnections = POSE_BONE_CONNECTIONS;
 
     this._initUI();
+    applyTranslations(this.container);
+    this._unsubLang = onLangChange(() => this.container && applyTranslations(this.container));
     this._bindEvents();
   }
 

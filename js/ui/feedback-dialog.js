@@ -5,6 +5,7 @@
  */
 
 import { telemetry } from '../core/telemetry.js';
+import { t, applyTranslations, onLangChange } from '../core/i18n.js';
 
 const STYLE_ID = 'hunger-feedback-dialog-style';
 
@@ -171,24 +172,24 @@ export class FeedbackDialog {
     backdrop.innerHTML = `
       <div class="fb-card" role="dialog" aria-modal="true" aria-labelledby="fb-dialog-title">
         <div class="fb-head">
-          <h3 class="fb-title" id="fb-dialog-title">Beta Feedback &amp; Bug Report</h3>
+          <h3 class="fb-title" id="fb-dialog-title" data-i18n="fb.title">Beta Feedback &amp; Bug Report</h3>
           <button type="button" class="fb-close" id="fb-close" aria-label="Close">&times;</button>
         </div>
         <form id="fb-form">
           <div class="fb-body">
             <label class="fb-label">
-              <span>Category</span>
+              <span data-i18n="fb.category">Category</span>
               <select class="fb-select" id="fb-category">
-                <option value="bug">Bug report</option>
-                <option value="mocap">Mocap / Tracking</option>
-                <option value="export">GLB / Export</option>
-                <option value="performance">Performance / Load speed</option>
-                <option value="feature">Feature request</option>
-                <option value="other">Other</option>
+                <option value="bug" data-i18n="fb.cat.bug">Bug report</option>
+                <option value="mocap" data-i18n="fb.cat.mocap">Mocap / Tracking</option>
+                <option value="export" data-i18n="fb.cat.export">GLB / Export</option>
+                <option value="performance" data-i18n="fb.cat.performance">Performance / Load speed</option>
+                <option value="feature" data-i18n="fb.cat.feature">Feature request</option>
+                <option value="other" data-i18n="fb.cat.other">Other</option>
               </select>
             </label>
             <div class="fb-label">
-              <span>Experience rating (optional, 1 = poor, 5 = great)</span>
+              <span data-i18n="fb.ratingLabel">Experience rating (optional, 1 = poor, 5 = great)</span>
               <div class="fb-rating-row" id="fb-rating-row">
                 <button type="button" class="fb-rate-btn" data-rating="1" aria-pressed="false">1</button>
                 <button type="button" class="fb-rate-btn" data-rating="2" aria-pressed="false">2</button>
@@ -198,21 +199,24 @@ export class FeedbackDialog {
               </div>
             </div>
             <label class="fb-label">
-              <span>What happened or what should we improve?</span>
+              <span data-i18n="fb.messageLabel">What happened or what should we improve?</span>
               <textarea class="fb-textarea" id="fb-message" maxlength="1500" required
+                data-i18n-placeholder="fb.placeholder"
                 placeholder="Describe the steps, video format, rig, or suggestion..."></textarea>
             </label>
             <div class="fb-meta" id="fb-meta"></div>
             <div class="fb-status" id="fb-status" aria-live="polite"></div>
           </div>
           <div class="fb-foot">
-            <button type="button" class="fb-btn" id="fb-cancel">Cancel</button>
-            <button type="submit" class="fb-btn primary" id="fb-submit">Send Feedback</button>
+            <button type="button" class="fb-btn" id="fb-cancel" data-i18n="fb.cancel">Cancel</button>
+            <button type="submit" class="fb-btn primary" id="fb-submit" data-i18n="fb.submit">Send Feedback</button>
           </div>
         </form>
       </div>
     `;
     document.body.appendChild(backdrop);
+    applyTranslations(backdrop);
+    this._unsubLang = onLangChange(() => applyTranslations(backdrop));
 
     this._els = {
       backdrop,
@@ -272,8 +276,9 @@ export class FeedbackDialog {
       this._els.category.value = defaultCategory;
     }
     const ctx = this._getContext();
+    applyTranslations(this._els.backdrop);
     this._els.meta.textContent =
-      `Context sent: workspace=${ctx.workspace}${ctx.templateId ? `, template=${ctx.templateId}` : ''}, release=${ctx.release}. No personal email or local files are uploaded.`;
+      `workspace=${ctx.workspace}${ctx.templateId ? `, template=${ctx.templateId}` : ''}, release=${ctx.release}. ${t('fb.contextNote')}`;
     this._els.status.textContent = '';
     this._els.status.className = 'fb-status';
     this._els.backdrop.hidden = false;
@@ -288,7 +293,7 @@ export class FeedbackDialog {
     if (this.busy) return;
     const message = String(this._els.message.value || '').trim();
     if (message.length < 3) {
-      this._els.status.textContent = 'Please enter at least 3 characters.';
+      this._els.status.textContent = t('fb.minChars');
       this._els.status.className = 'fb-status err';
       return;
     }
@@ -296,7 +301,7 @@ export class FeedbackDialog {
     const ctx = this._getContext();
     this.busy = true;
     this._els.submit.disabled = true;
-    this._els.status.textContent = 'Sending feedback...';
+    this._els.status.textContent = t('fb.sending');
     this._els.status.className = 'fb-status';
     try {
       const resp = await fetch('/api/telemetry/feedback', {
@@ -321,11 +326,11 @@ export class FeedbackDialog {
       this._els.message.value = '';
       this.rating = null;
       this._syncRatingButtons();
-      this._els.status.textContent = 'Thank you. Your feedback has been recorded.';
+      this._els.status.textContent = t('fb.success');
       this._els.status.className = 'fb-status ok';
       setTimeout(() => this.close(), 1100);
     } catch (err) {
-      this._els.status.textContent = `Could not send feedback: ${err?.message || err}`;
+      this._els.status.textContent = `${t('fb.errorPrefix')} ${err?.message || err}`;
       this._els.status.className = 'fb-status err';
     } finally {
       this.busy = false;

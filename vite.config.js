@@ -237,6 +237,12 @@ function shipRuntimeAssets() {
         console.log(`[ship-assets] ${dir}/: ${stats.copied} files, ${mb(stats.bytes)}${skipped}`);
       }
 
+      const brandDir = path.resolve(root, 'assets/brand');
+      if (fs.existsSync(brandDir)) {
+        const stats = copyTreeFiltered(brandDir, path.resolve(outDir, 'assets/brand'));
+        console.log(`[ship-assets] assets/brand/: ${stats.copied} files, ${mb(stats.bytes)}`);
+      }
+
       const animDir = path.resolve(root, 'assets/animations');
       if (shipAll && fs.existsSync(animDir)) {
         const stats = copyTreeFiltered(animDir, path.resolve(outDir, 'assets/animations'));

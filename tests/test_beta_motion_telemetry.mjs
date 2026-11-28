@@ -293,4 +293,36 @@ await test('11. Beta Feedback button and dialog are wired lazily with zero eager
   assert.ok(dialogSrc.includes('/api/telemetry/feedback'), 'FeedbackDialog must post to /api/telemetry/feedback');
 });
 
+await test('12. VI/EN language switcher and raster brand logo images are wired cleanly across Studio and /motion', async () => {
+  const i18n = await import('../js/core/i18n.js');
+  assert.equal(i18n.getLang(), 'en');
+  assert.equal(i18n.t('menu.file'), 'File');
+  assert.equal(i18n.setLang('vi', { persist: false, apply: false }), 'vi');
+  assert.equal(i18n.t('menu.file'), 'Tệp');
+  assert.equal(i18n.t('header.feedback'), 'Góp ý');
+  assert.equal(i18n.t('mocap.exportGlb'), '⬇ Xuất GLB');
+  assert.equal(i18n.toggleLang(), 'en');
+  assert.equal(i18n.t('header.feedback'), 'Feedback');
+
+  // Verify real PNG brand logo files exist with PNG magic signature
+  for (const fname of ['hunger-logo-64.png', 'hunger-logo-128.png', 'hunger-logo-512.png']) {
+    const p = path.join(ROOT, 'assets/brand', fname);
+    assert.ok(fs.existsSync(p), `Missing brand logo image: ${fname}`);
+    const buf = fs.readFileSync(p);
+    assert.equal(buf[0], 0x89);
+    assert.equal(buf[1], 0x50);
+    assert.equal(buf[2], 0x4e);
+    assert.equal(buf[3], 0x47);
+  }
+
+  const indexHtml = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
+  assert.ok(indexHtml.includes('id="btn-lang-toggle"'), 'index.html must expose #btn-lang-toggle');
+  assert.ok(indexHtml.includes('id="btn-help-lang"'), 'index.html must expose #btn-help-lang');
+  assert.ok(indexHtml.includes('assets/brand/hunger-logo-64.png'), 'index.html must use generated PNG brand logo');
+
+  const motionHtml = fs.readFileSync(path.join(ROOT, 'motion.html'), 'utf8');
+  assert.ok(motionHtml.includes('id="motion-lang-toggle"'), 'motion.html must expose #motion-lang-toggle');
+  assert.ok(motionHtml.includes('/assets/brand/hunger-logo-128.png'), 'motion.html must use generated PNG brand logo');
+});
+
 console.log(`\nALL ${passed} BETA MOTION & TELEMETRY TESTS PASSED`);
