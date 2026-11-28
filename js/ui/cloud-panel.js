@@ -53,7 +53,7 @@ function injectStyles() {
       background: rgba(0,0,0,.64); backdrop-filter: blur(3px); padding: 20px;
       font: 13px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: #e6e6e6;
     }
-    .cp-backdrop[hidden] { display: none !important; }
+    .cp-backdrop[hidden], .cp-backdrop [hidden] { display: none !important; }
     .cp-panel {
       width: min(880px, 100%); max-height: calc(100vh - 40px); display: flex; flex-direction: column;
       background: #1f1f1f; border: 1px solid #3a3a3a; border-radius: 10px;
@@ -619,6 +619,7 @@ export class CloudPanel {
       const status = await this.client.status();
       this.status = status;
       this._renderStatus();
+      this._syncAuthProviderControls();
       if (!status.enabled) {
         this._showSetup(status);
         return;
@@ -691,6 +692,18 @@ export class CloudPanel {
     }
   }
 
+  _syncAuthProviderControls() {
+    const status = this.status || {};
+    const supabase = !!status.supabase;
+    const authProviders = status.authProviders || {};
+    const showGoogle = supabase && authProviders.google !== false;
+    const showGithub = supabase && authProviders.github !== false;
+    if (this._els.sbOAuthGoogle) this._els.sbOAuthGoogle.hidden = !showGoogle;
+    if (this._els.sbOAuthGithub) this._els.sbOAuthGithub.hidden = !showGithub;
+    if (this._els.oauthRow) this._els.oauthRow.hidden = !(showGoogle || showGithub);
+    if (this._els.sbReset) this._els.sbReset.hidden = !(supabase && authProviders.passwordReset !== false);
+  }
+
   _showSignedOut() {
     this._els.setup.hidden = true;
     this._els.auth.hidden = false;
@@ -701,13 +714,7 @@ export class CloudPanel {
     this._els.authLocal.hidden = !local;
     this._els.authSupabase.hidden = !supabase;
     this._els.authNone.hidden = local || supabase;
-    const authProviders = status.authProviders || {};
-    const showGoogle = supabase && authProviders.google !== false;
-    const showGithub = supabase && authProviders.github !== false;
-    if (this._els.sbOAuthGoogle) this._els.sbOAuthGoogle.hidden = !showGoogle;
-    if (this._els.sbOAuthGithub) this._els.sbOAuthGithub.hidden = !showGithub;
-    if (this._els.oauthRow) this._els.oauthRow.hidden = !(showGoogle || showGithub);
-    if (this._els.sbReset) this._els.sbReset.hidden = !(supabase && authProviders.passwordReset !== false);
+    this._syncAuthProviderControls();
     this._renderStatus();
     this._syncCommunityPublishCard();
   }
