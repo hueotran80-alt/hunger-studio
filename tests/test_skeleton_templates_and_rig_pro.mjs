@@ -335,5 +335,204 @@ await test('SceneManager removes/restores/hides SkeletonHelper cleanly with rigg
   assert(countHelpers() === 0, `Expected 0 SkeletonHelpers after clearScene, got ${countHelpers()}`);
 });
 
+// ---------------------------------------------------------------------------
+// 8. Deep Audit Probes (5 Confirmed Lifecycle Bugs -> Regression Locked!)
+// ---------------------------------------------------------------------------
+await test('Probe 1: Undo/Redo preserves full RigSystem pose, IK, and RapidStudio mixer state atomically', () => {
+  const scene = new THREE.Scene();
+  const sm = new SceneManager(scene);
+  const rig = new RigSystem({ scene, THREE, sceneManager: sm });
+  sm.rigSystem = rig;
+
+  let actionPlayCount = 0;
+  let actionStopCount = 0;
+  const fakeAction = {
+    time: 0.42,
+    isRunning: () => true,
+    getClip: () => ({ name: 'Walk' }),
+    play: () => { actionPlayCount += 1; },
+    stop: () => { actionStopCount += 1; },
+  };
+  const fakeStudio = {
+    _characterMixer: { mock: true },
+    _characterMixerRoot: null,
+    _currentAction: fakeAction,
+    _currentSkeletonHelper: null,
+  };
+  sm.studio = fakeStudio;
+
+  const grp = makeSyntheticHumanoidGroup('t-pose');
+  sm.addObject(grp, null, false, false);
+  const res = rig.autoRigCharacter(grp, { templateId: 'humanoid_standard', mode: 'heat', showVisualizer: true });
+  rig.activeCharacter = res.skinnedMeshes[0];
+  rig.activeSkeleton = res.skeleton;
+  rig.activeBone = res.skeleton.bones[0];
+  rig.isPoseMode = true;
+  rig.setupTwoBoneIK(grp);
+  rig.setIKEnabled(true);
+  fakeStudio._characterMixerRoot = grp;
+
+  const origChar = rig.activeCharacter;
+  const origBone = rig.activeBone;
+  const origChainCount = rig.ikChains.size;
+  assert(origChainCount === 4, `Expected 4 IK chains before delete, got ${origChainCount}`);
+
+  // Undoable delete -> state cleared while deleted
+  sm.removeObject(grp, true, false);
+  assert(rig.activeCharacter === null && rig.isPoseMode === false && rig.ikChains.size === 0, 'Delete must clear live rig & IK state');
+  assert(rig.skeletonHelper === null && rig.ikHandlesGroup === null, 'Delete must detach helper & IK group');
+  assert(fakeStudio._characterMixerRoot === null && actionStopCount === 1, 'Delete must stop & detach RapidStudio mixer');
+
+  // Undo -> full rig, pose, IK, and mixer state restored atomically!
+  sm.undo();
+  assert(rig.activeCharacter === origChar, 'Undo must restore activeCharacter');
+  assert(rig.activeBone === origBone, 'Undo must restore activeBone');
+  assert(rig.isPoseMode === true, 'Undo must restore isPoseMode');
+  assert(rig.isIKEnabled === true && rig.ikChains.size === origChainCount, 'Undo must restore IK enabled & chains');
+  assert(rig.skeletonHelper !== null && rig.ikHandlesGroup !== null, 'Undo must restore SkeletonHelper & IK group');
+  assert(fakeStudio._characterMixerRoot === grp && actionPlayCount === 1, 'Undo must restore & resume RapidStudio mixer');
+
+  // Redo -> cleans up cleanly again, second Undo -> restores again!
+  sm.redo();
+  assert(rig.activeCharacter === null && rig.skeletonHelper === null && rig.ikHandlesGroup === null, 'Redo must re-detach rig helpers & state');
+  sm.undo();
+  assert(rig.activeCharacter === origChar && rig.isPoseMode === true && rig.ikChains.size === origChainCount, 'Second Undo must remain idempotent');
+});
+
+await test('Probe 2: Nested parent/child & collection effective visibility never leaves floating SkeletonHelper', () => {
+  const scene = new THREE.Scene();
+  const sm = new SceneManager(scene);
+  const rig = new RigSystem({ scene, THREE, sceneManager: sm });
+  sm.rigSystem = rig;
+
+  const outer = new THREE.Group();
+  outer.name = 'OuterParent';
+  const inner = makeSyntheticHumanoidGroup('t-pose');
+  inner.name = 'InnerRigged';
+  outer.add(inner);
+  sm.addObject(outer, null, false, false);
+  sm.addObject(inner, outer, false, false);
+  rig.autoRigCharacter(inner, { templateId: 'humanoid_standard', mode: 'heat', showVisualizer: true });
+
+  assert(rig.skeletonHelper && rig.skeletonHelper.visible === true, 'Initial helper should be visible');
+
+  // Exact audit repro: hide outer -> hide inner -> show outer -> inner is STILL hidden so helper MUST stay hidden!
+  sm.setVisibility(outer, false);
+  assert(rig.skeletonHelper.visible === false, 'Hiding outer parent must hide child SkeletonHelper');
+  sm.setVisibility(inner, false);
+  assert(rig.skeletonHelper.visible === false, 'Hiding inner child keeps SkeletonHelper hidden');
+  sm.setVisibility(outer, true);
+  assert(outer.visible === true && inner.visible === false && rig.skeletonHelper.visible === false,
+    `Expected {outer:true, inner:false, helper:false}, got {outer:${outer.visible}, inner:${inner.visible}, helper:${rig.skeletonHelper.visible}}`);
+
+  // Showing inner now makes effective visibility true -> helper reappears
+  sm.setVisibility(inner, true);
+  assert(rig.skeletonHelper.visible === true, 'Showing inner child when outer is visible must show SkeletonHelper');
+
+  // Collection visibility hiding root collection must hide helper too
+  const rootColId = sm.collectionManager.rootId;
+  sm.collectionManager.setCollectionVisibility(rootColId, false);
+  assert(rig.skeletonHelper.visible === false, 'Hiding collection must hide SkeletonHelper');
+  sm.collectionManager.setCollectionVisibility(rootColId, true);
+  assert(rig.skeletonHelper.visible === true, 'Showing collection must restore SkeletonHelper');
+});
+
+await test('Probe 3: Interleaved multi-rig delete A -> rig B (no history) -> undo A never clobbers live Rig B ownership', () => {
+  const scene = new THREE.Scene();
+  const sm = new SceneManager(scene);
+  const rig = new RigSystem({ scene, THREE, sceneManager: sm });
+  sm.rigSystem = rig;
+
+  const rigA = makeSyntheticHumanoidGroup('t-pose');
+  rigA.name = 'RigA';
+  sm.addObject(rigA, null, false, false);
+  const resA = rig.autoRigCharacter(rigA, { templateId: 'humanoid_standard', mode: 'heat', showVisualizer: true });
+  rig.activeCharacter = resA.skinnedMeshes[0];
+  rig.setupTwoBoneIK(rigA);
+  rig.setIKEnabled(true);
+
+  // Delete Rig A (undoable)
+  sm.removeObject(rigA, true, false);
+
+  // Create & rig Rig B via non-history path
+  const rigB = makeSyntheticHumanoidGroup('t-pose');
+  rigB.name = 'RigB';
+  sm.addObject(rigB, null, false, false);
+  const resB = rig.autoRigCharacter(rigB, { templateId: 'humanoid_standard', mode: 'heat', showVisualizer: true });
+  rig.activeCharacter = resB.skinnedMeshes[0];
+  const helperB = rig.skeletonHelper;
+  rig.setupTwoBoneIK(rigB);
+  rig.setIKEnabled(true);
+  const ikGroupB = rig.ikHandlesGroup;
+  assert(ikGroupB.userData.targetRoot, 'IK group must be tagged with targetRoot');
+
+  // Undo Rig A -> Rig A returns to scene, but live Rig B ownership MUST remain intact with ZERO duplicate helpers!
+  sm.undo();
+  const helpersInScene = scene.children.filter((c) => c.isSkeletonHelper || c.userData?.isSkeletonHelper);
+  const ikGroupsInScene = scene.children.filter((c) => c.userData?.isIKHandlesGroup);
+  assert(helpersInScene.length === 1, `Expected 1 live SkeletonHelper (Rig B), got ${helpersInScene.length}`);
+  assert(rig.skeletonHelper === helperB, 'Undo A must NOT clobber live Rig B skeletonHelper');
+  assert(rig.activeCharacter === resB.skinnedMeshes[0], 'Undo A must NOT clobber live Rig B activeCharacter');
+  assert(ikGroupsInScene.length === 1 && rig.ikHandlesGroup === ikGroupB, 'Undo A must NOT clobber live Rig B IK group');
+});
+
+await test('Probe 4: History eviction and clearHistory dispose stashed helper & IK GPU resources (zero leak)', () => {
+  const scene = new THREE.Scene();
+  const sm = new SceneManager(scene);
+  const rig = new RigSystem({ scene, THREE, sceneManager: sm });
+  sm.rigSystem = rig;
+
+  const grp = makeSyntheticHumanoidGroup('t-pose');
+  sm.addObject(grp, null, false, false);
+  rig.autoRigCharacter(grp, { templateId: 'humanoid_standard', mode: 'heat', showVisualizer: true });
+  rig.setupTwoBoneIK(grp);
+
+  let geoDisposals = 0;
+  let matDisposals = 0;
+  const wrapDispose = (obj) => {
+    const origG = obj.geometry?.dispose?.bind(obj.geometry);
+    if (origG) obj.geometry.dispose = () => { geoDisposals += 1; origG(); };
+    const origM = obj.material?.dispose?.bind(obj.material);
+    if (origM) obj.material.dispose = () => { matDisposals += 1; origM(); };
+  };
+  wrapDispose(rig.skeletonHelper);
+  rig.ikHandlesGroup.traverse((n) => wrapDispose(n));
+
+  sm.removeObject(grp, true, false);
+  assert(Array.isArray(grp.userData._detachedRigHelpers) && grp.userData._detachedRigHelpers.length === 2, 'Should stash SkeletonHelper + IK group');
+  assert(geoDisposals === 0 && matDisposals === 0, 'Undoable delete must not dispose stashed helpers while in undo stack');
+
+  // Clear history -> evicted RemoveObjectCommand MUST dispose all stashed helper & IK GPU resources!
+  sm.clearHistory();
+  assert(geoDisposals >= 2 && matDisposals >= 2, `Expected helper+IK geometry/material disposal on clearHistory, got geo=${geoDisposals}, mat=${matDisposals}`);
+  assert(grp.userData._detachedRigHelpers === undefined, '_detachedRigHelpers must be deleted after disposal');
+});
+
+await test('Probe 5: clearScene clears IK chains, chainBlends, activeIKHandle, and disposes IK handles', () => {
+  const scene = new THREE.Scene();
+  const sm = new SceneManager(scene);
+  const rig = new RigSystem({ scene, THREE, sceneManager: sm });
+  sm.rigSystem = rig;
+
+  const grp = makeSyntheticHumanoidGroup('t-pose');
+  sm.addObject(grp, null, false, false);
+  rig.autoRigCharacter(grp, { templateId: 'humanoid_standard', mode: 'heat', showVisualizer: true });
+  rig.setupTwoBoneIK(grp);
+  rig.setIKEnabled(true);
+  rig.chainBlends.set('leftLeg', 0.75);
+  rig.activeIKHandle = rig.ikChains.get('leftLeg')?.targetHandle || null;
+
+  assert(rig.ikChains.size === 4 && rig.chainBlends.size === 1 && rig.activeIKHandle !== null, 'Precondition: IK state populated');
+
+  sm.clearScene();
+  assert(rig.ikHandlesGroup === null, 'clearScene must clear ikHandlesGroup');
+  assert(rig.ikChains.size === 0, `clearScene must clear ikChains, got size=${rig.ikChains.size}`);
+  assert(rig.chainBlends.size === 0, `clearScene must clear chainBlends, got size=${rig.chainBlends.size}`);
+  assert(rig.activeIKHandle === null, 'clearScene must clear activeIKHandle');
+  assert(rig.isIKEnabled === false, 'clearScene must reset isIKEnabled');
+  const leftoverIK = scene.children.filter((c) => c.userData?.isIKHandlesGroup);
+  assert(leftoverIK.length === 0, `Expected 0 leftover IK groups in scene, got ${leftoverIK.length}`);
+});
+
 console.log(`\nSummary: ${passed} passed, ${failures.length} failed.`);
 if (failures.length > 0) process.exit(1);

@@ -948,14 +948,14 @@ export class SceneManager extends EventEmitter {
       (obj, prop, val) => {
         obj.visible = val;
         obj.userData.visible = val;
-        this._syncRigHelpersVisibility(obj, val);
+        this._syncRigHelpersVisibility(obj);
         this.emit('visibilityChanged', { object: obj, visible: val });
       }
     ));
 
     object.visible = visible;
     object.userData.visible = visible;
-    this._syncRigHelpersVisibility(object, visible);
+    this._syncRigHelpersVisibility(object);
     this.emit('visibilityChanged', { object, visible });
   }
 
@@ -1194,7 +1194,89 @@ export class SceneManager extends EventEmitter {
     return false;
   }
 
-  /** Chỉ dispose snapshot geometry của command bị evict khi không còn live trong scene hoặc undo/redo stack. */
+  _commandReferencesObject(command, targetObj) {
+    if (!command || !targetObj) return false;
+    if (command.object === targetObj || command.group === targetObj) return true;
+    if (Array.isArray(command.objects) && command.objects.includes(targetObj)) return true;
+    if (Array.isArray(command.entries) && command.entries.some((e) => e?.object === targetObj)) return true;
+    if (Array.isArray(command.commands)) {
+      for (const child of command.commands) {
+        if (this._commandReferencesObject(child, targetObj)) return true;
+      }
+    }
+    return false;
+  }
+
+  _isObjectReferencedInHistory(targetObj) {
+    if (!targetObj) return false;
+    for (const cmd of this.undoStack) {
+      if (this._commandReferencesObject(cmd, targetObj)) return true;
+    }
+    for (const cmd of this.redoStack) {
+      if (this._commandReferencesObject(cmd, targetObj)) return true;
+    }
+    return false;
+  }
+
+  _collectCommandObjects(command, out = new Set()) {
+    if (!command) return out;
+    if (command.object) out.add(command.object);
+    if (command.group) out.add(command.group);
+    if (Array.isArray(command.objects)) {
+      for (const o of command.objects) if (o) out.add(o);
+    }
+    if (Array.isArray(command.entries)) {
+      for (const e of command.entries) if (e?.object) out.add(e.object);
+    }
+    if (Array.isArray(command.commands)) {
+      for (const child of command.commands) this._collectCommandObjects(child, out);
+    }
+    return out;
+  }
+
+  _disposeHelperSubtree(helper) {
+    if (!helper) return;
+    if (helper.parent) helper.parent.remove(helper);
+    const disposeNode = (node) => {
+      if (!node) return;
+      if (node.geometry && typeof node.geometry.dispose === 'function') {
+        node.geometry.dispose();
+      }
+      if (node.material) {
+        if (Array.isArray(node.material)) {
+          node.material.forEach((m) => m?.dispose?.());
+        } else if (typeof node.material.dispose === 'function') {
+          node.material.dispose();
+        }
+      }
+    };
+    if (typeof helper.traverse === 'function') {
+      helper.traverse(disposeNode);
+    } else {
+      disposeNode(helper);
+    }
+  }
+
+  _disposeDetachedRigState(object) {
+    if (!object?.userData) return;
+    const stashed = object.userData._detachedRigHelpers;
+    if (Array.isArray(stashed)) {
+      for (const entry of stashed) {
+        if (entry?.helper) {
+          this._disposeHelperSubtree(entry.helper);
+        }
+      }
+      delete object.userData._detachedRigHelpers;
+    }
+    if (object.userData._detachedRigState) {
+      delete object.userData._detachedRigState;
+    }
+    if (object.userData._detachedStudioState) {
+      delete object.userData._detachedStudioState;
+    }
+  }
+
+  /** Chỉ dispose snapshot geometry và helper/IK đã stash của command bị evict khi không còn live trong scene hoặc undo/redo stack. */
   _disposeEvictedGeometry(command) {
     if (!command) return;
     if (Array.isArray(command.commands)) {
@@ -1210,6 +1292,15 @@ export class SceneManager extends EventEmitter {
       if (!g || typeof g.dispose !== 'function') continue;
       if (!this._isGeometryLive(g)) {
         g.dispose();
+      }
+    }
+    const objs = this._collectCommandObjects(command);
+    for (const obj of objs) {
+      if (!obj?.userData?._detachedRigHelpers && !obj?.userData?._detachedRigState && !obj?.userData?._detachedStudioState) {
+        continue;
+      }
+      if (!this._isAttachedToScene(obj) && !this._isObjectReferencedInHistory(obj)) {
+        this._disposeDetachedRigState(obj);
       }
     }
   }
@@ -1423,6 +1514,29 @@ export class SceneManager extends EventEmitter {
     return false;
   }
 
+  _isNodeEffectivelyVisible(node) {
+    if (!node || !this.scene) return false;
+    let cur = node;
+    let reachedScene = false;
+    while (cur) {
+      if (cur === this.scene) {
+        reachedScene = true;
+        break;
+      }
+      if (cur.visible === false || cur.userData?.visible === false) {
+        return false;
+      }
+      if (this.collectionManager && typeof this.collectionManager.isCollectionEffectivelyVisible === 'function') {
+        const cid = this.collectionManager.objectToCollection?.get?.(cur.uuid);
+        if (cid && !this.collectionManager.isCollectionEffectivelyVisible(cid)) {
+          return false;
+        }
+      }
+      cur = cur.parent;
+    }
+    return reachedScene;
+  }
+
   _getRigSystem() {
     return this.rigSystem || this.engine?.rigSystem || (typeof window !== 'undefined' ? window.rigSystem : null);
   }
@@ -1447,11 +1561,36 @@ export class SceneManager extends EventEmitter {
     return Array.from(found);
   }
 
+  _collectSceneIKHelpers() {
+    const found = new Set();
+    const rigSystem = this._getRigSystem();
+    if (rigSystem?.ikHandlesGroup) found.add(rigSystem.ikHandlesGroup);
+    if (this.scene?.children) {
+      for (const child of this.scene.children) {
+        if (child && (child.userData?.isIKHandlesGroup || child.name === 'IK_Controls_Group')) {
+          found.add(child);
+        }
+      }
+    }
+    return Array.from(found);
+  }
+
+  _isLiveOwnerSlotOccupiedByOther(currentTarget, restoringObject) {
+    if (!currentTarget) return false;
+    if (this._isNodeWithinSubtree(restoringObject, currentTarget)) return false;
+    return this._isAttachedToScene(currentTarget);
+  }
+
   _cleanupRigHelpersForRemovedObject(object, { disposeResources = false } = {}) {
     if (!object) return;
     const engine = (typeof window !== 'undefined' ? window.engine : null) || this.engine;
     if (engine?.transformControls?.object && this._isNodeWithinSubtree(object, engine.transformControls.object)) {
       engine.transformControls.detach();
+    }
+
+    // If re-removing an object that already had stashed helpers from a prior cycle, dispose them first if disposing
+    if (disposeResources) {
+      this._disposeDetachedRigState(object);
     }
 
     const rigSystem = this._getRigSystem();
@@ -1477,14 +1616,9 @@ export class SceneManager extends EventEmitter {
         'scene';
 
       if (disposeResources) {
-        helper.geometry?.dispose?.();
-        if (Array.isArray(helper.material)) {
-          helper.material.forEach((m) => m?.dispose?.());
-        } else {
-          helper.material?.dispose?.();
-        }
+        this._disposeHelperSubtree(helper);
       } else {
-        stashed.push({ helper, parent: parentRef || this.scene, ownerTag });
+        stashed.push({ helper, parent: parentRef || this.scene, ownerTag, targetRoot });
       }
 
       if (rigSystem?.skeletonHelper === helper) {
@@ -1495,6 +1629,35 @@ export class SceneManager extends EventEmitter {
       }
     }
 
+    // Collect & detach IK handle groups owned by this object (matched strictly by targetRoot!)
+    for (const ikGroup of this._collectSceneIKHelpers()) {
+      const ikTargetRoot = ikGroup.userData?.targetRoot
+        || (rigSystem?.ikHandlesGroup === ikGroup ? rigSystem.activeCharacter : null);
+      const ikMatches =
+        this._isNodeWithinSubtree(object, ikGroup) ||
+        this._isNodeWithinSubtree(object, ikTargetRoot) ||
+        (ikTargetRoot && !this._isAttachedToScene(ikTargetRoot));
+      if (!ikMatches) continue;
+
+      const ikParent = ikGroup.parent;
+      if (ikParent) ikParent.remove(ikGroup);
+
+      if (disposeResources) {
+        this._disposeHelperSubtree(ikGroup);
+      } else {
+        stashed.push({
+          helper: ikGroup,
+          parent: ikParent || this.scene,
+          ownerTag: rigSystem?.ikHandlesGroup === ikGroup ? 'rigIK' : 'sceneIK',
+          targetRoot: ikTargetRoot,
+        });
+      }
+
+      if (rigSystem?.ikHandlesGroup === ikGroup) {
+        rigSystem.ikHandlesGroup = null;
+      }
+    }
+
     if (rigSystem) {
       const activeMatched =
         this._isNodeWithinSubtree(object, rigSystem.activeCharacter) ||
@@ -1502,14 +1665,23 @@ export class SceneManager extends EventEmitter {
         this._isNodeWithinSubtree(object, rigSystem.editArmature);
 
       if (activeMatched) {
-        if (rigSystem.ikHandlesGroup?.parent) {
-          const ikParent = rigSystem.ikHandlesGroup.parent;
-          ikParent.remove(rigSystem.ikHandlesGroup);
-          if (!disposeResources) {
-            stashed.push({ helper: rigSystem.ikHandlesGroup, parent: ikParent, ownerTag: 'rigIK' });
-          } else {
-            rigSystem.ikHandlesGroup = null;
-          }
+        if (!disposeResources) {
+          object.userData = object.userData || {};
+          object.userData._detachedRigState = {
+            activeCharacter: rigSystem.activeCharacter,
+            activeSkeleton: rigSystem.activeSkeleton,
+            activeBone: rigSystem.activeBone,
+            editArmature: rigSystem.editArmature,
+            editSkeleton: rigSystem.editSkeleton,
+            isPoseMode: Boolean(rigSystem.isPoseMode),
+            isEditBoneMode: Boolean(rigSystem.isEditBoneMode),
+            isWeightPaintMode: Boolean(rigSystem.isWeightPaintMode),
+            weightPaintMesh: rigSystem.weightPaintMesh || null,
+            isIKEnabled: Boolean(rigSystem.isIKEnabled),
+            ikChains: rigSystem.ikChains ? new Map(rigSystem.ikChains) : null,
+            chainBlends: rigSystem.chainBlends ? new Map(rigSystem.chainBlends) : null,
+            activeIKHandle: rigSystem.activeIKHandle || null,
+          };
         }
         rigSystem.activeBone = null;
         rigSystem.activeCharacter = null;
@@ -1522,11 +1694,32 @@ export class SceneManager extends EventEmitter {
           try { rigSystem.disableWeightPaintMode(); } catch (_) {}
         }
         rigSystem.isWeightPaintMode = false;
+        rigSystem.weightPaintMesh = null;
+        rigSystem.isIKEnabled = false;
+        rigSystem.activeIKHandle = null;
+        rigSystem.ikChains?.clear?.();
+        rigSystem.chainBlends?.clear?.();
       }
     }
 
     if (studio?._characterMixerRoot && this._isNodeWithinSubtree(object, studio._characterMixerRoot)) {
+      const wasRunning = Boolean(studio._currentAction && typeof studio._currentAction.isRunning === 'function'
+        ? studio._currentAction.isRunning()
+        : studio._currentAction);
+      const clipName = studio._currentAction?.getClip?.()?.name || null;
+      const actionTime = Number(studio._currentAction?.time) || 0;
       if (studio._currentAction?.stop) studio._currentAction.stop();
+      if (!disposeResources) {
+        object.userData = object.userData || {};
+        object.userData._detachedStudioState = {
+          characterMixer: studio._characterMixer,
+          characterMixerRoot: studio._characterMixerRoot,
+          currentAction: studio._currentAction,
+          wasRunning,
+          clipName,
+          actionTime,
+        };
+      }
       studio._characterMixer = null;
       studio._characterMixerRoot = null;
       studio._currentAction = null;
@@ -1541,49 +1734,146 @@ export class SceneManager extends EventEmitter {
   }
 
   _restoreRigHelpersForAddedObject(object) {
-    const stashed = object?.userData?._detachedRigHelpers;
-    if (!Array.isArray(stashed) || stashed.length === 0) return;
+    const stashedHelpers = object?.userData?._detachedRigHelpers;
+    const stashedRigState = object?.userData?._detachedRigState;
+    const stashedStudioState = object?.userData?._detachedStudioState;
+    if ((!Array.isArray(stashedHelpers) || stashedHelpers.length === 0) && !stashedRigState && !stashedStudioState) {
+      return;
+    }
 
     const rigSystem = this._getRigSystem();
     const studio = this._getRapidStudio();
-    for (const entry of stashed) {
-      const { helper, parent, ownerTag } = entry || {};
-      if (!helper) continue;
-      const host = parent || this.scene;
-      if (host && !helper.parent) {
-        host.add(helper);
+
+    // Check if another LIVE rig already occupies RigSystem / Studio singleton ownership slots
+    const rigSlotOccupiedByOther = Boolean(
+      rigSystem && (
+        this._isLiveOwnerSlotOccupiedByOther(rigSystem.activeCharacter, object) ||
+        this._isLiveOwnerSlotOccupiedByOther(rigSystem.editArmature, object) ||
+        this._isLiveOwnerSlotOccupiedByOther(
+          rigSystem.skeletonHelper?.root || rigSystem.skeletonHelper?.userData?.targetRoot,
+          object
+        )
+      )
+    );
+    const studioHelperOccupiedByOther = Boolean(
+      studio?._currentSkeletonHelper &&
+      this._isLiveOwnerSlotOccupiedByOther(
+        studio._currentSkeletonHelper.root || studio._currentSkeletonHelper.userData?.targetRoot,
+        object
+      )
+    );
+    const studioMixerOccupiedByOther = Boolean(
+      studio?._characterMixerRoot &&
+      this._isLiveOwnerSlotOccupiedByOther(studio._characterMixerRoot, object)
+    );
+
+    // 1. Atomically restore RigSystem state only when no other live rig owns RigSystem
+    if (stashedRigState && rigSystem && !rigSlotOccupiedByOther) {
+      rigSystem.activeCharacter = stashedRigState.activeCharacter;
+      rigSystem.activeSkeleton = stashedRigState.activeSkeleton;
+      rigSystem.activeBone = stashedRigState.activeBone;
+      rigSystem.editArmature = stashedRigState.editArmature;
+      rigSystem.editSkeleton = stashedRigState.editSkeleton;
+      rigSystem.isPoseMode = stashedRigState.isPoseMode;
+      rigSystem.isEditBoneMode = stashedRigState.isEditBoneMode;
+      rigSystem.isWeightPaintMode = stashedRigState.isWeightPaintMode;
+      rigSystem.weightPaintMesh = stashedRigState.weightPaintMesh;
+      rigSystem.isIKEnabled = stashedRigState.isIKEnabled;
+      if (rigSystem.ikChains && stashedRigState.ikChains) {
+        rigSystem.ikChains.clear();
+        for (const [k, v] of stashedRigState.ikChains.entries()) rigSystem.ikChains.set(k, v);
       }
-      if (ownerTag === 'rigSystem' && rigSystem) {
-        rigSystem.skeletonHelper = helper;
-        helper.visible = object.visible !== false && rigSystem.boneDisplayMode !== 'hidden';
-      } else if (ownerTag === 'studio' && studio) {
-        studio._currentSkeletonHelper = helper;
-        helper.visible = object.visible !== false;
-      } else if (ownerTag === 'rigIK' && rigSystem) {
-        rigSystem.ikHandlesGroup = helper;
-        helper.visible = object.visible !== false && Boolean(rigSystem.isIKEnabled);
-      } else {
-        helper.visible = object.visible !== false;
+      if (rigSystem.chainBlends && stashedRigState.chainBlends) {
+        rigSystem.chainBlends.clear();
+        for (const [k, v] of stashedRigState.chainBlends.entries()) rigSystem.chainBlends.set(k, v);
       }
-      if (typeof helper.update === 'function') {
-        try { helper.update(); } catch (_) {}
+      rigSystem.activeIKHandle = stashedRigState.activeIKHandle;
+    }
+
+    // 2. Restore Studio animation mixer only when no other live character owns it
+    if (stashedStudioState && studio && !studioMixerOccupiedByOther) {
+      studio._characterMixer = stashedStudioState.characterMixer;
+      studio._characterMixerRoot = stashedStudioState.characterMixerRoot;
+      studio._currentAction = stashedStudioState.currentAction;
+      if (stashedStudioState.wasRunning && studio._currentAction) {
+        try {
+          studio._currentAction.time = stashedStudioState.actionTime || 0;
+          studio._currentAction.play();
+        } catch (_) {}
       }
     }
+
+    // 3. Restore helpers with strict ownership & effective visibility checks
+    if (Array.isArray(stashedHelpers)) {
+      for (const entry of stashedHelpers) {
+        const { helper, parent, ownerTag, targetRoot } = entry || {};
+        if (!helper) continue;
+        const resolvedRoot = targetRoot || helper.root || helper.userData?.targetRoot || object;
+        const effVisible = this._isNodeEffectivelyVisible(resolvedRoot);
+
+        if (ownerTag === 'rigSystem') {
+          if (!rigSystem || rigSlotOccupiedByOther) {
+            // Another live rig now owns rigSystem.skeletonHelper — dispose superseded helper instead of clobbering or creating duplicate!
+            this._disposeHelperSubtree(helper);
+            continue;
+          }
+          const host = parent || this.scene;
+          if (host && !helper.parent) host.add(helper);
+          rigSystem.skeletonHelper = helper;
+          helper.visible = effVisible && rigSystem.boneDisplayMode !== 'hidden';
+        } else if (ownerTag === 'rigIK') {
+          if (!rigSystem || rigSlotOccupiedByOther) {
+            this._disposeHelperSubtree(helper);
+            continue;
+          }
+          const host = parent || this.scene;
+          if (host && !helper.parent) host.add(helper);
+          rigSystem.ikHandlesGroup = helper;
+          helper.visible = effVisible && Boolean(rigSystem.isIKEnabled);
+        } else if (ownerTag === 'studio') {
+          if (!studio || studioHelperOccupiedByOther) {
+            this._disposeHelperSubtree(helper);
+            continue;
+          }
+          const host = parent || this.scene;
+          if (host && !helper.parent) host.add(helper);
+          studio._currentSkeletonHelper = helper;
+          helper.visible = effVisible;
+        } else {
+          const host = parent || this.scene;
+          if (host && !helper.parent) host.add(helper);
+          helper.visible = effVisible;
+        }
+
+        if (typeof helper.update === 'function') {
+          try { helper.update(); } catch (_) {}
+        }
+      }
+    }
+
     delete object.userData._detachedRigHelpers;
+    delete object.userData._detachedRigState;
+    delete object.userData._detachedStudioState;
   }
 
-  _syncRigHelpersVisibility(object, visible) {
+  _syncRigHelpersVisibility(object) {
     if (!object) return;
     const rigSystem = this._getRigSystem();
     const allowBoneLines = !rigSystem || rigSystem.boneDisplayMode !== 'hidden';
     for (const helper of this._collectSceneSkeletonHelpers()) {
       const targetRoot = helper.root || helper.userData?.targetRoot || null;
-      if (this._isNodeWithinSubtree(object, targetRoot)) {
-        helper.visible = Boolean(visible) && (rigSystem?.skeletonHelper === helper ? allowBoneLines : true);
+      if (targetRoot && this._isNodeWithinSubtree(object, targetRoot)) {
+        const effVisible = this._isNodeEffectivelyVisible(targetRoot);
+        helper.visible = effVisible && (rigSystem?.skeletonHelper === helper ? allowBoneLines : true);
       }
     }
-    if (rigSystem?.ikHandlesGroup && this._isNodeWithinSubtree(object, rigSystem.activeCharacter)) {
-      rigSystem.ikHandlesGroup.visible = Boolean(visible) && Boolean(rigSystem.isIKEnabled);
+    for (const ikGroup of this._collectSceneIKHelpers()) {
+      const ikTargetRoot = ikGroup.userData?.targetRoot
+        || (rigSystem?.ikHandlesGroup === ikGroup ? rigSystem.activeCharacter : null);
+      if (ikTargetRoot && this._isNodeWithinSubtree(object, ikTargetRoot)) {
+        const effVisible = this._isNodeEffectivelyVisible(ikTargetRoot);
+        ikGroup.visible = effVisible && Boolean(rigSystem?.isIKEnabled);
+      }
     }
   }
 
@@ -1655,7 +1945,7 @@ export class SceneManager extends EventEmitter {
       engine.transformControls.detach();
     }
 
-    // 3. Reset RigSystem & Studio SkeletonHelper state
+    // 3. Reset RigSystem & Studio SkeletonHelper / IK / Mixer state completely
     const rigSystem = this._getRigSystem();
     if (rigSystem) {
       if (rigSystem.isWeightPaintMode && typeof rigSystem.disableWeightPaintMode === 'function') {
@@ -1663,40 +1953,47 @@ export class SceneManager extends EventEmitter {
       }
       rigSystem.isEditBoneMode = false;
       rigSystem.isWeightPaintMode = false;
+      rigSystem.weightPaintMesh = null;
       rigSystem.isPoseMode = false;
       rigSystem.editArmature = null;
       rigSystem.editSkeleton = null;
+      rigSystem.editBoneRestTransforms?.clear?.();
       rigSystem.activeBone = null;
       rigSystem.activeCharacter = null;
       rigSystem.activeSkeleton = null;
-      if (rigSystem.ikHandlesGroup?.parent) {
-        rigSystem.ikHandlesGroup.parent.remove(rigSystem.ikHandlesGroup);
+      rigSystem.isIKEnabled = false;
+      rigSystem.activeIKHandle = null;
+      rigSystem.ikChains?.clear?.();
+      rigSystem.chainBlends?.clear?.();
+      if (rigSystem.ikHandlesGroup) {
+        this._disposeHelperSubtree(rigSystem.ikHandlesGroup);
+        rigSystem.ikHandlesGroup = null;
       }
-      rigSystem.ikHandlesGroup = null;
       if (rigSystem.skeletonHelper) {
-        if (rigSystem.skeletonHelper.parent) {
-          rigSystem.skeletonHelper.parent.remove(rigSystem.skeletonHelper);
-        }
-        if (rigSystem.skeletonHelper.geometry) rigSystem.skeletonHelper.geometry.dispose();
-        if (rigSystem.skeletonHelper.material) rigSystem.skeletonHelper.material.dispose();
+        this._disposeHelperSubtree(rigSystem.skeletonHelper);
         rigSystem.skeletonHelper = null;
       }
       const modeIndicator = typeof document !== 'undefined' ? document.getElementById('mode-indicator-text') : null;
       if (modeIndicator) modeIndicator.textContent = 'Object Mode';
     }
     const studio = this._getRapidStudio();
-    if (studio?._currentSkeletonHelper) {
-      if (studio._currentSkeletonHelper.parent) {
-        studio._currentSkeletonHelper.parent.remove(studio._currentSkeletonHelper);
+    if (studio) {
+      if (studio._currentAction?.stop) {
+        try { studio._currentAction.stop(); } catch (_) {}
       }
-      studio._currentSkeletonHelper.geometry?.dispose?.();
-      studio._currentSkeletonHelper.material?.dispose?.();
-      studio._currentSkeletonHelper = null;
+      studio._characterMixer = null;
+      studio._characterMixerRoot = null;
+      studio._currentAction = null;
+      if (studio._currentSkeletonHelper) {
+        this._disposeHelperSubtree(studio._currentSkeletonHelper);
+        studio._currentSkeletonHelper = null;
+      }
     }
     for (const helper of this._collectSceneSkeletonHelpers()) {
-      if (helper.parent) helper.parent.remove(helper);
-      helper.geometry?.dispose?.();
-      helper.material?.dispose?.();
+      this._disposeHelperSubtree(helper);
+    }
+    for (const ikGroup of this._collectSceneIKHelpers()) {
+      this._disposeHelperSubtree(ikGroup);
     }
 
     // 4. Deep dispose all objects registered in this.objects map
