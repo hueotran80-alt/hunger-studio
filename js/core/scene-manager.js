@@ -1282,13 +1282,18 @@ export class SceneManager extends EventEmitter {
     }
   }
 
+  _isNodeInactiveOrExcluded(node, excludeRoot) {
+    if (!node || this._disposedObjects.has(node)) return true;
+    return Boolean(excludeRoot && this._isNodeWithinSubtree(excludeRoot, node));
+  }
+
   _forEachCommandSubjectNode(command, fn, excludeRoot = null) {
     if (!command) return;
     const visited = new Set();
     const visitSubtree = (root) => {
-      if (!root || (excludeRoot && this._isNodeWithinSubtree(excludeRoot, root))) return;
+      if (this._isNodeInactiveOrExcluded(root, excludeRoot)) return;
       const handleNode = (node) => {
-        if (!node || visited.has(node) || (excludeRoot && this._isNodeWithinSubtree(excludeRoot, node))) return;
+        if (visited.has(node) || this._isNodeInactiveOrExcluded(node, excludeRoot)) return;
         visited.add(node);
         fn(node);
         const stashed = node.userData?._detachedRigHelpers;
@@ -1307,11 +1312,11 @@ export class SceneManager extends EventEmitter {
   }
 
   _isCommandOwnedByExcluded(command, excludeRoot) {
-    if (!excludeRoot || !command) return false;
+    if (!command) return false;
     const objs = this._collectCommandObjects(command);
     if (objs.size === 0) return false;
     for (const o of objs) {
-      if (!this._isNodeWithinSubtree(excludeRoot, o)) return false;
+      if (!this._isNodeInactiveOrExcluded(o, excludeRoot)) return false;
     }
     return true;
   }
@@ -2391,6 +2396,13 @@ export class SceneManager extends EventEmitter {
         disposeMaterialEntry(child.userData.__originalMaterial);
         disposeMaterialEntry(child.userData.__importedMaterial);
         disposeMaterialEntry(child.userData.__boolOrigMaterial);
+        if (child !== object && (
+          child.userData._detachedRigHelpers ||
+          child.userData._detachedRigState ||
+          child.userData._detachedStudioState
+        )) {
+          this._disposeDetachedRigState(child, activeCtx.disposedGeos, activeCtx.disposedMats, activeCtx);
+        }
       }
 
       // Unhook joint handles

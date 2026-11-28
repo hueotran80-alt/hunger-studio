@@ -948,5 +948,83 @@ await test('Audit3-2: clearScene() disposes Group rig with registered child Skin
   assert(sm.undoStack.length === 0 && sm.redoStack.length === 0, 'history must be cleared');
 });
 
+await test('Audit3-3: AgentTx clearHistory forwarding avoids double-dispose in clearScene & WeightPaint _origMaterial stays protected on sibling delete', () => {
+  const scene = new THREE.Scene();
+  const sm = new SceneManager(scene);
+
+  // Wrap clearHistory identically to AgentTx (forwarding ...args)
+  const origClear = sm.clearHistory.bind(sm);
+  let clearForwardArgs = 0;
+  sm.clearHistory = (...args) => {
+    clearForwardArgs += args.length;
+    return origClear(...args);
+  };
+
+  const oldG = new THREE.BoxGeometry(1, 1, 1);
+  const newG = new THREE.BoxGeometry(2, 2, 2);
+  let oldGCount = 0;
+  let newGCount = 0;
+  const origOldG = oldG.dispose.bind(oldG);
+  const origNewG = newG.dispose.bind(newG);
+  oldG.dispose = () => { oldGCount += 1; origOldG(); };
+  newG.dispose = () => { newGCount += 1; origNewG(); };
+
+  const mesh = new THREE.Mesh(oldG, new THREE.MeshStandardMaterial());
+  mesh.name = 'ModMesh';
+  sm.addObject(mesh, null, true);
+  sm.executeCommand({
+    description: 'Fake Mod',
+    mesh,
+    oldGeometry: oldG,
+    newGeometry: newG,
+    execute: () => { mesh.geometry = newG; },
+    undo: () => { mesh.geometry = oldG; },
+  });
+  mesh.geometry = newG;
+
+  sm.createMaterialForObject(mesh, { color: '#ff0000' });
+  const newMat = mesh.material;
+  let newMatCount = 0;
+  const origNewMat = newMat.dispose.bind(newMat);
+  newMat.dispose = () => { newMatCount += 1; origNewMat(); };
+
+  sm.clearScene();
+  assert(clearForwardArgs === 1, 'AgentTx wrapper must forward ctx argument to clearHistory');
+  assert(oldGCount === 1 && newGCount === 1 && newMatCount === 1,
+    `Expected each geometry and material disposed exactly once (oldG=${oldGCount}, newG=${newGCount}, newMat=${newMatCount})`);
+
+  // B. Sibling in Weight Paint (_origMaterial stashed) must protect shared material/texture on other sibling delete
+  const scene2 = new THREE.Scene();
+  const sm2 = new SceneManager(scene2);
+  const tex = new THREE.DataTexture(new Uint8Array([0, 255, 0, 255]), 1, 1);
+  const sharedMat = new THREE.MeshStandardMaterial({ map: tex });
+  let matDisposed = 0;
+  let texDisposed = 0;
+  const ogM = sharedMat.dispose.bind(sharedMat);
+  const ogT = tex.dispose.bind(tex);
+  sharedMat.dispose = () => { matDisposed += 1; ogM(); };
+  tex.dispose = () => { texDisposed += 1; ogT(); };
+
+  const m1 = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), sharedMat);
+  const m2 = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), sharedMat);
+  m1.name = 'Painted';
+  m2.name = 'Sibling';
+  sm2.addObject(m1, null, false);
+  sm2.addObject(m2, null, false);
+
+  // Put m1 into Weight Paint state (original material stashed on userData._origMaterial)
+  m1.userData._origMaterial = sharedMat;
+  m1.userData._weightPaintMat = new THREE.MeshBasicMaterial({ vertexColors: true });
+  m1.material = m1.userData._weightPaintMat;
+
+  sm2.removeObject(m2, false, true);
+  assert(matDisposed === 0 && texDisposed === 0,
+    `Shared material/texture in WeightPaint _origMaterial must stay alive (mat=${matDisposed}, tex=${texDisposed})`);
+
+  sm2.removeObject(m1, false, true);
+  assert(matDisposed === 1 && texDisposed === 1,
+    `After last owner removed, shared material/texture must dispose once (mat=${matDisposed}, tex=${texDisposed})`);
+});
+
 console.log(`\nSummary: ${passed} passed, ${failures.length} failed.`);
 if (failures.length > 0) process.exit(1);

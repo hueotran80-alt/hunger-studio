@@ -293,6 +293,7 @@ export class DataBlockRegistry {
         if (!node || this._isNodeExcludedByRoot(node, excludeObject) || !isUserSceneObject(node)) return;
         const ud = node.userData || {};
         if (matMatches(node.material) ||
+            matMatches(ud._origMaterial) ||
             matMatches(ud.__originalMaterial) ||
             matMatches(ud.__importedMaterial) ||
             matMatches(ud.__boolOrigMaterial)) {
@@ -335,7 +336,7 @@ export class DataBlockRegistry {
       sceneRoot.traverse((node) => {
         if (shared || !node || this._isNodeExcludedByRoot(node, excludeObject) || !isUserSceneObject(node)) return;
         const ud = node.userData || {};
-        for (const holder of [node.material, ud.__originalMaterial, ud.__importedMaterial, ud.__boolOrigMaterial]) {
+        for (const holder of [node.material, ud._origMaterial, ud.__originalMaterial, ud.__importedMaterial, ud.__boolOrigMaterial]) {
           if (!holder) continue;
           if (Array.isArray(holder)) holder.forEach(checkMat);
           else checkMat(holder);
