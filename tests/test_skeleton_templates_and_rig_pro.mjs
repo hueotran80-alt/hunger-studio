@@ -24,7 +24,7 @@ import {
 import { validateSkinWeights } from '../js/animation/bone-heat.js';
 import { RigSystem, AutoSkinCommand } from '../js/animation/rig-system.js';
 import { MocapRetargeter } from '../js/animation/mocap-retargeter.js';
-import { SceneManager } from '../js/core/scene-manager.js';
+import { SceneManager, TransformCommand } from '../js/core/scene-manager.js';
 import { t, setLang } from '../js/core/i18n.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -800,6 +800,230 @@ await test('Audit2-6: Bone joint & octahedron proxy geometries and materials are
     `Expected all ${uniqueGeos.size} unique proxy geometries disposed once, got disposed=${disposedGeos.size} calls=${geoDisposeCalls}`);
   assert(disposedMats.size === uniqueMats.size && matDisposeCalls === uniqueMats.size,
     `Expected all ${uniqueMats.size} unique proxy materials disposed once, got disposed=${disposedMats.size} calls=${matDisposeCalls}`);
+});
+
+await test('Audit3-1: History eviction and clearHistory dispose deleted mesh resources once while protecting live/parent-undoable subtrees', () => {
+  // A. Regular Mesh delete -> maxHistory eviction -> geometry, material, and texture disposed once
+  const sceneA = new THREE.Scene();
+  const smA = new SceneManager(sceneA);
+  smA.maxHistory = 1;
+  const geoA = new THREE.BoxGeometry(1, 1, 1);
+  const texA = new THREE.DataTexture(new Uint8Array([255, 0, 0, 255]), 1, 1);
+  const matA = new THREE.MeshStandardMaterial({ map: texA });
+  let geoADisposed = 0;
+  let matADisposed = 0;
+  let texADisposed = 0;
+  const origGeoA = geoA.dispose.bind(geoA);
+  const origMatA = matA.dispose.bind(matA);
+  const origTexA = texA.dispose.bind(texA);
+  geoA.dispose = () => { geoADisposed += 1; origGeoA(); };
+  matA.dispose = () => { matADisposed += 1; origMatA(); };
+  texA.dispose = () => { texADisposed += 1; origTexA(); };
+
+  const meshA = new THREE.Mesh(geoA, matA);
+  meshA.name = 'EvictBox';
+  smA.addObject(meshA, null, true);
+  smA.removeObject(meshA, true, false);
+  assert(geoADisposed === 0 && matADisposed === 0 && texADisposed === 0,
+    'Deleted mesh resources must stay alive while RemoveObjectCommand is in undoStack');
+
+  const spacer = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshBasicMaterial());
+  spacer.name = 'Spacer';
+  smA.addObject(spacer, null, true);
+  assert(geoADisposed === 1 && matADisposed === 1 && texADisposed === 1,
+    `Expected evicted deleted mesh resources disposed once (geo=${geoADisposed}, mat=${matADisposed}, tex=${texADisposed})`);
+
+  // B. Deleted regular Mesh -> clearHistory() -> disposed once (idempotent on repeat)
+  const sceneB = new THREE.Scene();
+  const smB = new SceneManager(sceneB);
+  const geoB = new THREE.BoxGeometry(1, 1, 1);
+  const matB = new THREE.MeshStandardMaterial();
+  let geoBDisposed = 0;
+  let matBDisposed = 0;
+  const origGeoB = geoB.dispose.bind(geoB);
+  const origMatB = matB.dispose.bind(matB);
+  geoB.dispose = () => { geoBDisposed += 1; origGeoB(); };
+  matB.dispose = () => { matBDisposed += 1; origMatB(); };
+
+  const meshB = new THREE.Mesh(geoB, matB);
+  meshB.name = 'ClearHistoryBox';
+  smB.addObject(meshB, null, false);
+  smB.removeObject(meshB, true, false);
+  assert(geoBDisposed === 0 && matBDisposed === 0, 'Must not dispose before clearHistory');
+  smB.clearHistory();
+  assert(geoBDisposed === 1 && matBDisposed === 1,
+    `Expected clearHistory to dispose once (geo=${geoBDisposed}, mat=${matBDisposed})`);
+  smB.clearHistory();
+  assert(geoBDisposed === 1 && matBDisposed === 1, 'Repeat clearHistory must not double-dispose');
+
+  // C. Child TransformCommand evicted while parent RemoveObjectCommand remains in undoStack
+  const sceneC = new THREE.Scene();
+  const smC = new SceneManager(sceneC);
+  smC.maxHistory = 1;
+  const parentGroup = new THREE.Group();
+  parentGroup.name = 'ParentGrp';
+  const childGeo = new THREE.BoxGeometry(1, 1, 1);
+  const childMat = new THREE.MeshBasicMaterial();
+  let childGeoDisposed = 0;
+  let childMatDisposed = 0;
+  const origCG = childGeo.dispose.bind(childGeo);
+  const origCM = childMat.dispose.bind(childMat);
+  childGeo.dispose = () => { childGeoDisposed += 1; origCG(); };
+  childMat.dispose = () => { childMatDisposed += 1; origCM(); };
+  const childMesh = new THREE.Mesh(childGeo, childMat);
+  childMesh.name = 'ChildMesh';
+  parentGroup.add(childMesh);
+  smC.addObject(parentGroup, null, false);
+
+  const zeroQ = new THREE.Quaternion();
+  const unitS = new THREE.Vector3(1, 1, 1);
+  smC.executeCommand(new TransformCommand(
+    childMesh,
+    { position: childMesh.position, quaternion: zeroQ, scale: unitS },
+    { position: new THREE.Vector3(2, 0, 0), quaternion: zeroQ, scale: unitS }
+  ));
+  smC.removeObject(parentGroup, true, false);
+  assert(childGeoDisposed === 0 && childMatDisposed === 0,
+    'Child resources must remain intact when TransformCommand evicts while parent delete is still undoable');
+
+  smC.clearHistory();
+  assert(childGeoDisposed === 1 && childMatDisposed === 1,
+    `Expected child disposed once when parent delete clears (geo=${childGeoDisposed}, mat=${childMatDisposed})`);
+});
+
+await test('Audit3-2: clearScene() disposes Group rig with registered child SkinnedMeshes and helpers exactly once per unique resource', () => {
+  const scene = new THREE.Scene();
+  const sm = new SceneManager(scene);
+  const rig = new RigSystem({ scene, THREE, sceneManager: sm });
+  sm.rigSystem = rig;
+
+  const grp = makeSyntheticHumanoidGroup('t-pose');
+  sm.addObject(grp, null, true);
+  const res = rig.autoRigCharacter(grp, { templateId: 'humanoid_standard', mode: 'heat', showVisualizer: true });
+  assert(res && res.character === grp, 'autoRigCharacter must succeed');
+  for (const skm of res.skinnedMeshes) {
+    if (!Array.from(sm.objects.values()).includes(skm)) {
+      sm.objects.set(skm.userData?.id || skm.uuid, skm);
+    }
+  }
+  assert(sm.objects.size > 1, `Expected parent + child SkinnedMeshes registered in sm.objects, got ${sm.objects.size}`);
+
+  const geoCounts = new Map();
+  const matCounts = new Map();
+  const trackNode = (node) => {
+    if (!node) return;
+    if (node.geometry && typeof node.geometry.dispose === 'function' && !geoCounts.has(node.geometry)) {
+      const g = node.geometry;
+      geoCounts.set(g, 0);
+      const orig = g.dispose.bind(g);
+      g.dispose = () => { geoCounts.set(g, geoCounts.get(g) + 1); orig(); };
+    }
+    if (node.material) {
+      const mats = Array.isArray(node.material) ? node.material : [node.material];
+      for (const m of mats) {
+        if (m && typeof m.dispose === 'function' && !matCounts.has(m)) {
+          matCounts.set(m, 0);
+          const orig = m.dispose.bind(m);
+          m.dispose = () => { matCounts.set(m, matCounts.get(m) + 1); orig(); };
+        }
+      }
+    }
+  };
+  scene.traverse(trackNode);
+  if (rig.skeletonHelper) rig.skeletonHelper.traverse(trackNode);
+  if (rig.ikHandlesGroup) rig.ikHandlesGroup.traverse(trackNode);
+
+  assert(geoCounts.size >= 20 && matCounts.size >= 30,
+    `Expected >=20 unique geos and >=30 unique mats on rigged group, got ${geoCounts.size}/${matCounts.size}`);
+
+  sm.clearScene();
+
+  const dupGeos = Array.from(geoCounts.values()).filter((c) => c !== 1);
+  const dupMats = Array.from(matCounts.values()).filter((c) => c !== 1);
+  assert(dupGeos.length === 0,
+    `Every unique geometry must be disposed exactly once on clearScene (bad counts: ${JSON.stringify(Array.from(geoCounts.values()))})`);
+  assert(dupMats.length === 0,
+    `Every unique material must be disposed exactly once on clearScene (bad counts: ${JSON.stringify(Array.from(matCounts.values()))})`);
+  assert(sm.objects.size === 0, 'sm.objects must be cleared');
+  assert(sm.undoStack.length === 0 && sm.redoStack.length === 0, 'history must be cleared');
+});
+
+await test('Audit3-3: AgentTx clearHistory forwarding avoids double-dispose in clearScene & WeightPaint _origMaterial stays protected on sibling delete', () => {
+  const scene = new THREE.Scene();
+  const sm = new SceneManager(scene);
+
+  // Wrap clearHistory identically to AgentTx (forwarding ...args)
+  const origClear = sm.clearHistory.bind(sm);
+  let clearForwardArgs = 0;
+  sm.clearHistory = (...args) => {
+    clearForwardArgs += args.length;
+    return origClear(...args);
+  };
+
+  const oldG = new THREE.BoxGeometry(1, 1, 1);
+  const newG = new THREE.BoxGeometry(2, 2, 2);
+  let oldGCount = 0;
+  let newGCount = 0;
+  const origOldG = oldG.dispose.bind(oldG);
+  const origNewG = newG.dispose.bind(newG);
+  oldG.dispose = () => { oldGCount += 1; origOldG(); };
+  newG.dispose = () => { newGCount += 1; origNewG(); };
+
+  const mesh = new THREE.Mesh(oldG, new THREE.MeshStandardMaterial());
+  mesh.name = 'ModMesh';
+  sm.addObject(mesh, null, true);
+  sm.executeCommand({
+    description: 'Fake Mod',
+    mesh,
+    oldGeometry: oldG,
+    newGeometry: newG,
+    execute: () => { mesh.geometry = newG; },
+    undo: () => { mesh.geometry = oldG; },
+  });
+  mesh.geometry = newG;
+
+  sm.createMaterialForObject(mesh, { color: '#ff0000' });
+  const newMat = mesh.material;
+  let newMatCount = 0;
+  const origNewMat = newMat.dispose.bind(newMat);
+  newMat.dispose = () => { newMatCount += 1; origNewMat(); };
+
+  sm.clearScene();
+  assert(clearForwardArgs === 1, 'AgentTx wrapper must forward ctx argument to clearHistory');
+  assert(oldGCount === 1 && newGCount === 1 && newMatCount === 1,
+    `Expected each geometry and material disposed exactly once (oldG=${oldGCount}, newG=${newGCount}, newMat=${newMatCount})`);
+
+  // B. Sibling in Weight Paint (_origMaterial stashed) must protect shared material/texture on other sibling delete
+  const scene2 = new THREE.Scene();
+  const sm2 = new SceneManager(scene2);
+  const tex = new THREE.DataTexture(new Uint8Array([0, 255, 0, 255]), 1, 1);
+  const sharedMat = new THREE.MeshStandardMaterial({ map: tex });
+  let matDisposed = 0;
+  let texDisposed = 0;
+  const ogM = sharedMat.dispose.bind(sharedMat);
+  const ogT = tex.dispose.bind(tex);
+  sharedMat.dispose = () => { matDisposed += 1; ogM(); };
+  tex.dispose = () => { texDisposed += 1; ogT(); };
+
+  const m1 = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), sharedMat);
+  const m2 = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), sharedMat);
+  m1.name = 'Painted';
+  m2.name = 'Sibling';
+  sm2.addObject(m1, null, false);
+  sm2.addObject(m2, null, false);
+
+  // Put m1 into Weight Paint state (original material stashed on userData._origMaterial)
+  m1.userData._origMaterial = sharedMat;
+  m1.userData._weightPaintMat = new THREE.MeshBasicMaterial({ vertexColors: true });
+  m1.material = m1.userData._weightPaintMat;
+
+  sm2.removeObject(m2, false, true);
+  assert(matDisposed === 0 && texDisposed === 0,
+    `Shared material/texture in WeightPaint _origMaterial must stay alive (mat=${matDisposed}, tex=${texDisposed})`);
+
+  sm2.removeObject(m1, false, true);
+  assert(matDisposed === 1 && texDisposed === 1,
+    `After last owner removed, shared material/texture must dispose once (mat=${matDisposed}, tex=${texDisposed})`);
 });
 
 console.log(`\nSummary: ${passed} passed, ${failures.length} failed.`);

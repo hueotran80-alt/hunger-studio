@@ -231,15 +231,38 @@ export class DataBlockRegistry {
     return updated;
   }
 
+  _isNodeExcludedByRoot(node, excludeRoot) {
+    if (!excludeRoot) return false;
+    let cur = node;
+    while (cur) {
+      if (cur === excludeRoot) return true;
+      cur = cur.parent;
+    }
+    return false;
+  }
+
+  _collectSubtreeUuids(root) {
+    const uuids = new Set();
+    if (!root) return uuids;
+    if (typeof root.traverse === 'function') {
+      root.traverse((n) => {
+        if (n?.uuid) uuids.add(n.uuid);
+      });
+    } else if (root.uuid) {
+      uuids.add(root.uuid);
+    }
+    return uuids;
+  }
+
   /**
-   * Returns true if any object in `sceneRoot` (other than `excludeObject`) references `geometry`.
+   * Returns true if any object in `sceneRoot` (outside `excludeObject`'s subtree) references `geometry`.
    */
   isGeometryShared(geometry, sceneRoot = null, excludeObject = null) {
     if (!geometry) return false;
     let refs = 0;
     if (sceneRoot && typeof sceneRoot.traverse === 'function') {
       sceneRoot.traverse((node) => {
-        if (!node || node === excludeObject || !isUserSceneObject(node)) return;
+        if (!node || this._isNodeExcludedByRoot(node, excludeObject) || !isUserSceneObject(node)) return;
         if (node.geometry === geometry || node.userData?.baseGeometry === geometry) {
           refs += 1;
         }
@@ -249,35 +272,28 @@ export class DataBlockRegistry {
     const id = this._geomUuidToId.get(geometry.uuid);
     const rec = id ? this.get('meshes', id) : null;
     if (!rec) return false;
+    const excludedUuids = this._collectSubtreeUuids(excludeObject);
     for (const u of rec.users) {
-      if (!excludeObject || u !== excludeObject.uuid) return true;
+      if (!excludedUuids.has(u)) return true;
     }
     return false;
   }
 
   /**
-   * Returns true if any object in `sceneRoot` (other than `excludeObject`) still references `material`.
+   * Returns true if any object in `sceneRoot` (outside `excludeObject`'s subtree) still references `material`.
    */
   isMaterialShared(material, sceneRoot = null, excludeObject = null) {
     if (!material) return false;
-    const isExcluded = (node) => {
-      if (!excludeObject) return false;
-      let cur = node;
-      while (cur) {
-        if (cur === excludeObject) return true;
-        cur = cur.parent;
-      }
-      return false;
-    };
     const matMatches = (entry) => Array.isArray(entry)
       ? entry.includes(material)
       : entry === material;
     let refs = 0;
     if (sceneRoot && typeof sceneRoot.traverse === 'function') {
       sceneRoot.traverse((node) => {
-        if (!node || isExcluded(node) || !isUserSceneObject(node)) return;
+        if (!node || this._isNodeExcludedByRoot(node, excludeObject) || !isUserSceneObject(node)) return;
         const ud = node.userData || {};
         if (matMatches(node.material) ||
+            matMatches(ud._origMaterial) ||
             matMatches(ud.__originalMaterial) ||
             matMatches(ud.__importedMaterial) ||
             matMatches(ud.__boolOrigMaterial)) {
@@ -289,27 +305,19 @@ export class DataBlockRegistry {
     const id = this._matUuidToId.get(material.uuid);
     const rec = id ? this.get('materials', id) : null;
     if (!rec) return false;
+    const excludedUuids = this._collectSubtreeUuids(excludeObject);
     for (const u of rec.users) {
-      if (!excludeObject || u !== excludeObject.uuid) return true;
+      if (!excludedUuids.has(u)) return true;
     }
     return false;
   }
 
   /**
-   * Returns true if any remaining material in `sceneRoot` (besides `excludeMaterial` on `excludeObject`)
+   * Returns true if any remaining material in `sceneRoot` (besides `excludeMaterial` on `excludeObject`'s subtree)
    * still references `texture`.
    */
   isTextureShared(texture, excludeMaterial = null, sceneRoot = null, excludeObject = null) {
     if (!texture || !texture.isTexture) return false;
-    const isExcluded = (node) => {
-      if (!excludeObject) return false;
-      let cur = node;
-      while (cur) {
-        if (cur === excludeObject) return true;
-        cur = cur.parent;
-      }
-      return false;
-    };
     const SLOTS = [
       'map', 'normalMap', 'roughnessMap', 'metalnessMap', 'aoMap',
       'alphaMap', 'emissiveMap', 'bumpMap', 'specularMap', 'envMap', 'lightMap',
@@ -326,9 +334,9 @@ export class DataBlockRegistry {
     };
     if (sceneRoot && typeof sceneRoot.traverse === 'function') {
       sceneRoot.traverse((node) => {
-        if (shared || !node || isExcluded(node) || !isUserSceneObject(node)) return;
+        if (shared || !node || this._isNodeExcludedByRoot(node, excludeObject) || !isUserSceneObject(node)) return;
         const ud = node.userData || {};
-        for (const holder of [node.material, ud.__originalMaterial, ud.__importedMaterial, ud.__boolOrigMaterial]) {
+        for (const holder of [node.material, ud._origMaterial, ud.__originalMaterial, ud.__importedMaterial, ud.__boolOrigMaterial]) {
           if (!holder) continue;
           if (Array.isArray(holder)) holder.forEach(checkMat);
           else checkMat(holder);

@@ -436,6 +436,7 @@ export class SceneManager extends EventEmitter {
     this.maxHistory = 50;
     this.revision = 0;
     this._batchStack = [];
+    this._disposedObjects = new WeakSet();
 
     // Nested Collections & View Layers
     this.collectionManager = new CollectionManager(this);
@@ -631,11 +632,10 @@ export class SceneManager extends EventEmitter {
 
     // Always detach orphaned RigSystem / Studio SkeletonHelpers, IK handles, and TransformControls
     // even on undoable delete (disposeResources = false) so no ghost skeleton remains in the viewport.
-    this._cleanupRigHelpersForRemovedObject(object, { disposeResources });
-
-    // If permanently destroying resources
     if (disposeResources) {
       this.deepDisposeObject(object);
+    } else {
+      this._cleanupRigHelpersForRemovedObject(object, { disposeResources: false });
     }
 
     // Clean up timeline tracks — cả keyframe của con trong group, không chỉ object gốc.
@@ -834,6 +834,9 @@ export class SceneManager extends EventEmitter {
 
     this.executeCommand({
       description: 'New Material',
+      objects: meshes,
+      oldMaterials,
+      newMaterials,
       execute: () => meshes.forEach((mesh, i) => { mesh.material = newMaterials[i]; }),
       undo: () => meshes.forEach((mesh, i) => { mesh.material = oldMaterials[i]; })
     });
@@ -1174,8 +1177,10 @@ export class SceneManager extends EventEmitter {
       evicted.push(this.undoStack.shift());
     }
     const droppedRedo = this.redoStack.splice(0); // Clear redo stack on new action
-    for (const cmd of evicted) this._disposeEvictedGeometry(cmd);
-    for (const cmd of droppedRedo) this._disposeEvictedGeometry(cmd);
+    const cleanupList = [...evicted, ...droppedRedo];
+    if (cleanupList.length > 0) {
+      this._disposeEvictedCommands(cleanupList);
+    }
     this.revision += 1;
     this.emit('historyChanged', {
       action: 'execute',
@@ -1201,31 +1206,258 @@ export class SceneManager extends EventEmitter {
     if (command) this.executeCommand(command);
   }
 
-  _commandReferencesGeometry(command, geometry) {
-    if (!command || !geometry) return false;
-    if (command.before?.geometry === geometry || command.after?.geometry === geometry ||
-        command.oldGeometry === geometry || command.newGeometry === geometry ||
-        command.mesh?.geometry === geometry || command.mesh?.userData?.baseGeometry === geometry) {
-      return true;
+  _createDisposeContext({ clearingScene = false } = {}) {
+    return {
+      clearingScene: Boolean(clearingScene),
+      visitedNodes: new Set(),
+      disposedGeos: new Set(),
+      disposedMats: new Set(),
+      disposedTexs: new Set(),
+      disposedSkeletons: new Set(),
+    };
+  }
+
+  _filterTopLevelRoots(objects) {
+    const all = new Set();
+    for (const obj of objects || []) {
+      if (obj) all.add(obj);
     }
-    if (Array.isArray(command.commands)) {
-      for (const child of command.commands) {
-        if (this._commandReferencesGeometry(child, geometry)) return true;
+    const roots = [];
+    for (const obj of all) {
+      let cur = obj.parent;
+      let hasTrackedAncestor = false;
+      while (cur) {
+        if (all.has(cur)) {
+          hasTrackedAncestor = true;
+          break;
+        }
+        cur = cur.parent;
       }
+      if (!hasTrackedAncestor) {
+        roots.push(obj);
+      }
+    }
+    return roots;
+  }
+
+  _iterFlattenedCommands(commands, out = []) {
+    if (!Array.isArray(commands)) return out;
+    for (const cmd of commands) {
+      if (!cmd) continue;
+      out.push(cmd);
+      if (Array.isArray(cmd.commands)) {
+        this._iterFlattenedCommands(cmd.commands, out);
+      }
+    }
+    return out;
+  }
+
+  _forEachMaterialTexture(material, fn) {
+    if (!material || typeof material !== 'object') return;
+    for (const prop of Object.keys(material)) {
+      const val = material[prop];
+      if (val && val.isTexture) fn(val);
+    }
+  }
+
+  _materialMatchesEntry(entry, material) {
+    if (!entry) return false;
+    return Array.isArray(entry) ? entry.includes(material) : entry === material;
+  }
+
+  _forEachNodeMaterial(node, fn) {
+    if (!node) return;
+    const holders = [
+      node.material,
+      node.userData?._weightPaintMat,
+      node.userData?._origMaterial,
+      node.userData?.__originalMaterial,
+      node.userData?.__importedMaterial,
+      node.userData?.__boolOrigMaterial,
+    ];
+    for (const h of holders) {
+      if (!h) continue;
+      if (Array.isArray(h)) h.forEach((m) => m && fn(m));
+      else fn(h);
+    }
+  }
+
+  _isNodeInactiveOrExcluded(node, excludeRoot) {
+    if (!node || this._disposedObjects.has(node)) return true;
+    return Boolean(excludeRoot && this._isNodeWithinSubtree(excludeRoot, node));
+  }
+
+  _forEachCommandSubjectNode(command, fn, excludeRoot = null) {
+    if (!command) return;
+    const visited = new Set();
+    const visitSubtree = (root) => {
+      if (this._isNodeInactiveOrExcluded(root, excludeRoot)) return;
+      const handleNode = (node) => {
+        if (visited.has(node) || this._isNodeInactiveOrExcluded(node, excludeRoot)) return;
+        visited.add(node);
+        fn(node);
+        const stashed = node.userData?._detachedRigHelpers;
+        if (Array.isArray(stashed)) {
+          for (const entry of stashed) {
+            if (entry?.helper) visitSubtree(entry.helper);
+          }
+        }
+      };
+      if (typeof root.traverse === 'function') root.traverse(handleNode);
+      else handleNode(root);
+    };
+    for (const obj of this._collectCommandObjects(command)) {
+      visitSubtree(obj);
+    }
+  }
+
+  _isCommandOwnedByExcluded(command, excludeRoot) {
+    if (!command) return false;
+    const objs = this._collectCommandObjects(command);
+    if (objs.size === 0) return false;
+    for (const o of objs) {
+      if (!this._isNodeInactiveOrExcluded(o, excludeRoot)) return false;
+    }
+    return true;
+  }
+
+  _someHistoryCommandMatches(matcher, excludeRoot = null) {
+    const allCmds = this._iterFlattenedCommands([...this.undoStack, ...this.redoStack]);
+    for (const cmd of allCmds) {
+      if (this._isCommandOwnedByExcluded(cmd, excludeRoot)) continue;
+      if (matcher(cmd)) return true;
     }
     return false;
   }
 
-  _isGeometryLive(geometry) {
-    if (!geometry) return false;
-    if (dataBlockRegistry.isGeometryShared(geometry, this.rootContainer, null)) return true;
-    for (const cmd of this.undoStack) {
-      if (this._commandReferencesGeometry(cmd, geometry)) return true;
-    }
-    for (const cmd of this.redoStack) {
-      if (this._commandReferencesGeometry(cmd, geometry)) return true;
+  _commandReferencesGeometry(command, geometry, excludeRoot = null) {
+    if (!command || !geometry) return false;
+    let found = false;
+    for (const cmd of this._iterFlattenedCommands([command])) {
+      if (this._isCommandOwnedByExcluded(cmd, excludeRoot)) continue;
+      if (cmd.before?.geometry === geometry || cmd.after?.geometry === geometry ||
+          cmd.oldGeometry === geometry || cmd.newGeometry === geometry) {
+        return true;
+      }
+      this._forEachCommandSubjectNode(cmd, (node) => {
+        if (found) return;
+        if (node.geometry === geometry || node.userData?.baseGeometry === geometry) {
+          found = true;
+        }
+      }, excludeRoot);
+      if (found) return true;
     }
     return false;
+  }
+
+  _isGeometryLiveInHistory(geometry, excludeRoot = null) {
+    if (!geometry) return false;
+    return this._someHistoryCommandMatches(
+      (cmd) => this._commandReferencesGeometry(cmd, geometry, excludeRoot),
+      excludeRoot
+    );
+  }
+
+  _isGeometryLive(geometry, excludeRoot = null) {
+    if (!geometry) return false;
+    if (dataBlockRegistry.isGeometryShared(geometry, this.rootContainer, excludeRoot)) return true;
+    return this._isGeometryLiveInHistory(geometry, excludeRoot);
+  }
+
+  _commandReferencesMaterial(command, material, excludeRoot = null) {
+    if (!command || !material) return false;
+    let found = false;
+    for (const cmd of this._iterFlattenedCommands([command])) {
+      if (this._isCommandOwnedByExcluded(cmd, excludeRoot)) continue;
+      if (this._materialMatchesEntry(cmd.oldMaterial, material) ||
+          this._materialMatchesEntry(cmd.newMaterial, material) ||
+          this._materialMatchesEntry(cmd.oldMaterials, material) ||
+          this._materialMatchesEntry(cmd.newMaterials, material) ||
+          this._materialMatchesEntry(cmd.before?.material, material) ||
+          this._materialMatchesEntry(cmd.after?.material, material)) {
+        return true;
+      }
+      this._forEachCommandSubjectNode(cmd, (node) => {
+        if (found) return;
+        this._forEachNodeMaterial(node, (m) => {
+          if (m === material) found = true;
+        });
+      }, excludeRoot);
+      if (found) return true;
+    }
+    return false;
+  }
+
+  _isMaterialLiveInHistory(material, excludeRoot = null) {
+    if (!material) return false;
+    return this._someHistoryCommandMatches(
+      (cmd) => this._commandReferencesMaterial(cmd, material, excludeRoot),
+      excludeRoot
+    );
+  }
+
+  _isMaterialLive(material, excludeRoot = null) {
+    if (!material) return false;
+    if (dataBlockRegistry.isMaterialShared(material, this.rootContainer, excludeRoot)) return true;
+    return this._isMaterialLiveInHistory(material, excludeRoot);
+  }
+
+  _isTextureLiveInHistory(texture, excludeMaterial = null, excludeRoot = null) {
+    if (!texture || !texture.isTexture) return false;
+    let found = false;
+    const checkMat = (m) => {
+      if (!m || m === excludeMaterial || found) return;
+      this._forEachMaterialTexture(m, (t) => {
+        if (t === texture) found = true;
+      });
+    };
+    return this._someHistoryCommandMatches((cmd) => {
+      for (const holder of [cmd.oldMaterial, cmd.newMaterial, cmd.oldMaterials, cmd.newMaterials, cmd.before?.material, cmd.after?.material]) {
+        if (!holder) continue;
+        if (Array.isArray(holder)) holder.forEach(checkMat);
+        else checkMat(holder);
+        if (found) return true;
+      }
+      this._forEachCommandSubjectNode(cmd, (node) => {
+        if (found) return;
+        this._forEachNodeMaterial(node, checkMat);
+      }, excludeRoot);
+      return found;
+    }, excludeRoot);
+  }
+
+  _isSkeletonLiveInHistory(skeleton, excludeRoot = null) {
+    if (!skeleton) return false;
+    let found = false;
+    return this._someHistoryCommandMatches((cmd) => {
+      if (cmd.skeleton === skeleton) return true;
+      this._forEachCommandSubjectNode(cmd, (node) => {
+        if (found) return;
+        const rigState = node.userData?._detachedRigState;
+        if (node.skeleton === skeleton ||
+            node.userData?.skeleton === skeleton ||
+            rigState?.activeSkeleton === skeleton ||
+            rigState?.editSkeleton === skeleton) {
+          found = true;
+        }
+      }, excludeRoot);
+      return found;
+    }, excludeRoot);
+  }
+
+  _isSkeletonLive(skeleton, excludeRoot = null) {
+    if (!skeleton) return false;
+    if (this.rootContainer && typeof this.rootContainer.traverse === 'function') {
+      let liveInScene = false;
+      this.rootContainer.traverse((node) => {
+        if (liveInScene || !node || (excludeRoot && this._isNodeWithinSubtree(excludeRoot, node))) return;
+        if (node.skeleton === skeleton || node.userData?.skeleton === skeleton) {
+          liveInScene = true;
+        }
+      });
+      if (liveInScene) return true;
+    }
+    return this._isSkeletonLiveInHistory(skeleton, excludeRoot);
   }
 
   _commandReferencesObject(command, targetObj) {
@@ -1240,6 +1472,7 @@ export class SceneManager extends EventEmitter {
       return true;
     }
     if (Array.isArray(command.objects) && command.objects.includes(targetObj)) return true;
+    if (Array.isArray(command.children) && command.children.includes(targetObj)) return true;
     if (Array.isArray(command.entries) && command.entries.some((e) => e?.object === targetObj)) return true;
     if (Array.isArray(command.commands)) {
       for (const child of command.commands) {
@@ -1251,11 +1484,15 @@ export class SceneManager extends EventEmitter {
 
   _isObjectReferencedInHistory(targetObj) {
     if (!targetObj) return false;
-    for (const cmd of this.undoStack) {
-      if (this._commandReferencesObject(cmd, targetObj)) return true;
-    }
-    for (const cmd of this.redoStack) {
-      if (this._commandReferencesObject(cmd, targetObj)) return true;
+    let cur = targetObj;
+    while (cur) {
+      for (const cmd of this.undoStack) {
+        if (this._commandReferencesObject(cmd, cur)) return true;
+      }
+      for (const cmd of this.redoStack) {
+        if (this._commandReferencesObject(cmd, cur)) return true;
+      }
+      cur = cur.parent;
     }
     return false;
   }
@@ -1269,6 +1506,9 @@ export class SceneManager extends EventEmitter {
     if (command.newMesh) out.add(command.newMesh);
     if (Array.isArray(command.objects)) {
       for (const o of command.objects) if (o) out.add(o);
+    }
+    if (Array.isArray(command.children)) {
+      for (const c of command.children) if (c?.isObject3D) out.add(c);
     }
     if (Array.isArray(command.entries)) {
       for (const e of command.entries) if (e?.object) out.add(e.object);
@@ -1305,7 +1545,7 @@ export class SceneManager extends EventEmitter {
     }
   }
 
-  _disposeBoneProxiesUnder(object, disposedGeos = new Set(), disposedMats = new Set()) {
+  _disposeBoneProxiesUnder(object, disposedGeos = new Set(), disposedMats = new Set(), ctx = null) {
     if (!object) return;
     const proxies = new Set();
     const scanNode = (node) => {
@@ -1332,8 +1572,14 @@ export class SceneManager extends EventEmitter {
     for (const proxy of proxies) {
       if (proxy.parent) proxy.parent.remove(proxy);
       if (proxy.userData) proxy.userData.targetBone = null;
+      this._disposedObjects.add(proxy);
+    }
+    const excludeRoot = ctx?.clearingScene ? null : object;
+    for (const proxy of proxies) {
       if (proxy.geometry && typeof proxy.geometry.dispose === 'function' && !disposedGeos.has(proxy.geometry)) {
-        if (!dataBlockRegistry.isGeometryShared(proxy.geometry, this.rootContainer, proxy)) {
+        const liveInScene = !ctx?.clearingScene && dataBlockRegistry.isGeometryShared(proxy.geometry, this.rootContainer, excludeRoot);
+        const liveInHist = !ctx?.clearingScene && this._isGeometryLiveInHistory(proxy.geometry, excludeRoot);
+        if (!liveInScene && !liveInHist) {
           disposedGeos.add(proxy.geometry);
           proxy.geometry.dispose();
         }
@@ -1342,9 +1588,15 @@ export class SceneManager extends EventEmitter {
         const mats = Array.isArray(proxy.material) ? proxy.material : [proxy.material];
         for (const m of mats) {
           if (m && typeof m.dispose === 'function' && !disposedMats.has(m)) {
-            if (!dataBlockRegistry.isMaterialShared(m, this.rootContainer, proxy)) {
-              disposedMats.add(m);
-              m.dispose();
+            if (ctx) {
+              this.disposeMaterial(m, excludeRoot, ctx);
+            } else {
+              const liveInScene = dataBlockRegistry.isMaterialShared(m, this.rootContainer, excludeRoot);
+              const liveInHist = this._isMaterialLiveInHistory(m, excludeRoot);
+              if (!liveInScene && !liveInHist) {
+                disposedMats.add(m);
+                m.dispose();
+              }
             }
           }
         }
@@ -1352,7 +1604,7 @@ export class SceneManager extends EventEmitter {
     }
   }
 
-  _disposeDetachedRigState(object, disposedGeos = new Set(), disposedMats = new Set()) {
+  _disposeDetachedRigState(object, disposedGeos = new Set(), disposedMats = new Set(), ctx = null) {
     if (!object?.userData) return;
     const stashed = object.userData._detachedRigHelpers;
     if (Array.isArray(stashed)) {
@@ -1363,7 +1615,7 @@ export class SceneManager extends EventEmitter {
       }
       delete object.userData._detachedRigHelpers;
     }
-    this._disposeBoneProxiesUnder(object, disposedGeos, disposedMats);
+    this._disposeBoneProxiesUnder(object, disposedGeos, disposedMats, ctx);
     const studioState = object.userData._detachedStudioState;
     if (studioState) {
       try { studioState.currentAction?.stop?.(); } catch (_) {}
@@ -1376,37 +1628,88 @@ export class SceneManager extends EventEmitter {
       delete object.userData._detachedStudioState;
     }
     if (object.userData._detachedRigState) {
+      const rigState = object.userData._detachedRigState;
+      const excludeRoot = ctx?.clearingScene ? null : object;
+      for (const skel of [rigState.activeSkeleton, rigState.editSkeleton]) {
+        if (!skel || typeof skel.dispose !== 'function') continue;
+        if (ctx?.disposedSkeletons?.has(skel)) continue;
+        if (!ctx?.clearingScene && this._isSkeletonLive(skel, excludeRoot)) continue;
+        ctx?.disposedSkeletons?.add(skel);
+        skel.dispose();
+      }
       delete object.userData._detachedRigState;
     }
   }
 
-  /** Chỉ dispose snapshot geometry, helper/IK đã stash và bone proxy của command bị evict khi không còn live trong scene hoặc undo/redo stack. */
-  _disposeEvictedGeometry(command) {
-    if (!command) return;
-    if (Array.isArray(command.commands)) {
-      for (const child of command.commands) this._disposeEvictedGeometry(child);
+  /**
+   * Dispose detached objects, snapshot geometries/materials, skeletons, and stashed rig helpers
+   * belonging to evicted/cleared commands once they are no longer live in scene or history.
+   */
+  _disposeEvictedCommands(commands, ctx = null) {
+    const flatCmds = this._iterFlattenedCommands(commands);
+    if (flatCmds.length === 0) return;
+    const activeCtx = ctx || this._createDisposeContext();
+
+    const candidateObjs = new Set();
+    for (const cmd of flatCmds) {
+      this._collectCommandObjects(cmd, candidateObjs);
     }
-    const candidates = [
-      command.before?.geometry,
-      command.after?.geometry,
-      command.oldGeometry,
-      command.newGeometry,
-    ];
-    for (const g of candidates) {
-      if (!g || typeof g.dispose !== 'function') continue;
-      if (!this._isGeometryLive(g)) {
-        g.dispose();
-      }
-    }
-    const disposedGeos = new Set();
-    const disposedMats = new Set();
-    const objs = this._collectCommandObjects(command);
-    for (const obj of objs) {
-      if (!obj || this._isAttachedToScene(obj) || this._isObjectReferencedInHistory(obj)) {
+    const eligible = [];
+    for (const obj of candidateObjs) {
+      if (!obj || this._disposedObjects.has(obj) || this._isAttachedToScene(obj) || this._isObjectReferencedInHistory(obj)) {
         continue;
       }
-      this._disposeDetachedRigState(obj, disposedGeos, disposedMats);
+      eligible.push(obj);
     }
+    for (const root of this._filterTopLevelRoots(eligible)) {
+      this.deepDisposeObject(root, activeCtx);
+    }
+
+    for (const cmd of flatCmds) {
+      const geoCandidates = [
+        cmd.before?.geometry,
+        cmd.after?.geometry,
+        cmd.oldGeometry,
+        cmd.newGeometry,
+      ];
+      for (const g of geoCandidates) {
+        if (!g || typeof g.dispose !== 'function' || activeCtx.disposedGeos.has(g)) continue;
+        if (activeCtx.clearingScene || !this._isGeometryLive(g)) {
+          activeCtx.disposedGeos.add(g);
+          g.dispose();
+        }
+      }
+
+      const matHolders = [
+        cmd.oldMaterial,
+        cmd.newMaterial,
+        cmd.oldMaterials,
+        cmd.newMaterials,
+        cmd.before?.material,
+        cmd.after?.material,
+      ];
+      for (const holder of matHolders) {
+        if (!holder) continue;
+        const mats = Array.isArray(holder) ? holder : [holder];
+        for (const m of mats) {
+          if (!m || typeof m.dispose !== 'function' || activeCtx.disposedMats.has(m)) continue;
+          if (activeCtx.clearingScene || !this._isMaterialLive(m)) {
+            this.disposeMaterial(m, null, activeCtx);
+          }
+        }
+      }
+
+      if (cmd.skeleton && typeof cmd.skeleton.dispose === 'function' && !activeCtx.disposedSkeletons.has(cmd.skeleton)) {
+        if (activeCtx.clearingScene || !this._isSkeletonLive(cmd.skeleton)) {
+          activeCtx.disposedSkeletons.add(cmd.skeleton);
+          cmd.skeleton.dispose();
+        }
+      }
+    }
+  }
+
+  _disposeEvictedGeometry(command, ctx = null) {
+    this._disposeEvictedCommands(command ? [command] : [], ctx);
   }
 
   _emitTransformChanged(object) {
@@ -1474,10 +1777,10 @@ export class SceneManager extends EventEmitter {
     return this.redoStack.length > 0;
   }
 
-  clearHistory() {
+  clearHistory(ctx = null) {
     const dropped = [...this.undoStack.splice(0), ...this.redoStack.splice(0)];
-    for (const cmd of dropped) {
-      this._disposeEvictedGeometry(cmd);
+    if (dropped.length > 0) {
+      this._disposeEvictedCommands(dropped, ctx);
     }
     this.emit('historyChanged', { action: 'clear', command: null, canUndo: false, canRedo: false, lastAction: null });
   }
@@ -1579,19 +1882,34 @@ export class SceneManager extends EventEmitter {
     this.deepDisposeObject(object);
   }
 
-  disposeMaterial(material, excludeObject = null) {
-    if (!material) return;
-    if (excludeObject && dataBlockRegistry.isMaterialShared(material, this.rootContainer, excludeObject)) {
-      return;
+  disposeMaterial(material, excludeObject = null, ctx = null) {
+    if (!material || typeof material.dispose !== 'function') return;
+    if (ctx?.disposedMats?.has(material)) return;
+    if (!ctx?.clearingScene) {
+      if (excludeObject && dataBlockRegistry.isMaterialShared(material, this.rootContainer, excludeObject)) {
+        return;
+      }
+      if (this._isMaterialLiveInHistory(material, excludeObject)) {
+        return;
+      }
     }
+    ctx?.disposedMats?.add(material);
     // Release any procedural texture lease BEFORE checking texture ownership so
     // pooled cache entries & sibling leased materials stay protected from premature dispose.
     textureLeaseRegistry.release(material);
-    Object.keys(material).forEach(prop => {
-      const val = material[prop];
-      if (!val || !val.isTexture) return;
+    this._forEachMaterialTexture(material, (val) => {
+      if (ctx?.disposedTexs?.has(val)) return;
       if (textureLeaseRegistry.isTextureOwned(val)) return;
-      if (!excludeObject || !dataBlockRegistry.isTextureShared(val, material, this.rootContainer, excludeObject)) {
+      if (!ctx?.clearingScene) {
+        if (this.rootContainer && dataBlockRegistry.isTextureShared(val, material, this.rootContainer, excludeObject)) {
+          return;
+        }
+        if (this._isTextureLiveInHistory(val, material, excludeObject)) {
+          return;
+        }
+      }
+      if (typeof val.dispose === 'function') {
+        ctx?.disposedTexs?.add(val);
         val.dispose();
       }
     });
@@ -1692,7 +2010,7 @@ export class SceneManager extends EventEmitter {
     return this._isAttachedToScene(currentTarget);
   }
 
-  _cleanupRigHelpersForRemovedObject(object, { disposeResources = false } = {}) {
+  _cleanupRigHelpersForRemovedObject(object, { disposeResources = false, ctx = null } = {}) {
     if (!object) return;
     const engine = (typeof window !== 'undefined' ? window.engine : null) || this.engine;
     if (engine?.transformControls?.object && this._isNodeWithinSubtree(object, engine.transformControls.object)) {
@@ -1701,7 +2019,7 @@ export class SceneManager extends EventEmitter {
 
     // If re-removing an object that already had stashed helpers from a prior cycle, dispose them first if disposing
     if (disposeResources) {
-      this._disposeDetachedRigState(object);
+      this._disposeDetachedRigState(object, ctx?.disposedGeos, ctx?.disposedMats, ctx);
     }
 
     const rigSystem = this._getRigSystem();
@@ -1727,7 +2045,7 @@ export class SceneManager extends EventEmitter {
         'scene';
 
       if (disposeResources) {
-        this._disposeHelperSubtree(helper);
+        this._disposeHelperSubtree(helper, ctx?.disposedGeos, ctx?.disposedMats);
       } else {
         stashed.push({ helper, parent: parentRef || this.scene, ownerTag, targetRoot });
       }
@@ -1754,7 +2072,7 @@ export class SceneManager extends EventEmitter {
       if (ikParent) ikParent.remove(ikGroup);
 
       if (disposeResources) {
-        this._disposeHelperSubtree(ikGroup);
+        this._disposeHelperSubtree(ikGroup, ctx?.disposedGeos, ctx?.disposedMats);
       } else {
         stashed.push({
           helper: ikGroup,
@@ -2015,46 +2333,89 @@ export class SceneManager extends EventEmitter {
    * Prevents any memory leaks or orphaned references.
    * @param {THREE.Object3D} object 
    */
-  deepDisposeObject(object) {
-    if (!object) return;
+  deepDisposeObject(object, ctx = null) {
+    if (!object || this._disposedObjects.has(object)) return;
+    const activeCtx = ctx || this._createDisposeContext();
 
     // 1 & 2. Detach TransformControls and clean up RigSystem / Studio helpers
-    this._cleanupRigHelpersForRemovedObject(object, { disposeResources: true });
+    this._cleanupRigHelpersForRemovedObject(object, { disposeResources: true, ctx: activeCtx });
+
+    const excludeRoot = activeCtx.clearingScene ? null : object;
+    const disposeGeoIfFree = (geom) => {
+      if (!geom || typeof geom.dispose !== 'function' || activeCtx.disposedGeos.has(geom)) return;
+      if (!activeCtx.clearingScene && (
+        dataBlockRegistry.isGeometryShared(geom, this.rootContainer, excludeRoot) ||
+        this._isGeometryLiveInHistory(geom, excludeRoot)
+      )) {
+        return;
+      }
+      activeCtx.disposedGeos.add(geom);
+      geom.dispose();
+    };
+    const disposeSkelIfFree = (skel) => {
+      if (!skel || typeof skel.dispose !== 'function' || activeCtx.disposedSkeletons.has(skel)) return;
+      if (!activeCtx.clearingScene && this._isSkeletonLive(skel, excludeRoot)) {
+        return;
+      }
+      activeCtx.disposedSkeletons.add(skel);
+      skel.dispose();
+    };
+    const disposeMaterialEntry = (matEntry) => {
+      if (!matEntry) return;
+      if (Array.isArray(matEntry)) {
+        matEntry.forEach((m) => this.disposeMaterial(m, excludeRoot, activeCtx));
+      } else {
+        this.disposeMaterial(matEntry, excludeRoot, activeCtx);
+      }
+    };
+
+    const disposeNode = (child) => {
+      if (!child || activeCtx.visitedNodes.has(child) || this._disposedObjects.has(child)) return;
+      activeCtx.visitedNodes.add(child);
+      this._disposedObjects.add(child);
+
+      // SkinnedMesh skeleton disposal
+      if (child.isSkinnedMesh && child.skeleton) {
+        disposeSkelIfFree(child.skeleton);
+      }
+      if (child.userData?.skeleton) {
+        disposeSkelIfFree(child.userData.skeleton);
+      }
+
+      // Geometries (skip disposal if shared in scene or history)
+      disposeGeoIfFree(child.geometry);
+      if (child.userData?.baseGeometry) {
+        disposeGeoIfFree(child.userData.baseGeometry);
+      }
+
+      // Materials & Textures (skip shared materials/textures in scene or history)
+      disposeMaterialEntry(child.material);
+      if (child.userData) {
+        disposeMaterialEntry(child.userData._weightPaintMat);
+        disposeMaterialEntry(child.userData._origMaterial);
+        disposeMaterialEntry(child.userData.__originalMaterial);
+        disposeMaterialEntry(child.userData.__importedMaterial);
+        disposeMaterialEntry(child.userData.__boolOrigMaterial);
+        if (child !== object && (
+          child.userData._detachedRigHelpers ||
+          child.userData._detachedRigState ||
+          child.userData._detachedStudioState
+        )) {
+          this._disposeDetachedRigState(child, activeCtx.disposedGeos, activeCtx.disposedMats, activeCtx);
+        }
+      }
+
+      // Unhook joint handles
+      if (child.userData?.isBoneJoint) {
+        child.userData.targetBone = null;
+      }
+    };
 
     // 3. Recursive disposal of geometries, materials, textures, skeletons
-    if (object.traverse) {
-      object.traverse(child => {
-        // SkinnedMesh skeleton disposal
-        if (child.isSkinnedMesh && child.skeleton) {
-          if (typeof child.skeleton.dispose === 'function') {
-            child.skeleton.dispose();
-          }
-        }
-        if (child.userData?.skeleton && typeof child.userData.skeleton.dispose === 'function') {
-          child.userData.skeleton.dispose();
-        }
-
-        // Geometries (skip disposal if still referenced by a linked Alt+D sibling)
-        if (child.geometry && typeof child.geometry.dispose === 'function') {
-          if (!dataBlockRegistry.isGeometryShared(child.geometry, this.rootContainer, child)) {
-            child.geometry.dispose();
-          }
-        }
-
-        // Materials & Textures (skip shared materials/textures on linked Alt+D siblings)
-        if (child.material) {
-          if (Array.isArray(child.material)) {
-            child.material.forEach(m => this.disposeMaterial(m, child));
-          } else {
-            this.disposeMaterial(child.material, child);
-          }
-        }
-
-        // Unhook joint handles
-        if (child.userData?.isBoneJoint) {
-          child.userData.targetBone = null;
-        }
-      });
+    if (typeof object.traverse === 'function') {
+      object.traverse(disposeNode);
+    } else {
+      disposeNode(object);
     }
 
     // 4. Detach from parent
@@ -2068,6 +2429,8 @@ export class SceneManager extends EventEmitter {
    * Resets activeSelection = null, ID counters, undo/redo history, Outliner, and Timeline tracks.
    */
   clearScene() {
+    const ctx = this._createDisposeContext({ clearingScene: true });
+
     // 1. Clear selection
     this.clearSelection();
 
@@ -2098,11 +2461,11 @@ export class SceneManager extends EventEmitter {
       rigSystem.ikChains?.clear?.();
       rigSystem.chainBlends?.clear?.();
       if (rigSystem.ikHandlesGroup) {
-        this._disposeHelperSubtree(rigSystem.ikHandlesGroup);
+        this._disposeHelperSubtree(rigSystem.ikHandlesGroup, ctx.disposedGeos, ctx.disposedMats);
         rigSystem.ikHandlesGroup = null;
       }
       if (rigSystem.skeletonHelper) {
-        this._disposeHelperSubtree(rigSystem.skeletonHelper);
+        this._disposeHelperSubtree(rigSystem.skeletonHelper, ctx.disposedGeos, ctx.disposedMats);
         rigSystem.skeletonHelper = null;
       }
       const modeIndicator = typeof document !== 'undefined' ? document.getElementById('mode-indicator-text') : null;
@@ -2110,29 +2473,36 @@ export class SceneManager extends EventEmitter {
     }
     const studio = this._getRapidStudio();
     if (studio) {
-      if (studio._currentAction?.stop) {
-        try { studio._currentAction.stop(); } catch (_) {}
-      }
+      try { studio._currentAction?.stop?.(); } catch (_) {}
+      try { studio._characterMixer?.stopAllAction?.(); } catch (_) {}
+      try {
+        if (studio._characterMixerRoot) {
+          studio._characterMixer?.uncacheRoot?.(studio._characterMixerRoot);
+        }
+      } catch (_) {}
       studio._characterMixer = null;
       studio._characterMixerRoot = null;
       studio._currentAction = null;
       if (studio._currentSkeletonHelper) {
-        this._disposeHelperSubtree(studio._currentSkeletonHelper);
+        this._disposeHelperSubtree(studio._currentSkeletonHelper, ctx.disposedGeos, ctx.disposedMats);
         studio._currentSkeletonHelper = null;
       }
     }
     for (const helper of this._collectSceneSkeletonHelpers()) {
-      this._disposeHelperSubtree(helper);
+      this._disposeHelperSubtree(helper, ctx.disposedGeos, ctx.disposedMats);
     }
     for (const ikGroup of this._collectSceneIKHelpers()) {
-      this._disposeHelperSubtree(ikGroup);
+      this._disposeHelperSubtree(ikGroup, ctx.disposedGeos, ctx.disposedMats);
     }
 
-    // 4. Deep dispose all objects registered in this.objects map
+    // 4. Deep dispose all objects registered in this.objects map (top-level roots first)
     const trackedList = Array.from(this.objects.values());
-    trackedList.forEach(obj => {
-      this.deepDisposeObject(obj);
-    });
+    for (const obj of this._filterTopLevelRoots(trackedList)) {
+      this.deepDisposeObject(obj, ctx);
+    }
+    for (const obj of trackedList) {
+      this.deepDisposeObject(obj, ctx);
+    }
     this.objects.clear();
     this.collectionManager?.reset();
 
@@ -2140,7 +2510,7 @@ export class SceneManager extends EventEmitter {
     if (this.rootContainer && this.rootContainer.children) {
       const rootChildren = [...this.rootContainer.children];
       rootChildren.forEach(child => {
-        this.deepDisposeObject(child);
+        this.deepDisposeObject(child, ctx);
       });
     }
 
@@ -2155,14 +2525,14 @@ export class SceneManager extends EventEmitter {
         }
       }
       orphans.forEach(child => {
-        this.deepDisposeObject(child);
+        this.deepDisposeObject(child, ctx);
       });
     }
 
     // 7. Reset name counters, data-block registry, and undo history
     this.nameCounters.clear();
     dataBlockRegistry.clear();
-    this.clearHistory();
+    this.clearHistory(ctx);
     this.revision += 1;
 
     // 8. Clear Timeline tracks

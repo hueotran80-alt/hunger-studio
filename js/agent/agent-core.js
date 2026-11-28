@@ -671,30 +671,31 @@ export class TxManager {
     this._origUndo = sm.undo.bind(sm);
     this._origRedo = sm.redo.bind(sm);
     this._origClearHistory = sm.clearHistory.bind(sm);
-    sm.executeCommand = (cmd) => {
+    sm.executeCommand = (...args) => {
       if (this.open) {
+        const [cmd] = args;
         this.stack.forEach(t => t.ops.push(cmd?.description || cmd?.constructor?.name || 'command'));
         return;
       }
-      return this._origExecute(cmd);
+      return this._origExecute(...args);
     };
-    sm.undo = () => {
+    sm.undo = (...args) => {
       if (this.open) {
         this.ctx.notify?.('Agent transaction in progress — wait for commit before Undo.');
         return;
       }
-      return this._origUndo();
+      return this._origUndo(...args);
     };
-    sm.redo = () => {
+    sm.redo = (...args) => {
       if (this.open) {
         this.ctx.notify?.('Agent transaction in progress — wait for commit before Redo.');
         return;
       }
-      return this._origRedo();
+      return this._origRedo(...args);
     };
-    sm.clearHistory = () => {
+    sm.clearHistory = (...args) => {
       if (this.open) return;
-      return this._origClearHistory();
+      return this._origClearHistory(...args);
     };
     this._installed = true;
   }
