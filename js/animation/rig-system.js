@@ -1472,9 +1472,18 @@ export class RigSystem {
     const THREE = this.THREE;
     const scene = this.scene || (typeof window !== 'undefined' ? window.scene : null);
 
-    // Remove old helper if present
-    if (this.skeletonHelper && this.skeletonHelper.parent) {
-      this.skeletonHelper.parent.remove(this.skeletonHelper);
+    // Remove and dispose old helper if present
+    if (this.skeletonHelper) {
+      if (this.skeletonHelper.parent) {
+        this.skeletonHelper.parent.remove(this.skeletonHelper);
+      }
+      this.skeletonHelper.geometry?.dispose?.();
+      if (Array.isArray(this.skeletonHelper.material)) {
+        this.skeletonHelper.material.forEach((m) => m?.dispose?.());
+      } else {
+        this.skeletonHelper.material?.dispose?.();
+      }
+      this.skeletonHelper = null;
     }
 
     const candidate = (rootObject?.armatureGroup?.isObject3D ? rootObject.armatureGroup : rootObject)
@@ -1895,15 +1904,27 @@ export class RigSystem {
     const rig = this._prepareRig(character || this.activeCharacter);
     if (!rig || !scene) return false;
 
-    // Clean up existing IK group if any
-    if (this.ikHandlesGroup && this.ikHandlesGroup.parent) {
-      this.ikHandlesGroup.parent.remove(this.ikHandlesGroup);
+    // Clean up and dispose existing IK group if any
+    if (this.ikHandlesGroup) {
+      if (this.ikHandlesGroup.parent) {
+        this.ikHandlesGroup.parent.remove(this.ikHandlesGroup);
+      }
+      this.ikHandlesGroup.traverse?.((node) => {
+        node.geometry?.dispose?.();
+        if (Array.isArray(node.material)) node.material.forEach((m) => m?.dispose?.());
+        else node.material?.dispose?.();
+      });
+      this.ikHandlesGroup = null;
     }
     this.ikChains.clear();
+    this.chainBlends?.clear?.();
+    this.activeIKHandle = null;
 
     const ikGroup = new THREE.Group();
     ikGroup.name = 'IK_Controls_Group';
     ikGroup.userData.isSystemObject = true;
+    ikGroup.userData.isIKHandlesGroup = true;
+    ikGroup.userData.targetRoot = (character && character.isObject3D ? character : null) || rig.root || this.activeCharacter || null;
 
     const boneAliases = {
       LeftUpLeg: ['leftupleg', 'thigh_l', 'upperleg_l', 'hip_l', 'j_bip_l_upperleg'],
@@ -4942,11 +4963,16 @@ export class RigSystem {
 
   _findCharacterRoot(target, bones) {
     const scene = this.scene || (typeof window !== 'undefined' ? window.scene : null);
-    const rootContainer = (typeof window !== 'undefined' && window.sceneManager)
-      ? window.sceneManager.rootContainer
-      : null;
+    const sm = this.sceneManager || this.engine?.sceneManager || (typeof window !== 'undefined' ? window.sceneManager : null);
+    const rootContainer = sm ? sm.rootContainer : null;
     let node = (target && target.isObject3D) ? target : bones[0];
-    while (node.parent && node.parent !== scene && node.parent !== rootContainer && !node.parent.isScene) {
+    while (
+      node.parent &&
+      node.parent !== scene &&
+      node.parent !== rootContainer &&
+      !node.parent.isScene &&
+      !node.parent.userData?.isSystemObject
+    ) {
       node = node.parent;
     }
     return node;
