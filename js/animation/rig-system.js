@@ -13,8 +13,15 @@
  */
 
 import * as THREE from 'three';
-import { computeLaplacianBoneHeatWeights } from './bone-heat.js';
+import { computeLaplacianBoneHeatWeights, validateSkinWeights } from './bone-heat.js';
 import { syncVertexGroupsFromSkinAttributes } from './vertex-groups.js';
+import {
+  listSkeletonTemplates as _listSkeletonTemplates,
+  getSkeletonTemplate as _getSkeletonTemplate,
+  buildSkeletonFromTemplate as _buildSkeletonFromTemplate,
+  fitHumanoidSkeletonToMesh as _fitHumanoidSkeletonToMesh,
+  analyzeHumanoidMeshSilhouette as _analyzeHumanoidMeshSilhouette,
+} from './skeleton-templates.js';
 
 /**
  * Undo/Redo command for Weight Paint brush strokes & batch operations.
@@ -323,6 +330,172 @@ export class RigSystem {
     this.createSkeletonVisualizer(skeleton, armatureGroup);
 
     return { armatureGroup, skeleton, bones, boneMap };
+  }
+
+  /**
+   * List all built-in multi-asset skeleton templates (humanoid, quadruped,
+   * bird, fish, serpent, arachnid, vehicle).
+   */
+  listSkeletonTemplates(category = null) {
+    return _listSkeletonTemplates(category);
+  }
+
+  /**
+   * Create a standardized armature from any skeleton template ID
+   * ('humanoid_standard', 'humanoid_pro', 'quadruped', 'bird', 'fish', 'serpent', 'arachnid', 'vehicle').
+   */
+  createSkeletonFromTemplate(templateId = 'humanoid_pro', options = {}) {
+    const built = _buildSkeletonFromTemplate(templateId, options);
+    const { armatureGroup, skeleton, bones, boneMap, template } = built;
+
+    if (options?.position) {
+      armatureGroup.position.set(
+        Number(options.position.x) || 0,
+        Number(options.position.y) || 0,
+        Number(options.position.z) || 0,
+      );
+    }
+
+    this.activeSkeleton = skeleton;
+    if (options?.addToScene !== false) {
+      const sm = this._getSceneManager();
+      const targetScene = this.scene || (typeof window !== 'undefined' ? window.scene : null);
+      if (sm && typeof sm.addObject === 'function') {
+        sm.addObject(armatureGroup, options?.parent || null, false, false);
+      } else if (targetScene && typeof targetScene.add === 'function') {
+        targetScene.add(armatureGroup);
+      }
+    }
+
+    armatureGroup.updateMatrixWorld(true);
+    skeleton.calculateInverses();
+    this.createSkeletonVisualizer(skeleton, armatureGroup);
+
+    return { armatureGroup, skeleton, bones, boneMap, template };
+  }
+
+  /**
+   * Automatically fit and bind a humanoid skeleton (56-bone Pro or 22-bone Standard)
+   * onto any uploaded static 3D character Mesh or multi-mesh Group.
+   * Uses vertex cross-section silhouette analysis to detect exact height, leg split,
+   * shoulder span, and T-Pose vs A-Pose rest angle before solving Cotangent Bone Heat weights.
+   */
+  autoRigCharacter(target, options = {}) {
+    const THREE = this.THREE;
+    if (!target) return null;
+
+    const templateId = options.templateId || 'humanoid_pro';
+    const skinMode = options.mode || 'heat';
+    const sm = this._getSceneManager();
+    const scene = this.scene || (typeof window !== 'undefined' ? window.scene : null);
+
+    target.updateMatrixWorld(true);
+
+    // Collect all bindable static meshes (skip helper/gizmo/already-skinned unless forced)
+    const meshes = [];
+    if (target.isMesh && (!target.isSkinnedMesh || options.reRig)) {
+      meshes.push(target);
+    } else if (typeof target.traverse === 'function') {
+      target.traverse((o) => {
+        if (!o.isMesh) return;
+        if (o.userData?.isSkeletonHelper || o.userData?.isJointHandle || o.userData?.isIKHandle) return;
+        if (o.isSkinnedMesh && !options.reRig) return;
+        if (o.geometry?.attributes?.position?.count >= 8) {
+          meshes.push(o);
+        }
+      });
+    }
+    if (meshes.length === 0) return null;
+
+    // 1. Fit skeleton precisely to the character's 3D silhouette (or template scaling for non-humanoid)
+    const isHumanoid = templateId === 'humanoid_pro' || templateId === 'humanoid_standard';
+    const built = isHumanoid
+      ? _fitHumanoidSkeletonToMesh(target, { templateId, name: `${target.name || 'Character'}_Rig` })
+      : _buildSkeletonFromTemplate(templateId, {
+        size: new THREE.Box3().setFromObject(target).getSize(new THREE.Vector3()).y || undefined,
+        name: `${target.name || 'Asset'}_Rig`,
+      });
+
+    const { armatureGroup, skeleton, bones, boneMap, silhouette } = built;
+
+    // Attach armature root cleanly under a unified rigged Group if target was a single Mesh
+    let rigRoot = target;
+    if (target.isMesh) {
+      const parent = target.parent;
+      const wrapper = new THREE.Group();
+      wrapper.name = `${target.name || 'Character'}_Rigged`;
+      wrapper.userData.isSkinnedCharacter = true;
+      wrapper.userData.skeleton = skeleton;
+      wrapper.userData.skeletonTemplate = templateId;
+      if (parent && !parent.isScene) {
+        parent.add(wrapper);
+      } else if (sm && typeof sm.addObject === 'function') {
+        sm.addObject(wrapper, null, false, false);
+      } else if (scene) {
+        scene.add(wrapper);
+      }
+      wrapper.attach(target);
+      wrapper.add(armatureGroup);
+      rigRoot = wrapper;
+    } else {
+      target.add(armatureGroup);
+      target.userData = target.userData || {};
+      target.userData.isSkinnedCharacter = true;
+      target.userData.skeleton = skeleton;
+      target.userData.skeletonTemplate = templateId;
+    }
+
+    rigRoot.updateMatrixWorld(true);
+    skeleton.calculateInverses();
+    this.activeSkeleton = skeleton;
+    this.activeCharacter = rigRoot;
+
+    // 2. Skin every mesh in the hierarchy to the shared fitted skeleton
+    const skinnedMeshes = [];
+    const weightReports = [];
+    for (const m of meshes) {
+      const skinned = this.autoSkinMesh(m, skeleton, {
+        mode: skinMode,
+        recordUndo: false,
+      });
+      if (skinned) {
+        skinnedMeshes.push(skinned);
+        weightReports.push(validateSkinWeights(skinned.geometry, skeleton.bones.length));
+      }
+    }
+
+    if (skinnedMeshes.length === 0) return null;
+
+    rigRoot.updateMatrixWorld(true);
+    skeleton.calculateInverses();
+    if (options.showVisualizer !== false) {
+      this.createSkeletonVisualizer(skeleton, rigRoot);
+    }
+
+    const totalVertices = weightReports.reduce((s, r) => s + r.vertexCount, 0);
+    const unboundVertices = weightReports.reduce((s, r) => s + r.unboundCount, 0);
+    const nanVertices = weightReports.reduce((s, r) => s + r.nanCount, 0);
+    const maxSumDrift = Math.max(0, ...weightReports.map((r) => r.maxSumDrift));
+
+    return {
+      character: rigRoot,
+      armatureGroup,
+      skeleton,
+      bones,
+      boneMap,
+      skinnedMeshes,
+      silhouette: silhouette || _analyzeHumanoidMeshSilhouette(rigRoot),
+      templateId,
+      quality: {
+        valid: unboundVertices === 0 && nanVertices === 0 && maxSumDrift < 0.02,
+        meshCount: skinnedMeshes.length,
+        boneCount: skeleton.bones.length,
+        totalVertices,
+        unboundVertices,
+        nanVertices,
+        maxSumDrift,
+      },
+    };
   }
 
   // =========================================================================
@@ -3819,7 +3992,7 @@ export class RigSystem {
     // Build uniform voxel grid of triangles for fast interior line-of-sight bone heat checks
     const idxAttrGeom = geom.index;
     const triCount = idxAttrGeom ? Math.floor(idxAttrGeom.count / 3) : Math.floor(vertexCount / 3);
-    const useVisibilityRay = useGeodesic && triCount > 0 && triCount <= 35000;
+    const useVisibilityRay = useGeodesic && triCount > 0 && triCount <= 65000;
     let triVerts = null;
     let triGrid = null;
     let rayStamp = null;
@@ -3922,6 +4095,7 @@ export class RigSystem {
 
     let usedHeat = false;
     if (skinMode === 'heat' && boneCount > 0) {
+      const symCenterX = (geom.boundingBox.min.x + geom.boundingBox.max.x) * 0.5;
       const heatRes = computeLaplacianBoneHeatWeights(
         geom,
         boneInfos.map((b) => ({
@@ -3933,6 +4107,7 @@ export class RigSystem {
         {
           charScale,
           sideDeadband,
+          symmetryCenterX: symCenterX,
           isSegmentOccluded,
         }
       );

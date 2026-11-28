@@ -82,6 +82,7 @@ jobs:
           node --import ./tests/three-resolve-hooks.mjs tests/test_agent_shortcuts.mjs
           node --import ./tests/three-resolve-hooks.mjs tests/test_p1_hardening.mjs
           node --import ./tests/three-resolve-hooks.mjs tests/test_beta_motion_telemetry.mjs
+          node --import ./tests/three-resolve-hooks.mjs tests/test_skeleton_templates_and_rig_pro.mjs
 
       - name: Build production & CDN dist/ + enforce commercial license policy
         run: |

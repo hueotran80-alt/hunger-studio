@@ -26,8 +26,8 @@ Web Blender Studio incorporates the following open-source libraries and permissi
 
 | Asset | Author / Source | License |
 | --- | --- | --- |
-| `/models/Mannequin_CC0.glb` | Web Blender Studio (`scripts/build_cc0_characters.mjs`) | CC0-1.0 |
-| `/models/Bot_CC0.glb` | Web Blender Studio (`scripts/build_cc0_characters.mjs`) | CC0-1.0 |
+| `/models/Mannequin_CC0.glb` | Web Blender Studio (`scripts/build_cc0_characters_blender.py`) | CC0-1.0 |
+| `/models/Bot_CC0.glb` | Web Blender Studio (`scripts/build_cc0_characters_blender.py`) | CC0-1.0 |
 | `/assets/characters/Mary_Statue_Sorrows.glb` | Virtual Museums of Małopolska ([Sketchfab](https://sketchfab.com/3d-models/sculpture-our-lady-of-sorrows-e601c914626e422c83ca161bb300b0f0)) | CC0-1.0 |
 | Online Poly Haven Materials & HDRIs | [Poly Haven](https://polyhaven.com/license) | CC0-1.0 |
 
