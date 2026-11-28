@@ -724,6 +724,113 @@ const TELEMETRY_COUNTERS = {
   },
 };
 
+const SUPABASE_AUTH_SETTINGS_CACHE = new Map();
+const SUPABASE_AUTH_SETTINGS_TTL_MS = 5 * 60 * 1000;
+const SUPABASE_AUTH_SETTINGS_ERR_TTL_MS = 30 * 1000;
+const FEEDBACK_CATEGORIES = new Set(['bug', 'mocap', 'export', 'performance', 'feature', 'other']);
+const FEEDBACK_RING = [];
+const FEEDBACK_RING_MAX = 100;
+let FEEDBACK_FALLBACK_SEQ = 0;
+
+function sanitizeFeedbackText(raw, maxLen = 1500) {
+  return String(raw || '')
+    .trim()
+    .replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, '[redacted-email]')
+    .replace(/(?:Bearer\s+|eyJ)[A-Za-z0-9._-]{12,}/gi, '[redacted-token]')
+    .replace(/(?:\/Users\/[^/\s]+|\/home\/[^/\s]+|[A-Za-z]:\\Users\\[^\\\s]+)/g, '[redacted-path]')
+    .slice(0, maxLen);
+}
+
+function authorizeTelemetryAdmin(request, env) {
+  const expected = String(env?.TELEMETRY_ADMIN_TOKEN || '').trim();
+  if (!expected) return null;
+  let provided = String(request?.headers?.get('x-telemetry-admin-token') || '').trim();
+  if (!provided) {
+    const auth = String(request?.headers?.get('authorization') || '').trim();
+    if (auth.toLowerCase().startsWith('bearer ')) {
+      provided = auth.slice(7).trim();
+    }
+  }
+  if (!provided || !timingSafeEqualStr(provided, expected)) {
+    return jsonResponse(
+      {
+        ok: false,
+        success: false,
+        error: {
+          code: 'E_UNAUTHORIZED',
+          message: 'Telemetry admin token required.',
+          hint: 'Send X-Telemetry-Admin-Token or Authorization: Bearer <token>.',
+        },
+      },
+      401,
+      {
+        'Cache-Control': 'no-store',
+        'WWW-Authenticate': 'Bearer realm="telemetry"',
+      },
+    );
+  }
+  return null;
+}
+
+async function resolveOAuthProviders(cfg, env) {
+  if (!cfg.enabled) {
+    return { google: false, github: false, source: 'disabled' };
+  }
+  const gFlag = String(env?.OAUTH_GOOGLE_ENABLED ?? 'auto').trim().toLowerCase();
+  const ghFlag = String(env?.OAUTH_GITHUB_ENABLED ?? 'auto').trim().toLowerCase();
+  const needSupabaseLookup = gFlag === 'auto' || ghFlag === 'auto';
+  if (!needSupabaseLookup) {
+    return {
+      google: gFlag === 'true',
+      github: ghFlag === 'true',
+      source: 'env',
+    };
+  }
+  const now = Date.now();
+  const cacheKey = `${cfg.supabaseUrl}|${cfg.supabaseAnonKey.slice(0, 16)}`;
+  let live = SUPABASE_AUTH_SETTINGS_CACHE.get(cacheKey);
+  if (!live || now >= live.expiresAt) {
+    let google = false;
+    let github = false;
+    let ok = false;
+    const ac = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    const timer = ac ? setTimeout(() => ac.abort(), 2500) : null;
+    try {
+      const resp = await fetch(`${cfg.supabaseUrl}/auth/v1/settings`, {
+        method: 'GET',
+        headers: {
+          apikey: cfg.supabaseAnonKey,
+          Accept: 'application/json',
+        },
+        signal: ac?.signal,
+      });
+      if (resp.ok) {
+        const data = await resp.json().catch(() => null);
+        const ext = data?.external && typeof data.external === 'object' ? data.external : {};
+        google = ext.google === true;
+        github = ext.github === true;
+        ok = true;
+      }
+    } catch {
+      ok = false;
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+    live = {
+      google,
+      github,
+      ok,
+      expiresAt: now + (ok ? SUPABASE_AUTH_SETTINGS_TTL_MS : SUPABASE_AUTH_SETTINGS_ERR_TTL_MS),
+    };
+    SUPABASE_AUTH_SETTINGS_CACHE.set(cacheKey, live);
+  }
+  return {
+    google: gFlag === 'auto' ? live.google : gFlag === 'true',
+    github: ghFlag === 'auto' ? live.github : ghFlag === 'true',
+    source: live.ok ? 'supabase-settings' : 'supabase-fallback',
+  };
+}
+
 function getTelemetryStub(env) {
   if (!env?.BRIDGE_HUB || typeof env.BRIDGE_HUB.getByName !== 'function') return null;
   try {
@@ -903,7 +1010,9 @@ function p95Of(nums) {
   return Number(sorted[idx].toFixed(1));
 }
 
-async function handleTelemetrySummary(env, url) {
+async function handleTelemetrySummary(request, env, url) {
+  const denied = authorizeTelemetryAdmin(request, env);
+  if (denied) return denied;
   const envName = String(env?.STUDIO_ENV || 'production');
   const sentryConfigured = Boolean(parseSentryDsn(env?.SENTRY_DSN));
   const stub = getTelemetryStub(env);
@@ -938,6 +1047,7 @@ async function handleTelemetrySummary(env, url) {
     storage: 'isolate-memory',
     environment: envName,
     sentryConfigured,
+    feedbackCount: FEEDBACK_RING.length,
     kpi: {
       sessions: s,
       crashedSessions: TELEMETRY_COUNTERS.crashedSessions,
@@ -962,8 +1072,95 @@ async function handleTelemetrySummary(env, url) {
       interactiveTargetMs: 5000,
       interactivePass: medianInteractiveMs !== null ? medianInteractiveMs <= 5000 : null,
     },
-    funnel: TELEMETRY_COUNTERS.funnel,
+    funnel: { ...TELEMETRY_COUNTERS.funnel, feedbackSubmitted: FEEDBACK_RING.length },
     recentEvents: TELEMETRY_RING.slice(-20),
+  }, 200, { 'Cache-Control': 'no-store' });
+}
+
+async function handleTelemetryFeedbackCreate(request, env) {
+  checkEdgeRateLimit(request, env, 'feedback', null, 5);
+  const { data } = await readJsonBody(request, 16 * 1024);
+  const message = sanitizeFeedbackText(data?.message, 1500);
+  if (message.length < 3) {
+    throw new CloudError('E_INVALID_ARG', 'Please provide at least 3 characters of feedback.', 400);
+  }
+  const rawCategory = String(data?.category || 'bug').trim().toLowerCase();
+  const category = FEEDBACK_CATEGORIES.has(rawCategory) ? rawCategory : 'other';
+  const rawRating = data?.rating === null || data?.rating === undefined || data?.rating === ''
+    ? null
+    : Number.parseInt(String(data.rating), 10);
+  const rating = Number.isFinite(rawRating) && rawRating >= 1 && rawRating <= 5 ? rawRating : null;
+  const record = {
+    ts: new Date().toISOString(),
+    sessionId: String(data?.sessionId || '').slice(0, 64),
+    release: String(data?.release || 'hunger-motion@0.9.0-beta.2').slice(0, 64),
+    environment: String(env?.STUDIO_ENV || 'production').slice(0, 32),
+    workspace: String(data?.workspace || 'unknown').slice(0, 32),
+    templateId: String(data?.templateId || '').slice(0, 48),
+    category,
+    rating,
+    message,
+    userAgent: String(request.headers.get('user-agent') || '').slice(0, 180),
+  };
+
+  let persisted = false;
+  let id = 0;
+  const stub = getTelemetryStub(env);
+  if (stub) {
+    try {
+      const resp = await stub.fetch(new Request('https://telemetry.internal/telemetry/feedback', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(record),
+      }));
+      if (resp.ok) {
+        const resJson = await resp.json().catch(() => null);
+        persisted = Boolean(resJson?.ok);
+        id = Number(resJson?.id || 0);
+      }
+    } catch {
+      persisted = false;
+    }
+  }
+  if (!persisted) {
+    FEEDBACK_FALLBACK_SEQ += 1;
+    id = FEEDBACK_FALLBACK_SEQ;
+    FEEDBACK_RING.push({ id, ...record });
+    if (FEEDBACK_RING.length > FEEDBACK_RING_MAX) FEEDBACK_RING.shift();
+  }
+  console.log(JSON.stringify({ telemetry: true, kind: 'feedback', id, category, rating, workspace: record.workspace, persisted }));
+  return jsonResponse({ ok: true, id, persisted }, 201, { 'Cache-Control': 'no-store' });
+}
+
+async function handleTelemetryFeedbackList(request, env, url) {
+  const denied = authorizeTelemetryAdmin(request, env);
+  if (denied) return denied;
+  const stub = getTelemetryStub(env);
+  if (stub) {
+    try {
+      const qs = url?.search ? url.search : '';
+      const resp = await stub.fetch(new Request(`https://telemetry.internal/telemetry/feedback${qs}`, { method: 'GET' }));
+      if (resp.ok) {
+        const body = await resp.json();
+        if (body && body.ok) {
+          return jsonResponse({ ...body, environment: String(env?.STUDIO_ENV || 'production') }, 200, { 'Cache-Control': 'no-store' });
+        }
+      }
+    } catch {
+      // Fall back to isolate ring
+    }
+  }
+  const category = String(url?.searchParams?.get('category') || '').trim().toLowerCase();
+  const rawLimit = Number.parseInt(url?.searchParams?.get('limit') || '50', 10);
+  const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(200, rawLimit)) : 50;
+  const filtered = (category ? FEEDBACK_RING.filter((it) => it.category === category) : FEEDBACK_RING).slice().reverse().slice(0, limit);
+  return jsonResponse({
+    ok: true,
+    storage: 'isolate-memory',
+    environment: String(env?.STUDIO_ENV || 'production'),
+    categoryFilter: category || null,
+    count: filtered.length,
+    items: filtered,
   }, 200, { 'Cache-Control': 'no-store' });
 }
 
@@ -984,6 +1181,7 @@ export async function handleCloudBff(request, env, url) {
         cloud: cfg.enabled,
         r2: Boolean(env?.HUNGER_ASSETS),
         telemetry: true,
+        telemetryProtected: Boolean(String(env?.TELEMETRY_ADMIN_TOKEN || '').trim()),
         sentryConfigured: Boolean(parseSentryDsn(env?.SENTRY_DSN)),
       }, 200, { 'Cache-Control': 'no-store' });
     }
@@ -991,7 +1189,13 @@ export async function handleCloudBff(request, env, url) {
       return await handleTelemetryEvent(request, env);
     }
     if (method === 'GET' && path === '/api/telemetry/summary') {
-      return await handleTelemetrySummary(env, url);
+      return await handleTelemetrySummary(request, env, url);
+    }
+    if (method === 'POST' && path === '/api/telemetry/feedback') {
+      return await handleTelemetryFeedbackCreate(request, env);
+    }
+    if (method === 'GET' && path === '/api/telemetry/feedback') {
+      return await handleTelemetryFeedbackList(request, env, url);
     }
     if (method === 'GET' && path === '/api/status') {
       const sessionId = (url.searchParams.get('session') || request.headers.get('x-studio-session') || 'default').trim();
@@ -1038,8 +1242,7 @@ export async function handleCloudBff(request, env, url) {
     // Cloud status (public, no secrets)
     if (method === 'GET' && path === '/api/cloud/status') {
       const freeMode = cfg.costs.save_project === 0 && cfg.costs.upload_asset === 0 && cfg.costs.ai_chat === 0;
-      const googleOAuth = cfg.enabled && String(env?.OAUTH_GOOGLE_ENABLED || 'true').toLowerCase() !== 'false';
-      const githubOAuth = cfg.enabled && String(env?.OAUTH_GITHUB_ENABLED || 'true').toLowerCase() !== 'false';
+      const oauth = await resolveOAuthProviders(cfg, env);
       const billingEnabled = cfg.sepay.ready || cfg.lemon.ready;
       return jsonResponse({
         success: true,
@@ -1053,8 +1256,9 @@ export async function handleCloudBff(request, env, url) {
           email: cfg.enabled,
           magicLink: cfg.enabled,
           passwordReset: cfg.enabled,
-          google: googleOAuth,
-          github: githubOAuth,
+          google: oauth.google,
+          github: oauth.github,
+          source: oauth.source,
         },
         costs: cfg.costs,
         plans: cfg.plans,
@@ -1609,4 +1813,6 @@ export const __cloudBffInternals = {
   timingSafeEqualStr,
   validateGlbBytes,
   validatePngBytes,
+  sanitizeFeedbackText,
+  clearAuthSettingsCache: () => SUPABASE_AUTH_SETTINGS_CACHE.clear(),
 };

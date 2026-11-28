@@ -904,5 +904,137 @@ await test('Phase 2 Persistent Real-User Telemetry DO: aggregates cross-isolate 
   assert.equal(sumSmoke.kpi.fatalErrors, 1);
 });
 
+await test('OAuth auto-sync reads Supabase /auth/v1/settings and fails closed when disabled or unreachable', async () => {
+  __cloudBffInternals.clearAuthSettingsCache();
+  const baseEnv = {
+    SUPABASE_URL: 'https://sync-test.supabase.co',
+    SUPABASE_ANON_KEY: 'anon-sync-key',
+    SUPABASE_SERVICE_KEY: 'svc-sync-key',
+    OAUTH_GOOGLE_ENABLED: 'auto',
+    OAUTH_GITHUB_ENABLED: 'auto',
+  };
+
+  // 1. Supabase reports google=false, github=false -> both hidden
+  await withMockFetch(async (url) => {
+    assert.ok(String(url).endsWith('/auth/v1/settings'));
+    return new Response(JSON.stringify({ external: { email: true, google: false, github: false } }), { status: 200 });
+  }, async () => {
+    const st = await (await worker.fetch(new Request('https://hunger.example/api/cloud/status'), baseEnv)).json();
+    assert.equal(st.authProviders.google, false);
+    assert.equal(st.authProviders.github, false);
+    assert.equal(st.authProviders.source, 'supabase-settings');
+  });
+
+  // 2. Supabase enables google=true -> auto-sync turns google on
+  __cloudBffInternals.clearAuthSettingsCache();
+  await withMockFetch(async () => {
+    return new Response(JSON.stringify({ external: { email: true, google: true, github: false } }), { status: 200 });
+  }, async () => {
+    const st = await (await worker.fetch(new Request('https://hunger.example/api/cloud/status'), baseEnv)).json();
+    assert.equal(st.authProviders.google, true);
+    assert.equal(st.authProviders.github, false);
+    assert.equal(st.authProviders.source, 'supabase-settings');
+  });
+
+  // 3. Unreachable settings -> fails closed to false
+  __cloudBffInternals.clearAuthSettingsCache();
+  await withMockFetch(async () => new Response('down', { status: 503 }), async () => {
+    const st = await (await worker.fetch(new Request('https://hunger.example/api/cloud/status'), baseEnv)).json();
+    assert.equal(st.authProviders.google, false);
+    assert.equal(st.authProviders.github, false);
+    assert.equal(st.authProviders.source, 'supabase-fallback');
+  });
+});
+
+await test('Telemetry admin token protects /summary & /feedback GET while POST /feedback strips PII and persists in DO SQLite', async () => {
+  const fbRows = [];
+  let fbSeq = 0;
+  const fakeSql = {
+    exec(sql, ...args) {
+      const q = sql.trim();
+      if (q.startsWith('CREATE TABLE') || q.startsWith('CREATE INDEX')) return { toArray: () => [] };
+      if (q.startsWith('INSERT INTO beta_feedback')) {
+        fbSeq += 1;
+        fbRows.push({
+          id: fbSeq, ts: args[0], ts_ms: args[1], session_id: args[2], release: args[3],
+          environment: args[4], workspace: args[5], template_id: args[6], category: args[7],
+          rating: args[8], message: args[9], user_agent: args[10],
+        });
+        return { toArray: () => [] };
+      }
+      if (q.startsWith('SELECT last_insert_rowid()')) return { toArray: () => [{ id: fbSeq }] };
+      if (q.startsWith('DELETE FROM beta_feedback WHERE ts_ms <')) return { toArray: () => [] };
+      if (q.startsWith('SELECT COUNT(*) AS cnt FROM beta_feedback')) return { toArray: () => [{ cnt: fbRows.length }] };
+      if (q.startsWith('SELECT id, ts, session_id')) {
+        return { toArray: () => fbRows.slice().reverse() };
+      }
+      if (q.startsWith('SELECT id, ts, kind, name')) return { toArray: () => [] };
+      return { toArray: () => [] };
+    },
+  };
+  const hub = new StudioBridgeHub({ storage: { sql: fakeSql }, blockConcurrencyWhile: (fn) => fn() }, {});
+  const env = {
+    STUDIO_ENV: 'staging',
+    TELEMETRY_ADMIN_TOKEN: 'super-secret-telemetry-admin-token',
+    BRIDGE_HUB: { getByName: () => hub },
+  };
+
+  // /healthz reports telemetryProtected=true without leaking secret
+  const hz = await (await worker.fetch(new Request('https://hunger.example/healthz'), env)).json();
+  assert.equal(hz.telemetryProtected, true);
+  assert.ok(!JSON.stringify(hz).includes('super-secret-telemetry-admin-token'));
+
+  // Missing or wrong token gets 401 on /summary and /feedback GET
+  const unauthSum = await worker.fetch(new Request('https://hunger.example/api/telemetry/summary'), env);
+  assert.equal(unauthSum.status, 401);
+  const wrongFb = await worker.fetch(new Request('https://hunger.example/api/telemetry/feedback', {
+    headers: { 'X-Telemetry-Admin-Token': 'wrong-token' },
+  }), env);
+  assert.equal(wrongFb.status, 401);
+
+  // Public POST /api/telemetry/feedback succeeds, redacts PII, and persists in DO SQLite
+  const postFb = await worker.fetch(new Request('https://hunger.example/api/telemetry/feedback', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'User-Agent': 'SmokeAgent/1.0' },
+    body: JSON.stringify({
+      category: 'mocap',
+      rating: 5,
+      workspace: 'motion',
+      templateId: 'unity_humanoid',
+      sessionId: 'sess-fb-1',
+      message: 'Export GLB worked well! Contact alice@example.com or /Users/alice/clip.mp4 Bearer secretToken123456',
+    }),
+  }), env);
+  assert.equal(postFb.status, 201);
+  const postJson = await postFb.json();
+  assert.equal(postJson.ok, true);
+  assert.equal(postJson.persisted, true);
+  assert.equal(postJson.id, 1);
+
+  // Authorized GET /api/telemetry/feedback via Bearer returns redacted feedback
+  const listRes = await worker.fetch(new Request('https://hunger.example/api/telemetry/feedback', {
+    headers: { Authorization: 'Bearer super-secret-telemetry-admin-token' },
+  }), env);
+  assert.equal(listRes.status, 200);
+  const listJson = await listRes.json();
+  assert.equal(listJson.storage, 'durable-object-sqlite');
+  assert.equal(listJson.count, 1);
+  assert.equal(listJson.items[0].category, 'mocap');
+  assert.equal(listJson.items[0].rating, 5);
+  assert.ok(!listJson.items[0].message.includes('alice@example.com'));
+  assert.ok(!listJson.items[0].message.includes('/Users/alice'));
+  assert.ok(!listJson.items[0].message.includes('secretToken123456'));
+  assert.ok(listJson.items[0].message.includes('[redacted-email]'));
+
+  // Authorized GET /api/telemetry/summary via X-Telemetry-Admin-Token reports feedbackCount=1
+  const authSum = await worker.fetch(new Request('https://hunger.example/api/telemetry/summary?hours=24', {
+    headers: { 'X-Telemetry-Admin-Token': 'super-secret-telemetry-admin-token' },
+  }), env);
+  assert.equal(authSum.status, 200);
+  const sumJson = await authSum.json();
+  assert.equal(sumJson.feedbackCount, 1);
+  assert.equal(sumJson.funnel.feedbackSubmitted, 1);
+});
+
 console.log(`\nCloudflare Worker: ${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

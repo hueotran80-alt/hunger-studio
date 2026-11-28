@@ -281,4 +281,16 @@ await test('10. Motion workspace lazy-loads CloudPanel on demand and handles aut
   assert.ok(menuBlock.includes('await this._ensureCloudPanel()'), 'File -> Cloud and Publish menus must lazy-load CloudPanel');
 });
 
+await test('11. Beta Feedback button and dialog are wired lazily with zero eager Motion boot cost', () => {
+  const html = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
+  assert.ok(html.includes('id="btn-beta-feedback"'), 'Header must expose #btn-beta-feedback button');
+  assert.ok(html.includes('id="btn-help-feedback"'), 'Help menu must expose #btn-help-feedback item');
+  const appSrc = fs.readFileSync(path.join(ROOT, 'js/app.js'), 'utf8');
+  assert.ok(appSrc.includes('async _ensureFeedbackDialog()'), 'app.js must lazy-load FeedbackDialog');
+  const motionBlock = appSrc.slice(appSrc.indexOf('if (startInMotionMode) {'), appSrc.indexOf('// Full Studio Mode'));
+  assert.ok(!motionBlock.includes("import('./ui/feedback-dialog.js')"), 'Motion fast-path must not eagerly import feedback-dialog.js');
+  const dialogSrc = fs.readFileSync(path.join(ROOT, 'js/ui/feedback-dialog.js'), 'utf8');
+  assert.ok(dialogSrc.includes('/api/telemetry/feedback'), 'FeedbackDialog must post to /api/telemetry/feedback');
+});
+
 console.log(`\nALL ${passed} BETA MOTION & TELEMETRY TESTS PASSED`);

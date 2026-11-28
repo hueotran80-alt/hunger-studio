@@ -15,6 +15,8 @@ const SAFE_SESSION_RE = /^[A-Za-z0-9_-]{4,64}$/;
 const MAX_PENDING_COMMANDS = 32;
 const TELEMETRY_MAX_ROWS = 20000;
 const TELEMETRY_RETENTION_MS = 30 * 24 * 3600 * 1000;
+const FEEDBACK_MAX_ROWS = 2000;
+const FEEDBACK_RETENTION_MS = 90 * 24 * 3600 * 1000;
 const SYNTHETIC_SESSION_RE = /^(?:sentry-smoke|smoke-|ci-smoke|test-smoke)/i;
 
 function percentile(sortedNums, p) {
@@ -85,6 +87,23 @@ export class StudioBridgeHub {
         `);
         this.ctx.storage.sql.exec('CREATE INDEX IF NOT EXISTS idx_telemetry_ts_ms ON telemetry_events(ts_ms DESC)');
         this.ctx.storage.sql.exec('CREATE INDEX IF NOT EXISTS idx_telemetry_session ON telemetry_events(session_id, name)');
+        this.ctx.storage.sql.exec(`
+          CREATE TABLE IF NOT EXISTS beta_feedback (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts TEXT NOT NULL,
+            ts_ms INTEGER NOT NULL,
+            session_id TEXT NOT NULL DEFAULT '',
+            release TEXT NOT NULL DEFAULT '',
+            environment TEXT NOT NULL DEFAULT '',
+            workspace TEXT NOT NULL DEFAULT '',
+            template_id TEXT NOT NULL DEFAULT '',
+            category TEXT NOT NULL DEFAULT 'bug',
+            rating INTEGER,
+            message TEXT NOT NULL,
+            user_agent TEXT NOT NULL DEFAULT ''
+          )
+        `);
+        this.ctx.storage.sql.exec('CREATE INDEX IF NOT EXISTS idx_feedback_ts_ms ON beta_feedback(ts_ms DESC)');
       }
     });
   }
@@ -518,12 +537,22 @@ export class StudioBridgeHub {
       };
     });
 
+    let feedbackCount = 0;
+    try {
+      const fbRows = sql.exec('SELECT COUNT(*) AS cnt FROM beta_feedback WHERE ts_ms >= ?', sinceMs).toArray();
+      feedbackCount = Number(fbRows[0]?.cnt || 0);
+    } catch {
+      feedbackCount = 0;
+    }
+    funnel.feedbackSubmitted = feedbackCount;
+
     return Response.json({
       ok: true,
       storage: 'durable-object-sqlite',
       windowHours,
       releaseFilter: releaseFilter || null,
       includeSmoke,
+      feedbackCount,
       kpi: {
         sessions,
         crashedSessions,
@@ -554,6 +583,111 @@ export class StudioBridgeHub {
     }, { headers: { 'Cache-Control': 'no-store' } });
   }
 
+  async _handleTelemetryFeedbackCreate(request) {
+    if (!this.ctx?.storage?.sql) {
+      return Response.json({ ok: false, persisted: false }, { status: 501, headers: { 'Cache-Control': 'no-store' } });
+    }
+    let body;
+    try {
+      body = await request.json();
+    } catch {
+      return Response.json({ ok: false, error: 'Invalid JSON' }, { status: 400 });
+    }
+    const message = String(body?.message || '').trim().slice(0, 1500);
+    if (message.length < 3) {
+      return Response.json({ ok: false, error: 'Feedback message too short' }, { status: 400 });
+    }
+    const sql = this.ctx.storage.sql;
+    const nowMs = Date.now();
+    const ts = String(body?.ts || new Date(nowMs).toISOString()).slice(0, 40);
+    const parsedMs = Date.parse(ts);
+    const tsMs = Number.isFinite(parsedMs) ? parsedMs : nowMs;
+    const sessionId = String(body?.sessionId || '').slice(0, 64);
+    const release = String(body?.release || '').slice(0, 64);
+    const environment = String(body?.environment || '').slice(0, 32);
+    const workspace = String(body?.workspace || 'unknown').slice(0, 32);
+    const templateId = String(body?.templateId || '').slice(0, 48);
+    const category = String(body?.category || 'bug').slice(0, 32);
+    const rawRating = body?.rating === null || body?.rating === undefined || body?.rating === ''
+      ? null
+      : Number.parseInt(String(body.rating), 10);
+    const rating = Number.isFinite(rawRating) && rawRating >= 1 && rawRating <= 5 ? rawRating : null;
+    const userAgent = String(body?.userAgent || '').slice(0, 180);
+
+    sql.exec(
+      `INSERT INTO beta_feedback
+        (ts, ts_ms, session_id, release, environment, workspace, template_id, category, rating, message, user_agent)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ts, tsMs, sessionId, release, environment, workspace, templateId, category, rating, message, userAgent,
+    );
+    const idRows = sql.exec('SELECT last_insert_rowid() AS id').toArray();
+    const id = Number(idRows[0]?.id || 0);
+
+    sql.exec('DELETE FROM beta_feedback WHERE ts_ms < ?', nowMs - FEEDBACK_RETENTION_MS);
+    const cntRows = sql.exec('SELECT COUNT(*) AS cnt FROM beta_feedback').toArray();
+    const total = Number(cntRows[0]?.cnt || 0);
+    if (total > FEEDBACK_MAX_ROWS) {
+      sql.exec(
+        'DELETE FROM beta_feedback WHERE id IN (SELECT id FROM beta_feedback ORDER BY id ASC LIMIT ?)',
+        total - FEEDBACK_MAX_ROWS,
+      );
+    }
+
+    return Response.json({ ok: true, id, persisted: true }, { status: 201, headers: { 'Cache-Control': 'no-store' } });
+  }
+
+  async _handleTelemetryFeedbackList(url) {
+    if (!this.ctx?.storage?.sql) {
+      return Response.json({ ok: false, error: 'SQLite unavailable' }, { status: 501 });
+    }
+    const sql = this.ctx.storage.sql;
+    const rawHours = Number.parseInt(url.searchParams.get('hours') || '720', 10);
+    const windowHours = Number.isFinite(rawHours) ? Math.max(1, Math.min(2160, rawHours)) : 720;
+    const rawLimit = Number.parseInt(url.searchParams.get('limit') || '50', 10);
+    const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(200, rawLimit)) : 50;
+    const category = String(url.searchParams.get('category') || '').trim().toLowerCase().slice(0, 32);
+    const sinceMs = Date.now() - windowHours * 3600 * 1000;
+
+    const clauses = ['ts_ms >= ?'];
+    const params = [sinceMs];
+    if (category) {
+      clauses.push('category = ?');
+      params.push(category);
+    }
+    const rows = sql.exec(
+      `SELECT id, ts, session_id, release, environment, workspace, template_id, category, rating, message, user_agent
+       FROM beta_feedback
+       WHERE ${clauses.join(' AND ')}
+       ORDER BY id DESC
+       LIMIT ?`,
+      ...params,
+      limit,
+    ).toArray();
+
+    const items = rows.map((r) => ({
+      id: Number(r.id),
+      ts: r.ts,
+      sessionId: r.session_id,
+      release: r.release,
+      environment: r.environment,
+      workspace: r.workspace,
+      templateId: r.template_id || null,
+      category: r.category,
+      rating: r.rating !== null && r.rating !== undefined ? Number(r.rating) : null,
+      message: r.message,
+      userAgent: r.user_agent || undefined,
+    }));
+
+    return Response.json({
+      ok: true,
+      storage: 'durable-object-sqlite',
+      windowHours,
+      categoryFilter: category || null,
+      count: items.length,
+      items,
+    }, { headers: { 'Cache-Control': 'no-store' } });
+  }
+
   async fetch(request) {
     const url = new URL(request.url);
     if (url.pathname === '/ws') {
@@ -571,6 +705,12 @@ export class StudioBridgeHub {
     }
     if (url.pathname === '/telemetry/summary' && request.method === 'GET') {
       return this._handleTelemetrySummary(url);
+    }
+    if (url.pathname === '/telemetry/feedback' && request.method === 'POST') {
+      return this._handleTelemetryFeedbackCreate(request);
+    }
+    if (url.pathname === '/telemetry/feedback' && request.method === 'GET') {
+      return this._handleTelemetryFeedbackList(url);
     }
     return new Response('Not Found', { status: 404 });
   }
