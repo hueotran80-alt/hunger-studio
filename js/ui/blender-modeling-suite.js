@@ -1974,6 +1974,7 @@ export class BlenderModelingSuite {
           <div class="dropdown-item" id="btn-add-head-bust"><span>Human Head Bust</span></div>
           <div class="dropdown-item" id="btn-add-michelle"><span>Studio Athlete (CC0)</span></div>
           <div class="dropdown-item" id="btn-add-soldier"><span>Cyber Droid (CC0)</span></div>
+          <div class="dropdown-item" id="btn-add-horse"><span>Mustang Horse — Gallop (CC0)</span></div>
           <div class="dropdown-item" id="btn-add-mannequin"><span>Articulated Mannequin</span></div>
           <div class="dropdown-divider"></div>
           <div class="dropdown-item" id="btn-add-armature"><span>Humanoid Standard Rig (22 Bones)</span></div>
@@ -2119,6 +2120,19 @@ export class BlenderModelingSuite {
       closeTopMenus();
       const soldier = await this.studio?.loadGLTF('/models/Bot_CC0.glb', { y: 0.0, scale: 1.0, name: 'Bot_Character' });
       if (soldier) this.sceneManager.select(soldier);
+    });
+    document.getElementById('btn-add-horse')?.addEventListener('click', async () => {
+      closeTopMenus();
+      const horse = await this.studio?.loadGLTF('/models/Horse_CC0.glb', { y: 0.0, scale: 1.0, name: 'Mustang_Horse_CC0' });
+      if (horse) {
+        this.sceneManager.select(horse);
+        const clip = horse.animations?.find((c) => /gallop/i.test(c.name)) || horse.animations?.[0];
+        const timeline = this.app?.timelineEngine || (typeof window !== 'undefined' ? window.timelineEngine : null);
+        if (clip && timeline?.attachClip) {
+          timeline.attachClip(horse, clip, { loop: true });
+          timeline.play?.();
+        }
+      }
     });
     document.getElementById('btn-bind-armature')?.addEventListener('click', () => {
       closeTopMenus();

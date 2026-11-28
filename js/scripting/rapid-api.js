@@ -5,6 +5,7 @@
  */
 
 import * as THREE from 'three';
+import { resolveCdnAssetUrl } from '../core/asset-cdn.js';
 import { prefabLibrary } from './prefab-library.js';
 import * as ModifierStack from '../core/modifier-stack.js';
 import { executeModifier } from '../core/modifiers.js';
@@ -2437,12 +2438,15 @@ export class RapidStudio {
   } = {}) {
     const { GLTFLoader } = await import('three/addons/loaders/GLTFLoader.js');
     const loader = new GLTFLoader();
+    const resolvedUrl = resolveCdnAssetUrl(url);
     return new Promise((resolve, reject) => {
       loader.load(
-        url,
+        resolvedUrl,
         (gltf) => {
           const root = gltf.scene || gltf.scenes[0];
           root.name = name;
+          root.animations = Array.isArray(gltf.animations) ? gltf.animations.slice() : [];
+          root.userData.animations = root.animations;
           root.position.set(x, y, z);
           if (typeof scale === 'number') {
             root.scale.set(scale, scale, scale);

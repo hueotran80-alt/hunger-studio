@@ -7,6 +7,7 @@
     "include": [
       "/models/Mannequin_CC0.glb",
       "/models/Bot_CC0.glb",
+      "/models/Horse_CC0.glb",
       "/models/LeePerrySmith.glb",
       "/assets/characters/CesiumMan.glb",
       "/assets/characters/nemetona.glb",
