@@ -169,19 +169,23 @@ export const SKELETON_TEMPLATES = Object.freeze({
       ];
 
       for (const [side, sign] of [['Left', 1], ['Right', -1]]) {
-        // Front limb: Scapula -> UpperArm -> ForeArm -> Paw -> Toe
-        defs.push([`Front${side}Scapula`, 'Chest', [sign * 0.11 * s, 0.02 * s, 0.02 * s]]);
-        defs.push([`Front${side}UpperArm`, `Front${side}Scapula`, [sign * 0.03 * s, -0.18 * s, -0.06 * s]]);
-        defs.push([`Front${side}ForeArm`, `Front${side}UpperArm`, [0, -0.22 * s, 0.05 * s]]);
-        defs.push([`Front${side}Paw`, `Front${side}ForeArm`, [0, -0.21 * s, 0.02 * s]]);
-        defs.push([`Front${side}Toe`, `Front${side}Paw`, [0, -0.04 * s, 0.08 * s]]);
+        // Anatomically accurate quadruped Front limb:
+        // Scapula (withers -> point of shoulder +Z) -> Humerus/UpperArm (shoulder -> elbow -Z)
+        // -> ForeArm (elbow -> carpus/knee straight down) -> Paw/Cannon (knee -> fetlock) -> Toe/Hoof (+Z)
+        defs.push([`Front${side}Scapula`, 'Chest', [sign * 0.11 * s, 0.06 * s, 0.02 * s]]);
+        defs.push([`Front${side}UpperArm`, `Front${side}Scapula`, [sign * 0.02 * s, -0.15 * s, 0.07 * s]]);
+        defs.push([`Front${side}ForeArm`, `Front${side}UpperArm`, [0, -0.14 * s, -0.08 * s]]);
+        defs.push([`Front${side}Paw`, `Front${side}ForeArm`, [0, -0.21 * s, 0.01 * s]]);
+        defs.push([`Front${side}Toe`, `Front${side}Paw`, [0, -0.18 * s, 0.05 * s]]);
 
-        // Hind limb: Thigh -> Shin -> Hock -> Paw -> Toe
-        defs.push([`Back${side}Thigh`, 'Pelvis', [sign * 0.12 * s, -0.03 * s, -0.02 * s]]);
-        defs.push([`Back${side}Shin`, `Back${side}Thigh`, [0, -0.23 * s, 0.08 * s]]);
-        defs.push([`Back${side}Hock`, `Back${side}Shin`, [0, -0.18 * s, -0.09 * s]]);
-        defs.push([`Back${side}Paw`, `Back${side}Hock`, [0, -0.14 * s, 0.04 * s]]);
-        defs.push([`Back${side}Toe`, `Back${side}Paw`, [0, -0.04 * s, 0.08 * s]]);
+        // Anatomically accurate quadruped Hind limb:
+        // Thigh/Femur (hip -> stifle DOWN & FORWARD +Z) -> Shin/Tibia (stifle -> hock DOWN & BACK -Z)
+        // -> Hock/Cannon (hock -> fetlock straight DOWN) -> Paw/Pastern (fetlock -> hoof DOWN & FORWARD +Z)
+        defs.push([`Back${side}Thigh`, 'Pelvis', [sign * 0.12 * s, -0.02 * s, -0.02 * s]]);
+        defs.push([`Back${side}Shin`, `Back${side}Thigh`, [0, -0.20 * s, 0.08 * s]]);
+        defs.push([`Back${side}Hock`, `Back${side}Shin`, [0, -0.19 * s, -0.11 * s]]);
+        defs.push([`Back${side}Paw`, `Back${side}Hock`, [0, -0.17 * s, 0.02 * s]]);
+        defs.push([`Back${side}Toe`, `Back${side}Paw`, [0, -0.06 * s, 0.06 * s]]);
       }
       return defs;
     },

@@ -136,6 +136,11 @@ await test('buildSkeletonFromTemplate builds valid hierarchies & inverses for al
   const aPose = buildSkeletonFromTemplate('humanoid_pro', { pose: 'a-pose' });
   const lFore = aPose.boneMap.get('LeftForeArm');
   assert(lFore.position.y < -0.1, `Expected A-pose LeftForeArm drop < -0.1, got ${lFore.position.y}`);
+
+  const quad = buildSkeletonFromTemplate('quadruped');
+  assert(quad.boneMap.get('BackLeftShin').position.z > 0, 'Quadruped Stifle (BackLeftShin) must angle forward (+Z)');
+  assert(quad.boneMap.get('BackLeftHock').position.z < 0, 'Quadruped Hock (BackLeftHock) must angle backward (-Z)');
+  assert(quad.boneMap.get('FrontLeftForeArm').position.z < 0, 'Quadruped Elbow (FrontLeftForeArm) must sit behind Shoulder (-Z)');
 });
 
 // ---------------------------------------------------------------------------
@@ -255,6 +260,28 @@ await test('models/Bot_CC0.glb is Pro-grade 56-bone humanoid with Walk + Idle cl
   assert(diag.score >= 95 && diag.grade === 'Pro', `Expected Pro >=95, got ${diag.grade} ${diag.score}`);
   const clipNames = gltf.animations.map((a) => a.name);
   assert(clipNames.includes('Walk'), `Bot_CC0.glb MUST include Walk clip (got ${clipNames.join(', ')})`);
+});
+
+await test('models/Horse_CC0.glb is seamless 34-bone quadruped with Gallop, Trot, Idle clips and clean skin weights', async () => {
+  const { gltf, bytes } = await parseGlbFile('models/Horse_CC0.glb');
+  assert(bytes < 2.5 * 1024 * 1024, `Horse_CC0.glb too large: ${(bytes / 1048576).toFixed(2)} MB`);
+  let boneCount = 0;
+  let skinnedMeshCount = 0;
+  gltf.scene.traverse((o) => {
+    if (o.isBone) boneCount += 1;
+    if (o.isSkinnedMesh) {
+      skinnedMeshCount += 1;
+      const check = validateSkinWeights(o.geometry, o.skeleton?.bones?.length || 34);
+      assert(check.valid && check.unboundCount === 0 && check.nanCount === 0, `Horse_CC0 invalid weights on ${o.name}: ${JSON.stringify(check)}`);
+    }
+  });
+  assert(boneCount === 34, `Expected 34 quadruped bones, got ${boneCount}`);
+  assert(skinnedMeshCount >= 1, 'Expected at least one SkinnedMesh in Horse_CC0.glb');
+  const clipNames = gltf.animations.map((a) => a.name);
+  for (const requiredClip of ['Gallop', 'Trot', 'Idle']) {
+    const clip = gltf.animations.find((a) => a.name === requiredClip);
+    assert(clip && clip.tracks.length >= 20, `Horse_CC0.glb missing or empty ${requiredClip} clip (clips: ${clipNames.join(', ')})`);
+  }
 });
 
 // ---------------------------------------------------------------------------
