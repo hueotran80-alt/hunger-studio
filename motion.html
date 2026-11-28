@@ -322,7 +322,7 @@
 
   <footer>
     <div class="container foot-row">
-      <div>© 2026 Hunger 3D Studio · Release <code>v0.9.0-beta.1</code></div>
+      <div>© 2026 Hunger 3D Studio · Release <code>v0.9.0-beta.2</code></div>
       <div class="foot-links">
         <a href="/?workspace=motion">Motion Workspace</a>
         <a href="/?workspace=layout">Advanced 3D Studio</a>
@@ -338,7 +338,7 @@
     const send = (name, props = {}) => {
       if (navigator.doNotTrack === '1') return;
       const body = JSON.stringify({
-        release: 'hunger-motion@0.9.0-beta.1',
+        release: 'hunger-motion@0.9.0-beta.2',
         environment: location.hostname.includes('staging') ? 'staging' : (location.hostname === 'localhost' || location.hostname === '127.0.0.1' ? 'development' : 'production'),
         sessionId: sid,
         events: [{ kind: 'analytics', name, ts: new Date().toISOString(), sessionId: sid, workspace: 'landing', props }],

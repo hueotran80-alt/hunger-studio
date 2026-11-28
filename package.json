@@ -1,6 +1,6 @@
 {
   "name": "web-blender-studio",
-  "version": "0.0.0",
+  "version": "0.9.0-beta.2",
   "private": true,
   "type": "module",
   "description": "Additive production build (Vite) for the static ES-module studio. Dev flow stays: python server.py on :8080.",

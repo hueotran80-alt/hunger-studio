@@ -844,7 +844,7 @@ export async function handleCloudBff(request, env, url) {
         ok: true,
         service: 'hunger-studio',
         environment: String(env?.STUDIO_ENV || 'production'),
-        release: 'hunger-motion@0.9.0-beta.1',
+        release: 'hunger-motion@0.9.0-beta.2',
         runtime: 'cloudflare-worker',
         cloud: cfg.enabled,
         r2: Boolean(env?.HUNGER_ASSETS),
