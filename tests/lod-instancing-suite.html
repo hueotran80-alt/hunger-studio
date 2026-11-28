@@ -439,6 +439,8 @@
 
     // 8. Compressed OPFS Autosave + 100% Lossless Asset Material Recovery (even during Solid/MatCap mode + RGBA Alpha Cutouts + HDRI!)
     await test('8. OPFS Autosave nén WebP + Gzip & bảo toàn 100% vật liệu đa kênh (kể cả khi đang ở Solid/MatCap, Alpha lá cây & HDRI)', async () => {
+      // Stop periodic 20s autosave timer so background snapshots from Test #7 cannot race with Test #8 on slower CI runners
+      w.app._stopAutosave?.();
       w.studio.clearScene();
       await w.app.clearAutosaveDraft();
       const THREE = w.THREE;

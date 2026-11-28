@@ -316,10 +316,12 @@ export class AutosaveManager {
    * older checkpoints intact.
    */
   async saveDraft(input, meta = {}) {
+    const epoch = (this._writeEpoch = (this._writeEpoch || 0) + 1);
     const prepared = await this._prepareRecord(input, meta);
-    if (!prepared) return false;
+    if (!prepared || this._writeEpoch !== epoch) return false;
 
     const ring = await this._getRing();
+    if (this._writeEpoch !== epoch) return false;
     const usedIds = new Set(ring.map((r) => r.id));
     let slotId = 'checkpoint_0';
     for (let i = 0; i < this._maxCheckpoints; i += 1) {
@@ -346,8 +348,10 @@ export class AutosaveManager {
       checkpointId: slotId,
     };
 
-    // Step 1: Write checkpoint slot atomically
+    // Step 1: Write checkpoint slot atomically (abort if superseded by a newer save/clear)
+    if (this._writeEpoch !== epoch) return false;
     await this._withStore(STORE, 'readwrite', (store) => store.put(checkpointRecord));
+    if (this._writeEpoch !== epoch) return false;
 
     // Step 2: Rotate ring metadata newest-first
     const nextRing = [
@@ -469,6 +473,7 @@ export class AutosaveManager {
   }
 
   async clearDraft() {
+    this._writeEpoch = (this._writeEpoch || 0) + 1;
     try {
       const ring = await this._getRing();
       await this._withStore(STORE, 'readwrite', (store) => {
