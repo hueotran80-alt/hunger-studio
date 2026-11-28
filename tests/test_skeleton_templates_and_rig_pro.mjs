@@ -24,6 +24,7 @@ import {
 import { validateSkinWeights } from '../js/animation/bone-heat.js';
 import { RigSystem } from '../js/animation/rig-system.js';
 import { MocapRetargeter } from '../js/animation/mocap-retargeter.js';
+import { SceneManager } from '../js/core/scene-manager.js';
 import { t, setLang } from '../js/core/i18n.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -295,6 +296,43 @@ await test('i18n VI and EN keys exist for custom character upload and Auto-Rig',
   assert(t('mocap.uploadChar').includes('Tải nhân vật 3D'), 'Missing VI uploadChar');
   assert(t('mocap.autoRig').includes('gắn xương'), 'Missing VI autoRig');
   setLang('en', { persist: false, apply: false });
+});
+
+// ---------------------------------------------------------------------------
+// 7. Orphan SkeletonHelper Cleanup on Undoable Delete, Undo, Hide & Clear
+// ---------------------------------------------------------------------------
+await test('SceneManager removes/restores/hides SkeletonHelper cleanly with rigged character (no ghost skeleton)', () => {
+  const scene = new THREE.Scene();
+  const sm = new SceneManager(scene);
+  const rig = new RigSystem({ scene, THREE, sceneManager: sm });
+  sm.rigSystem = rig;
+
+  const grp = makeSyntheticHumanoidGroup('t-pose');
+  sm.addObject(grp, null, false, false);
+  rig.autoRigCharacter(grp, { templateId: 'humanoid_standard', mode: 'heat', showVisualizer: true });
+
+  const countHelpers = () => scene.children.filter((c) => c.isSkeletonHelper || c.userData?.isSkeletonHelper).length;
+  assert(countHelpers() === 1, `Expected 1 SkeletonHelper in scene after auto-rig, got ${countHelpers()}`);
+
+  // Hide character -> SkeletonHelper hides too
+  sm.setVisibility(grp, false);
+  assert(rig.skeletonHelper.visible === false, 'Hiding character must hide its SkeletonHelper');
+  sm.setVisibility(grp, true);
+  assert(rig.skeletonHelper.visible === true, 'Showing character must restore its SkeletonHelper visibility');
+
+  // Undoable delete (X / Delete -> disposeResources = false) -> NO ghost SkeletonHelper in scene!
+  sm.removeObject(grp, true, false);
+  assert(countHelpers() === 0, `Expected 0 ghost SkeletonHelpers after delete, got ${countHelpers()}`);
+  assert(rig.skeletonHelper === null, 'rigSystem.skeletonHelper must be cleared on delete');
+
+  // Undo (Ctrl+Z) -> character AND its SkeletonHelper come back cleanly
+  sm.undo();
+  assert(countHelpers() === 1, `Expected SkeletonHelper restored on undo, got ${countHelpers()}`);
+  assert(rig.skeletonHelper !== null, 'rigSystem.skeletonHelper should be restored on undo');
+
+  // clearScene -> zero helpers left behind
+  sm.clearScene();
+  assert(countHelpers() === 0, `Expected 0 SkeletonHelpers after clearScene, got ${countHelpers()}`);
 });
 
 console.log(`\nSummary: ${passed} passed, ${failures.length} failed.`);

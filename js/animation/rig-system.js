@@ -1493,6 +1493,8 @@ export class RigSystem {
     helper.name = 'Skeleton_Helper_Lines';
     helper.userData.isSystemObject = true;
     helper.userData.isHelper = true;
+    helper.userData.isSkeletonHelper = true;
+    helper.userData.targetRoot = target;
     helper.userData.selectable = false;
     helper.visible = this.boneDisplayMode !== 'hidden';
 
@@ -5245,6 +5247,23 @@ export class RigSystem {
 
   updateSkeletonHelper() {
     if (this.skeletonHelper) {
+      // Defensive orphan guard: if the target root was removed from the scene by any code path,
+      // remove the floating SkeletonHelper immediately instead of leaving a ghost rig in the viewport.
+      const scene = this.scene || (typeof window !== 'undefined' ? window.scene : null);
+      const root = this.skeletonHelper.root || this.skeletonHelper.userData?.targetRoot || null;
+      if (scene && root) {
+        let cur = root;
+        let inScene = false;
+        while (cur) {
+          if (cur === scene) { inScene = true; break; }
+          cur = cur.parent;
+        }
+        if (!inScene) {
+          if (this.skeletonHelper.parent) this.skeletonHelper.parent.remove(this.skeletonHelper);
+          this.skeletonHelper = null;
+          return;
+        }
+      }
       if (typeof this.skeletonHelper.update === 'function') {
         this.skeletonHelper.update();
       } else if (typeof this.skeletonHelper.updateMatrixWorld === 'function') {

@@ -483,6 +483,9 @@ export class SceneManager extends EventEmitter {
     const targetParent = parent || this.rootContainer;
     targetParent.add(object);
 
+    // Restore any detached SkeletonHelper / IK helper if re-added via Undo
+    this._restoreRigHelpersForAddedObject(object);
+
     // Register in map (incremental O(subtree) instead of O(N²) full scene scan)
     this.objects.set(object.userData.id, object);
     if (typeof dataBlockRegistry.registerObject === 'function') {
@@ -592,15 +595,13 @@ export class SceneManager extends EventEmitter {
       }
     }
 
+    // Always detach orphaned RigSystem / Studio SkeletonHelpers, IK handles, and TransformControls
+    // even on undoable delete (disposeResources = false) so no ghost skeleton remains in the viewport.
+    this._cleanupRigHelpersForRemovedObject(object, { disposeResources });
+
     // If permanently destroying resources
     if (disposeResources) {
       this.deepDisposeObject(object);
-    } else {
-      // Detach TransformControls if attached to object being removed
-      const engine = (typeof window !== 'undefined' ? window.engine : null) || this.engine;
-      if (engine && engine.transformControls && engine.transformControls.object === object) {
-        engine.transformControls.detach();
-      }
     }
 
     // Clean up timeline tracks — cả keyframe của con trong group, không chỉ object gốc.
@@ -947,12 +948,14 @@ export class SceneManager extends EventEmitter {
       (obj, prop, val) => {
         obj.visible = val;
         obj.userData.visible = val;
+        this._syncRigHelpersVisibility(obj, val);
         this.emit('visibilityChanged', { object: obj, visible: val });
       }
     ));
 
     object.visible = visible;
     object.userData.visible = visible;
+    this._syncRigHelpersVisibility(object, visible);
     this.emit('visibilityChanged', { object, visible });
   }
 
@@ -1400,6 +1403,190 @@ export class SceneManager extends EventEmitter {
     material.dispose();
   }
 
+  _isNodeWithinSubtree(root, candidate) {
+    if (!root || !candidate) return false;
+    let cur = candidate;
+    while (cur) {
+      if (cur === root) return true;
+      cur = cur.parent;
+    }
+    return false;
+  }
+
+  _isAttachedToScene(node) {
+    if (!node || !this.scene) return false;
+    let cur = node;
+    while (cur) {
+      if (cur === this.scene) return true;
+      cur = cur.parent;
+    }
+    return false;
+  }
+
+  _getRigSystem() {
+    return this.rigSystem || this.engine?.rigSystem || (typeof window !== 'undefined' ? window.rigSystem : null);
+  }
+
+  _getRapidStudio() {
+    return this.studio || this.engine?.studio || (typeof window !== 'undefined' ? window.studio : null);
+  }
+
+  _collectSceneSkeletonHelpers() {
+    const found = new Set();
+    const rigSystem = this._getRigSystem();
+    const studio = this._getRapidStudio();
+    if (rigSystem?.skeletonHelper) found.add(rigSystem.skeletonHelper);
+    if (studio?._currentSkeletonHelper) found.add(studio._currentSkeletonHelper);
+    if (this.scene?.children) {
+      for (const child of this.scene.children) {
+        if (child && (child.isSkeletonHelper || child.userData?.isSkeletonHelper)) {
+          found.add(child);
+        }
+      }
+    }
+    return Array.from(found);
+  }
+
+  _cleanupRigHelpersForRemovedObject(object, { disposeResources = false } = {}) {
+    if (!object) return;
+    const engine = (typeof window !== 'undefined' ? window.engine : null) || this.engine;
+    if (engine?.transformControls?.object && this._isNodeWithinSubtree(object, engine.transformControls.object)) {
+      engine.transformControls.detach();
+    }
+
+    const rigSystem = this._getRigSystem();
+    const studio = this._getRapidStudio();
+    const stashed = [];
+
+    for (const helper of this._collectSceneSkeletonHelpers()) {
+      const targetRoot = helper.root || helper.userData?.targetRoot || null;
+      const matchesObject =
+        this._isNodeWithinSubtree(object, helper) ||
+        this._isNodeWithinSubtree(object, targetRoot) ||
+        (targetRoot && !this._isAttachedToScene(targetRoot));
+      if (!matchesObject) continue;
+
+      const parentRef = helper.parent;
+      if (parentRef) {
+        parentRef.remove(helper);
+      }
+
+      const ownerTag =
+        (rigSystem?.skeletonHelper === helper ? 'rigSystem' : null) ||
+        (studio?._currentSkeletonHelper === helper ? 'studio' : null) ||
+        'scene';
+
+      if (disposeResources) {
+        helper.geometry?.dispose?.();
+        if (Array.isArray(helper.material)) {
+          helper.material.forEach((m) => m?.dispose?.());
+        } else {
+          helper.material?.dispose?.();
+        }
+      } else {
+        stashed.push({ helper, parent: parentRef || this.scene, ownerTag });
+      }
+
+      if (rigSystem?.skeletonHelper === helper) {
+        rigSystem.skeletonHelper = null;
+      }
+      if (studio?._currentSkeletonHelper === helper) {
+        studio._currentSkeletonHelper = null;
+      }
+    }
+
+    if (rigSystem) {
+      const activeMatched =
+        this._isNodeWithinSubtree(object, rigSystem.activeCharacter) ||
+        this._isNodeWithinSubtree(object, rigSystem.activeBone) ||
+        this._isNodeWithinSubtree(object, rigSystem.editArmature);
+
+      if (activeMatched) {
+        if (rigSystem.ikHandlesGroup?.parent) {
+          const ikParent = rigSystem.ikHandlesGroup.parent;
+          ikParent.remove(rigSystem.ikHandlesGroup);
+          if (!disposeResources) {
+            stashed.push({ helper: rigSystem.ikHandlesGroup, parent: ikParent, ownerTag: 'rigIK' });
+          } else {
+            rigSystem.ikHandlesGroup = null;
+          }
+        }
+        rigSystem.activeBone = null;
+        rigSystem.activeCharacter = null;
+        rigSystem.activeSkeleton = null;
+        rigSystem.editArmature = null;
+        rigSystem.editSkeleton = null;
+        rigSystem.isPoseMode = false;
+        rigSystem.isEditBoneMode = false;
+        if (rigSystem.isWeightPaintMode && typeof rigSystem.disableWeightPaintMode === 'function') {
+          try { rigSystem.disableWeightPaintMode(); } catch (_) {}
+        }
+        rigSystem.isWeightPaintMode = false;
+      }
+    }
+
+    if (studio?._characterMixerRoot && this._isNodeWithinSubtree(object, studio._characterMixerRoot)) {
+      if (studio._currentAction?.stop) studio._currentAction.stop();
+      studio._characterMixer = null;
+      studio._characterMixerRoot = null;
+      studio._currentAction = null;
+    }
+
+    if (!disposeResources && stashed.length > 0) {
+      object.userData = object.userData || {};
+      object.userData._detachedRigHelpers = stashed;
+    } else if (object.userData?._detachedRigHelpers) {
+      delete object.userData._detachedRigHelpers;
+    }
+  }
+
+  _restoreRigHelpersForAddedObject(object) {
+    const stashed = object?.userData?._detachedRigHelpers;
+    if (!Array.isArray(stashed) || stashed.length === 0) return;
+
+    const rigSystem = this._getRigSystem();
+    const studio = this._getRapidStudio();
+    for (const entry of stashed) {
+      const { helper, parent, ownerTag } = entry || {};
+      if (!helper) continue;
+      const host = parent || this.scene;
+      if (host && !helper.parent) {
+        host.add(helper);
+      }
+      if (ownerTag === 'rigSystem' && rigSystem) {
+        rigSystem.skeletonHelper = helper;
+        helper.visible = object.visible !== false && rigSystem.boneDisplayMode !== 'hidden';
+      } else if (ownerTag === 'studio' && studio) {
+        studio._currentSkeletonHelper = helper;
+        helper.visible = object.visible !== false;
+      } else if (ownerTag === 'rigIK' && rigSystem) {
+        rigSystem.ikHandlesGroup = helper;
+        helper.visible = object.visible !== false && Boolean(rigSystem.isIKEnabled);
+      } else {
+        helper.visible = object.visible !== false;
+      }
+      if (typeof helper.update === 'function') {
+        try { helper.update(); } catch (_) {}
+      }
+    }
+    delete object.userData._detachedRigHelpers;
+  }
+
+  _syncRigHelpersVisibility(object, visible) {
+    if (!object) return;
+    const rigSystem = this._getRigSystem();
+    const allowBoneLines = !rigSystem || rigSystem.boneDisplayMode !== 'hidden';
+    for (const helper of this._collectSceneSkeletonHelpers()) {
+      const targetRoot = helper.root || helper.userData?.targetRoot || null;
+      if (this._isNodeWithinSubtree(object, targetRoot)) {
+        helper.visible = Boolean(visible) && (rigSystem?.skeletonHelper === helper ? allowBoneLines : true);
+      }
+    }
+    if (rigSystem?.ikHandlesGroup && this._isNodeWithinSubtree(object, rigSystem.activeCharacter)) {
+      rigSystem.ikHandlesGroup.visible = Boolean(visible) && Boolean(rigSystem.isIKEnabled);
+    }
+  }
+
   /**
    * Deeply cleans up an object, its children, geometries, materials, textures,
    * detaches TransformControls, disposes skeletons/helpers, and removes from parent.
@@ -1409,50 +1596,8 @@ export class SceneManager extends EventEmitter {
   deepDisposeObject(object) {
     if (!object) return;
 
-    // 1. Detach TransformControls if attached to object or any descendant
-    const engine = (typeof window !== 'undefined' ? window.engine : null) || this.engine;
-    if (engine && engine.transformControls) {
-      const tcTarget = engine.transformControls.object;
-      if (tcTarget) {
-        let isAttached = (tcTarget === object);
-        if (!isAttached && object.traverse) {
-          object.traverse(child => {
-            if (child === tcTarget) isAttached = true;
-          });
-        }
-        if (isAttached) {
-          engine.transformControls.detach();
-        }
-      }
-    }
-
-    // 2. Clean up RigSystem active references and helpers if object is related
-    const rigSystem = (typeof window !== 'undefined' ? window.rigSystem : null);
-    if (rigSystem) {
-      if (rigSystem.activeCharacter === object || rigSystem.activeBone === object) {
-        rigSystem.activeBone = null;
-        rigSystem.activeCharacter = null;
-        rigSystem.activeSkeleton = null;
-      }
-      if (rigSystem.skeletonHelper) {
-        let helperMatches = (rigSystem.skeletonHelper.root === object || rigSystem.skeletonHelper.parent === object);
-        if (!helperMatches && object.traverse) {
-          object.traverse(child => {
-            if (child === rigSystem.skeletonHelper || child === rigSystem.skeletonHelper?.root) {
-              helperMatches = true;
-            }
-          });
-        }
-        if (helperMatches) {
-          if (rigSystem.skeletonHelper.parent) {
-            rigSystem.skeletonHelper.parent.remove(rigSystem.skeletonHelper);
-          }
-          if (rigSystem.skeletonHelper.geometry) rigSystem.skeletonHelper.geometry.dispose();
-          if (rigSystem.skeletonHelper.material) rigSystem.skeletonHelper.material.dispose();
-          rigSystem.skeletonHelper = null;
-        }
-      }
-    }
+    // 1 & 2. Detach TransformControls and clean up RigSystem / Studio helpers
+    this._cleanupRigHelpersForRemovedObject(object, { disposeResources: true });
 
     // 3. Recursive disposal of geometries, materials, textures, skeletons
     if (object.traverse) {
@@ -1510,8 +1655,8 @@ export class SceneManager extends EventEmitter {
       engine.transformControls.detach();
     }
 
-    // 3. Reset RigSystem state
-    const rigSystem = (typeof window !== 'undefined' ? window.rigSystem : null);
+    // 3. Reset RigSystem & Studio SkeletonHelper state
+    const rigSystem = this._getRigSystem();
     if (rigSystem) {
       if (rigSystem.isWeightPaintMode && typeof rigSystem.disableWeightPaintMode === 'function') {
         try { rigSystem.disableWeightPaintMode(); } catch (_) {}
@@ -1524,6 +1669,10 @@ export class SceneManager extends EventEmitter {
       rigSystem.activeBone = null;
       rigSystem.activeCharacter = null;
       rigSystem.activeSkeleton = null;
+      if (rigSystem.ikHandlesGroup?.parent) {
+        rigSystem.ikHandlesGroup.parent.remove(rigSystem.ikHandlesGroup);
+      }
+      rigSystem.ikHandlesGroup = null;
       if (rigSystem.skeletonHelper) {
         if (rigSystem.skeletonHelper.parent) {
           rigSystem.skeletonHelper.parent.remove(rigSystem.skeletonHelper);
@@ -1532,8 +1681,22 @@ export class SceneManager extends EventEmitter {
         if (rigSystem.skeletonHelper.material) rigSystem.skeletonHelper.material.dispose();
         rigSystem.skeletonHelper = null;
       }
-      const modeIndicator = document.getElementById('mode-indicator-text');
+      const modeIndicator = typeof document !== 'undefined' ? document.getElementById('mode-indicator-text') : null;
       if (modeIndicator) modeIndicator.textContent = 'Object Mode';
+    }
+    const studio = this._getRapidStudio();
+    if (studio?._currentSkeletonHelper) {
+      if (studio._currentSkeletonHelper.parent) {
+        studio._currentSkeletonHelper.parent.remove(studio._currentSkeletonHelper);
+      }
+      studio._currentSkeletonHelper.geometry?.dispose?.();
+      studio._currentSkeletonHelper.material?.dispose?.();
+      studio._currentSkeletonHelper = null;
+    }
+    for (const helper of this._collectSceneSkeletonHelpers()) {
+      if (helper.parent) helper.parent.remove(helper);
+      helper.geometry?.dispose?.();
+      helper.material?.dispose?.();
     }
 
     // 4. Deep dispose all objects registered in this.objects map

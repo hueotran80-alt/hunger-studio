@@ -246,6 +246,7 @@ export class CollectionManager {
       const colVisible = this.isCollectionEffectivelyVisible(cid);
       const selfHidden = obj.userData?.visible === false;
       obj.visible = colVisible && !selfHidden;
+      sm._syncRigHelpersVisibility?.(obj, obj.visible);
 
       // Sync collection renderable & holdout flags down onto object metadata
       let renderable = true;

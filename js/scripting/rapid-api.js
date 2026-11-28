@@ -1974,6 +1974,8 @@ export class RapidStudio {
     helper.material.opacity = 0.95;
     helper.renderOrder = 999;
     helper.userData.isSystemObject = true;
+    helper.userData.isSkeletonHelper = true;
+    helper.userData.targetRoot = model;
     helper.userData.selectable = false;
     this.scene.add(helper);
     this._currentSkeletonHelper = helper;
@@ -1995,8 +1997,21 @@ export class RapidStudio {
         eng.addRenderCallback((delta) => {
           if (this._characterMixer) {
             this._characterMixer.update(delta);
-            if (this._currentSkeletonHelper && this._currentSkeletonHelper.update) {
-              this._currentSkeletonHelper.update();
+            if (this._currentSkeletonHelper) {
+              let cur = this._currentSkeletonHelper.root || this._currentSkeletonHelper.userData?.targetRoot;
+              let inScene = false;
+              while (cur) {
+                if (cur === this.scene) { inScene = true; break; }
+                cur = cur.parent;
+              }
+              if (!inScene) {
+                if (this._currentSkeletonHelper.parent) {
+                  this._currentSkeletonHelper.parent.remove(this._currentSkeletonHelper);
+                }
+                this._currentSkeletonHelper = null;
+              } else if (this._currentSkeletonHelper.update) {
+                this._currentSkeletonHelper.update();
+              }
             }
           }
         });
