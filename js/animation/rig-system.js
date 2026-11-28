@@ -503,11 +503,44 @@ export class RigSystem {
   // =========================================================================
 
   _getSceneManager() {
-    return this.sceneManager || (typeof window !== 'undefined' ? window.sceneManager : null);
+    return this.sceneManager || this.engine?.sceneManager || (typeof window !== 'undefined' ? window.sceneManager : null);
   }
 
   _getEngine() {
-    return this.engine || (typeof window !== 'undefined' ? window.engine : null);
+    return this.engine || this.sceneManager?.engine || (typeof window !== 'undefined' ? window.engine : null);
+  }
+
+  _isTargetEffectivelyVisible(target) {
+    if (!target) return true;
+    const sm = this._getSceneManager();
+    if (sm && typeof sm._isNodeEffectivelyVisible === 'function') {
+      return sm._isNodeEffectivelyVisible(target);
+    }
+    const scene = this.scene || (typeof window !== 'undefined' ? window.scene : null);
+    let cur = target;
+    let reachedScene = !scene;
+    while (cur) {
+      if (scene && cur === scene) {
+        reachedScene = true;
+        break;
+      }
+      if (cur.visible === false || cur.userData?.visible === false) return false;
+      cur = cur.parent;
+    }
+    return reachedScene;
+  }
+
+  _syncHelperVisibility() {
+    if (this.skeletonHelper) {
+      const root = this.skeletonHelper.root || this.skeletonHelper.userData?.targetRoot || this.activeCharacter;
+      const eff = root ? this._isTargetEffectivelyVisible(root) : true;
+      this.skeletonHelper.visible = eff && this.boneDisplayMode !== 'hidden';
+    }
+    if (this.ikHandlesGroup) {
+      const ikRoot = this.ikHandlesGroup.userData?.targetRoot || this.activeCharacter;
+      const eff = ikRoot ? this._isTargetEffectivelyVisible(ikRoot) : true;
+      this.ikHandlesGroup.visible = eff && Boolean(this.isIKEnabled);
+    }
   }
 
   _resolveSkeletonAndRoot(armature = null) {
@@ -1445,9 +1478,7 @@ export class RigSystem {
   setBoneDisplayMode(mode = 'octahedral') {
     const next = ['octahedral', 'stick', 'hidden'].includes(mode) ? mode : 'octahedral';
     this.boneDisplayMode = next;
-    if (this.skeletonHelper) {
-      this.skeletonHelper.visible = next !== 'hidden';
-    }
+    this._syncHelperVisibility();
     const skel = this.editSkeleton || this.activeSkeleton;
     if (skel?.bones) {
       skel.bones.forEach((b) => {
@@ -1505,31 +1536,49 @@ export class RigSystem {
     helper.userData.isSkeletonHelper = true;
     helper.userData.targetRoot = target;
     helper.userData.selectable = false;
-    helper.visible = this.boneDisplayMode !== 'hidden';
 
     if (scene) {
       scene.add(helper);
     }
     this.skeletonHelper = helper;
+    this._syncHelperVisibility();
 
     // Adaptive joint & octahedron sizing handles both 1.8m mannequins and 100cm Mixamo rigs
     const medianLen = this._computeMedianBoneLength(skeleton);
     const jointRadius = Math.max(0.015, Math.min(medianLen * 0.16, medianLen * 0.22));
     const jointGeom = new THREE.SphereGeometry(jointRadius, 14, 10);
-    const jointMat = new THREE.MeshBasicMaterial({
-      color: this.isEditBoneMode ? 0x2ecc71 : 0xf39c12,
-      depthTest: false,
-      transparent: true,
-      opacity: 0.95
-    });
+    const jointColor = this.isEditBoneMode ? 0x2ecc71 : 0xf39c12;
+    const disposedGeos = new Set();
+    const disposedMats = new Set();
 
     skeleton.bones.forEach((bone) => {
-      // Safe child removal (does not corrupt parent back-references)
+      // Safe child removal + deduped GPU disposal of replaced proxies
       const prevProxies = bone.children.filter(c => c.userData?.isBoneJoint || c.userData?.isBoneHitProxy);
-      prevProxies.forEach(c => bone.remove(c));
+      prevProxies.forEach((c) => {
+        bone.remove(c);
+        if (c.userData) c.userData.targetBone = null;
+        if (c.geometry && typeof c.geometry.dispose === 'function' && !disposedGeos.has(c.geometry)) {
+          disposedGeos.add(c.geometry);
+          c.geometry.dispose();
+        }
+        if (c.material) {
+          const mats = Array.isArray(c.material) ? c.material : [c.material];
+          mats.forEach((m) => {
+            if (m && typeof m.dispose === 'function' && !disposedMats.has(m)) {
+              disposedMats.add(m);
+              m.dispose();
+            }
+          });
+        }
+      });
 
       // 2. Clickable joint sphere (hidden from Outliner & GLB/FBX export via isSystemObject)
-      const jointMesh = new THREE.Mesh(jointGeom, jointMat.clone());
+      const jointMesh = new THREE.Mesh(jointGeom, new THREE.MeshBasicMaterial({
+        color: jointColor,
+        depthTest: false,
+        transparent: true,
+        opacity: 0.95
+      }));
       jointMesh.name = `Joint_${bone.name}`;
       jointMesh.userData.isBoneJoint = true;
       jointMesh.userData.isSystemObject = true;
@@ -2088,7 +2137,7 @@ export class RigSystem {
 
     scene.add(ikGroup);
     this.ikHandlesGroup = ikGroup;
-    this.ikHandlesGroup.visible = this.isIKEnabled;
+    this._syncHelperVisibility();
     return true;
   }
 
@@ -2101,7 +2150,7 @@ export class RigSystem {
       this.setupTwoBoneIK();
     }
     if (this.ikHandlesGroup) {
-      this.ikHandlesGroup.visible = this.isIKEnabled;
+      this._syncHelperVisibility();
       if (this.isIKEnabled) {
         this.updateIKHandlesPositions();
       }
@@ -2650,7 +2699,9 @@ export class RigSystem {
     this._weightCanvasBound = dom;
     dom.addEventListener('pointerdown', this._onWeightPointerDownBound, true);
     dom.addEventListener('pointermove', this._onWeightPointerMoveBound, true);
-    window.addEventListener('pointerup', this._onWeightPointerUpBound, true);
+    if (typeof window !== 'undefined') {
+      window.addEventListener('pointerup', this._onWeightPointerUpBound, true);
+    }
   }
 
   _detachWeightPaintCanvasEvents() {
@@ -5250,14 +5301,12 @@ export class RigSystem {
       this.activeCharacter = unwrapped;
     }
 
-    const modeIndicator = document.getElementById('mode-indicator-text');
+    const modeIndicator = typeof document !== 'undefined' ? document.getElementById('mode-indicator-text') : null;
     if (modeIndicator) {
       modeIndicator.textContent = this.isPoseMode ? 'Pose Mode' : 'Object Mode';
     }
 
-    if (this.skeletonHelper) {
-      this.skeletonHelper.visible = this.isPoseMode || true;
-    }
+    this._syncHelperVisibility();
 
     this._syncViewportModeUI(
       this.isWeightPaintMode ? 'weight-paint' : (this.isEditBoneMode ? 'edit-bone' : (this.isPoseMode ? 'pose' : 'object')),

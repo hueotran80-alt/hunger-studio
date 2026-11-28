@@ -1977,6 +1977,10 @@ export class RapidStudio {
     helper.userData.isSkeletonHelper = true;
     helper.userData.targetRoot = model;
     helper.userData.selectable = false;
+    const sm = this._sceneManager || (typeof window !== 'undefined' ? window.sceneManager : null);
+    helper.visible = (sm && typeof sm._isNodeEffectivelyVisible === 'function')
+      ? sm._isNodeEffectivelyVisible(model)
+      : model.visible !== false;
     this.scene.add(helper);
     this._currentSkeletonHelper = helper;
   }

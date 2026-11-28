@@ -22,7 +22,7 @@ import {
   fitHumanoidSkeletonToMesh,
 } from '../js/animation/skeleton-templates.js';
 import { validateSkinWeights } from '../js/animation/bone-heat.js';
-import { RigSystem } from '../js/animation/rig-system.js';
+import { RigSystem, AutoSkinCommand } from '../js/animation/rig-system.js';
 import { MocapRetargeter } from '../js/animation/mocap-retargeter.js';
 import { SceneManager } from '../js/core/scene-manager.js';
 import { t, setLang } from '../js/core/i18n.js';
@@ -338,28 +338,11 @@ await test('SceneManager removes/restores/hides SkeletonHelper cleanly with rigg
 // ---------------------------------------------------------------------------
 // 8. Deep Audit Probes (5 Confirmed Lifecycle Bugs -> Regression Locked!)
 // ---------------------------------------------------------------------------
-await test('Probe 1: Undo/Redo preserves full RigSystem pose, IK, and RapidStudio mixer state atomically', () => {
+await test('Probe 1: Undo/Redo preserves full RigSystem pose, IK, and real Three.js AnimationAction state atomically', () => {
   const scene = new THREE.Scene();
   const sm = new SceneManager(scene);
   const rig = new RigSystem({ scene, THREE, sceneManager: sm });
   sm.rigSystem = rig;
-
-  let actionPlayCount = 0;
-  let actionStopCount = 0;
-  const fakeAction = {
-    time: 0.42,
-    isRunning: () => true,
-    getClip: () => ({ name: 'Walk' }),
-    play: () => { actionPlayCount += 1; },
-    stop: () => { actionStopCount += 1; },
-  };
-  const fakeStudio = {
-    _characterMixer: { mock: true },
-    _characterMixerRoot: null,
-    _currentAction: fakeAction,
-    _currentSkeletonHelper: null,
-  };
-  sm.studio = fakeStudio;
 
   const grp = makeSyntheticHumanoidGroup('t-pose');
   sm.addObject(grp, null, false, false);
@@ -367,30 +350,44 @@ await test('Probe 1: Undo/Redo preserves full RigSystem pose, IK, and RapidStudi
   rig.activeCharacter = res.skinnedMeshes[0];
   rig.activeSkeleton = res.skeleton;
   rig.activeBone = res.skeleton.bones[0];
-  rig.isPoseMode = true;
+  rig.setPoseMode(true, res.skinnedMeshes[0]);
   rig.setupTwoBoneIK(grp);
   rig.setIKEnabled(true);
-  fakeStudio._characterMixerRoot = grp;
+
+  const mixer = new THREE.AnimationMixer(grp);
+  const track = new THREE.VectorKeyframeTrack('.position', [0, 1], [0, 0, 0, 0, 1, 0]);
+  const clip = new THREE.AnimationClip('Walk', 1.0, [track]);
+  const action = mixer.clipAction(clip);
+  action.play();
+  mixer.update(0.42);
+  const fakeStudio = {
+    _characterMixer: mixer,
+    _characterMixerRoot: grp,
+    _currentAction: action,
+    _currentSkeletonHelper: null,
+  };
+  sm.studio = fakeStudio;
 
   const origChar = rig.activeCharacter;
   const origBone = rig.activeBone;
   const origChainCount = rig.ikChains.size;
   assert(origChainCount === 4, `Expected 4 IK chains before delete, got ${origChainCount}`);
 
-  // Undoable delete -> state cleared while deleted
+  // Undoable delete -> state cleared while deleted, action NOT reset by stop()
   sm.removeObject(grp, true, false);
   assert(rig.activeCharacter === null && rig.isPoseMode === false && rig.ikChains.size === 0, 'Delete must clear live rig & IK state');
   assert(rig.skeletonHelper === null && rig.ikHandlesGroup === null, 'Delete must detach helper & IK group');
-  assert(fakeStudio._characterMixerRoot === null && actionStopCount === 1, 'Delete must stop & detach RapidStudio mixer');
+  assert(fakeStudio._characterMixerRoot === null && fakeStudio._characterMixer === null, 'Delete must detach RapidStudio mixer');
 
-  // Undo -> full rig, pose, IK, and mixer state restored atomically!
+  // Undo -> full rig, pose, IK, and real AnimationAction playback state restored atomically!
   sm.undo();
   assert(rig.activeCharacter === origChar, 'Undo must restore activeCharacter');
   assert(rig.activeBone === origBone, 'Undo must restore activeBone');
   assert(rig.isPoseMode === true, 'Undo must restore isPoseMode');
   assert(rig.isIKEnabled === true && rig.ikChains.size === origChainCount, 'Undo must restore IK enabled & chains');
   assert(rig.skeletonHelper !== null && rig.ikHandlesGroup !== null, 'Undo must restore SkeletonHelper & IK group');
-  assert(fakeStudio._characterMixerRoot === grp && actionPlayCount === 1, 'Undo must restore & resume RapidStudio mixer');
+  assert(fakeStudio._characterMixerRoot === grp && fakeStudio._currentAction === action, 'Undo must restore RapidStudio mixer & action');
+  assert(Math.abs(action.time - 0.42) < 1e-6 && action.isRunning() && action.isScheduled(), 'Undo must preserve live action time/running/scheduled');
 
   // Redo -> cleans up cleanly again, second Undo -> restores again!
   sm.redo();
@@ -532,6 +529,277 @@ await test('Probe 5: clearScene clears IK chains, chainBlends, activeIKHandle, a
   assert(rig.isIKEnabled === false, 'clearScene must reset isIKEnabled');
   const leftoverIK = scene.children.filter((c) => c.userData?.isIKHandlesGroup);
   assert(leftoverIK.length === 0, `Expected 0 leftover IK groups in scene, got ${leftoverIK.length}`);
+});
+
+// ---------------------------------------------------------------------------
+// 9. Deep Audit Round-2 Probes (All 6 Confirmed Bugs -> Regression Locked!)
+// ---------------------------------------------------------------------------
+function makeMockEngine() {
+  const listeners = new Map();
+  const domElement = {
+    addEventListener(type, fn) {
+      if (!listeners.has(type)) listeners.set(type, new Set());
+      listeners.get(type).add(fn);
+    },
+    removeEventListener(type, fn) {
+      listeners.get(type)?.delete(fn);
+    },
+    listenerCount(type) {
+      return listeners.get(type)?.size || 0;
+    },
+  };
+  const transformControls = {
+    object: null,
+    mode: 'translate',
+    space: 'world',
+    attach(obj) { this.object = obj; },
+    detach() { this.object = null; },
+    setMode(m) { this.mode = m; },
+    setSpace(s) { this.space = s; },
+  };
+  return { transformControls, renderer: { domElement } };
+}
+
+await test('Audit2-1: Undo restores real Pose Mode gizmo, Edit Bone Mode gizmo, and Weight Paint material/canvas', () => {
+  const scene = new THREE.Scene();
+  const sm = new SceneManager(scene);
+  const mockEngine = makeMockEngine();
+  sm.engine = mockEngine;
+  const rig = new RigSystem({ scene, THREE, sceneManager: sm, engine: mockEngine });
+  sm.rigSystem = rig;
+
+  const grp = makeSyntheticHumanoidGroup('t-pose');
+  sm.addObject(grp, null, false, false);
+  const res = rig.autoRigCharacter(grp, { templateId: 'humanoid_standard', mode: 'heat', showVisualizer: true });
+  const hips = res.skeleton.bones[0];
+  const skinned = res.skinnedMeshes[0];
+  const origMat = skinned.material;
+
+  // (a) Pose Mode: TransformControls attached to activeBone in rotate mode -> delete -> undo -> re-attached!
+  rig.setPoseMode(true, res.character);
+  rig.selectBone(hips);
+  assert(mockEngine.transformControls.object === hips && mockEngine.transformControls.mode === 'rotate', 'Precondition: Pose gizmo attached to Hips');
+  sm.removeObject(grp, true, false);
+  assert(mockEngine.transformControls.object === null, 'Delete must detach TransformControls');
+  sm.undo();
+  assert(rig.isPoseMode === true && rig.activeBone === hips, 'Undo must restore Pose Mode & Hips');
+  assert(mockEngine.transformControls.object === hips && mockEngine.transformControls.mode === 'rotate',
+    `Undo must re-attach TransformControls to Hips (got object=${mockEngine.transformControls.object?.name}, mode=${mockEngine.transformControls.mode})`);
+
+  // (b) Weight Paint Mode: material swapped + canvas listeners bound -> delete -> undo -> material & canvas restored!
+  rig.enableWeightPaintMode(skinned, hips);
+  assert(rig.isWeightPaintMode === true && skinned.material === skinned.userData._weightPaintMat, 'Precondition: Weight Paint material active');
+  assert(rig._weightCanvasBound === mockEngine.renderer.domElement && mockEngine.renderer.domElement.listenerCount('pointerdown') === 1, 'Precondition: Weight Paint canvas listeners bound');
+  sm.removeObject(grp, true, false);
+  assert(rig.isWeightPaintMode === false && skinned.material === origMat && rig._weightCanvasBound === null, 'Delete must disable Weight Paint & restore original material');
+  sm.undo();
+  assert(rig.isWeightPaintMode === true && rig.weightPaintMesh === skinned, 'Undo must restore Weight Paint state');
+  assert(skinned.material === skinned.userData._weightPaintMat, 'Undo must re-enable Weight Paint heatmap material');
+  assert(rig._weightCanvasBound === mockEngine.renderer.domElement && mockEngine.renderer.domElement.listenerCount('pointerdown') === 1, 'Undo must re-bind Weight Paint canvas listeners');
+  rig.disableWeightPaintMode();
+
+  // (c) Edit Bone Mode: TransformControls attached in translate mode -> delete -> undo -> re-attached!
+  rig.enterEditBoneMode(grp);
+  rig.selectBone(hips);
+  assert(rig.isEditBoneMode === true && mockEngine.transformControls.object === hips && mockEngine.transformControls.mode === 'translate', 'Precondition: Edit Bone gizmo attached');
+  sm.removeObject(grp, true, false);
+  assert(rig.isEditBoneMode === false && mockEngine.transformControls.object === null, 'Delete must exit Edit Bone & detach gizmo');
+  sm.undo();
+  assert(rig.isEditBoneMode === true && mockEngine.transformControls.object === hips && mockEngine.transformControls.mode === 'translate', 'Undo must restore Edit Bone Mode & translate gizmo');
+});
+
+await test('Audit2-2: RigSystem setters (setBoneDisplayMode, setPoseMode, setIKEnabled, createSkeletonVisualizer) obey effective visibility', () => {
+  const scene = new THREE.Scene();
+  const sm = new SceneManager(scene);
+  const rig = new RigSystem({ scene, THREE, sceneManager: sm });
+  sm.rigSystem = rig;
+
+  const grp = makeSyntheticHumanoidGroup('t-pose');
+  sm.addObject(grp, null, false, false);
+  const res = rig.autoRigCharacter(grp, { templateId: 'humanoid_standard', mode: 'heat', showVisualizer: true });
+  rig.setupTwoBoneIK(grp);
+
+  // Hide character root -> EVERY RigSystem setter must keep skeletonHelper & ikHandlesGroup hidden!
+  sm.setVisibility(grp, false);
+  assert(rig.skeletonHelper.visible === false, 'Precondition: helper hidden when root hidden');
+
+  rig.setBoneDisplayMode('stick');
+  assert(rig.skeletonHelper.visible === false, 'setBoneDisplayMode must NOT reveal helper on hidden root');
+  rig.setBoneDisplayMode('octahedral');
+  assert(rig.skeletonHelper.visible === false, 'setBoneDisplayMode(octahedral) must NOT reveal helper on hidden root');
+
+  rig.setPoseMode(true, grp);
+  assert(rig.skeletonHelper.visible === false, 'setPoseMode(true) must NOT reveal helper on hidden root');
+
+  rig.setIKEnabled(true);
+  assert(rig.ikHandlesGroup.visible === false, 'setIKEnabled(true) must NOT reveal IK handles on hidden root');
+
+  rig.createSkeletonVisualizer(res.skeleton, grp);
+  assert(rig.skeletonHelper.visible === false, 'createSkeletonVisualizer must NOT reveal helper on hidden root');
+
+  // Once root becomes visible again, both helper & IK handles appear cleanly!
+  sm.setVisibility(grp, true);
+  assert(rig.skeletonHelper.visible === true && rig.ikHandlesGroup.visible === true, 'Showing root must reveal helper & enabled IK handles');
+});
+
+await test('Audit2-3: Object hidden by Collection stays locally visible (userData.visible=true) after delete -> undo -> show collection', () => {
+  const scene = new THREE.Scene();
+  const sm = new SceneManager(scene);
+  const rig = new RigSystem({ scene, THREE, sceneManager: sm });
+  sm.rigSystem = rig;
+
+  const subCol = sm.collectionManager.createCollection('HiddenChars');
+  const grp = makeSyntheticHumanoidGroup('t-pose');
+  sm.addObject(grp, null, false, false);
+  sm.collectionManager.moveObjectToCollection(grp, subCol.id);
+  rig.autoRigCharacter(grp, { templateId: 'humanoid_standard', mode: 'heat', showVisualizer: true });
+
+  // Hide collection -> object becomes effectively hidden while local userData.visible stays true
+  sm.collectionManager.setCollectionVisibility(subCol.id, false);
+  assert(grp.visible === false && grp.userData.visible === true && rig.skeletonHelper.visible === false,
+    'Precondition: hidden by collection with local userData.visible=true');
+
+  // Delete -> Undo while collection is STILL hidden
+  sm.removeObject(grp, true, false);
+  sm.undo();
+  assert(grp.userData.visible === true, `Undo MUST NOT overwrite userData.visible to false (got ${grp.userData.visible})`);
+  assert(grp.visible === false && rig.skeletonHelper.visible === false, 'Object & helper must remain effectively hidden while collection is still hidden');
+
+  // Now show collection -> BOTH object AND its SkeletonHelper MUST become visible!
+  sm.collectionManager.setCollectionVisibility(subCol.id, true);
+  assert(grp.visible === true && grp.userData.visible === true && rig.skeletonHelper.visible === true,
+    `Expected visible after showing collection, got obj=${grp.visible}, local=${grp.userData.visible}, helper=${rig.skeletonHelper.visible}`);
+
+  // Also test alternate order: hide collection -> delete -> show collection BEFORE undo -> undo -> visible!
+  sm.collectionManager.setCollectionVisibility(subCol.id, false);
+  sm.removeObject(grp, true, false);
+  sm.collectionManager.setCollectionVisibility(subCol.id, true);
+  sm.undo();
+  assert(grp.visible === true && grp.userData.visible === true && rig.skeletonHelper.visible === true,
+    `Expected visible when collection shown before undo, got obj=${grp.visible}, local=${grp.userData.visible}, helper=${rig.skeletonHelper.visible}`);
+});
+
+await test('Audit2-4: Undo preserves real THREE.AnimationAction paused, time, enabled, fade weight, and scheduled state', () => {
+  const scene = new THREE.Scene();
+  const sm = new SceneManager(scene);
+  const mesh = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshStandardMaterial());
+  sm.addObject(mesh, null, false, false);
+
+  const mixer = new THREE.AnimationMixer(mesh);
+  const clip = new THREE.AnimationClip('Walk', 2.0, [new THREE.VectorKeyframeTrack('.position', [0, 2], [0, 0, 0, 2, 0, 0])]);
+  const action = mixer.clipAction(clip);
+  action.fadeIn(1.0).play();
+  mixer.update(0.5);
+  action.paused = true;
+
+  const before = {
+    time: action.time,
+    paused: action.paused,
+    enabled: action.enabled,
+    weight: action.getEffectiveWeight(),
+    scheduled: action.isScheduled(),
+    running: action.isRunning(),
+  };
+  assert(Math.abs(before.time - 0.5) < 1e-6 && before.paused === true && before.enabled === true && before.weight > 0.4 && before.scheduled === true,
+    `Unexpected initial paused action state: ${JSON.stringify(before)}`);
+
+  const fakeStudio = { _characterMixer: mixer, _characterMixerRoot: mesh, _currentAction: action, _currentSkeletonHelper: null };
+  sm.studio = fakeStudio;
+
+  // Delete (undoable) -> mixer detached, action NOT reset by stop()
+  sm.removeObject(mesh, true, false);
+  assert(fakeStudio._characterMixer === null && fakeStudio._currentAction === null, 'Mixer must detach on delete');
+
+  // Undo -> exact paused, time, enabled, fade weight, scheduled state preserved bit-for-bit!
+  sm.undo();
+  assert(fakeStudio._characterMixer === mixer && fakeStudio._currentAction === action, 'Mixer & action restored');
+  assert(Math.abs(action.time - before.time) < 1e-6, `Action time lost: ${action.time} vs ${before.time}`);
+  assert(action.paused === true && action.enabled === true, `Action paused/enabled lost: paused=${action.paused}, enabled=${action.enabled}`);
+  assert(Math.abs(action.getEffectiveWeight() - before.weight) < 1e-6, `Action fade weight lost: ${action.getEffectiveWeight()} vs ${before.weight}`);
+  assert(action.isScheduled() === true && action.isRunning() === false, `Action scheduled/running mismatch: scheduled=${action.isScheduled()}, running=${action.isRunning()}`);
+});
+
+await test('Audit2-5: AutoSkinCommand history eviction disposes stashed helpers on replaced oldMesh', () => {
+  const scene = new THREE.Scene();
+  const sm = new SceneManager(scene);
+  const rig = new RigSystem({ scene, THREE, sceneManager: sm });
+  sm.rigSystem = rig;
+
+  const oldMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.16, 1.72, 12, 10), new THREE.MeshStandardMaterial());
+  oldMesh.name = 'OldUnrigged';
+  sm.addObject(oldMesh, null, false, false);
+
+  const built = buildSkeletonFromTemplate('humanoid_standard');
+  sm.addObject(built.armatureGroup, null, false, false);
+  rig.createSkeletonVisualizer(built.skeleton, oldMesh);
+
+  let helperGeoDisposed = 0;
+  let helperMatDisposed = 0;
+  const origG = rig.skeletonHelper.geometry.dispose.bind(rig.skeletonHelper.geometry);
+  const origM = rig.skeletonHelper.material.dispose.bind(rig.skeletonHelper.material);
+  rig.skeletonHelper.geometry.dispose = () => { helperGeoDisposed += 1; origG(); };
+  rig.skeletonHelper.material.dispose = () => { helperMatDisposed += 1; origM(); };
+
+  const newMesh = new THREE.SkinnedMesh(oldMesh.geometry.clone(), oldMesh.material.clone());
+  newMesh.name = 'NewSkinned';
+  const cmd = new AutoSkinCommand(rig, oldMesh, newMesh, built.skeleton, 'Auto-Skin Test');
+  cmd.execute();
+  sm.executeCommand(cmd);
+
+  assert(Array.isArray(oldMesh.userData._detachedRigHelpers) && oldMesh.userData._detachedRigHelpers.length === 1,
+    'AutoSkin swap should stash oldMesh helper for undo');
+  assert(helperGeoDisposed === 0 && helperMatDisposed === 0, 'Must not dispose stashed helper while AutoSkinCommand is in history');
+
+  // Clear history -> AutoSkinCommand eviction MUST dispose oldMesh stashed helper!
+  sm.clearHistory();
+  assert(helperGeoDisposed === 1 && helperMatDisposed === 1,
+    `AutoSkinCommand clearHistory must dispose stashed helper (got geo=${helperGeoDisposed}, mat=${helperMatDisposed})`);
+  assert(oldMesh.userData._detachedRigHelpers === undefined, 'oldMesh._detachedRigHelpers must be cleared');
+});
+
+await test('Audit2-6: Bone joint & octahedron proxy geometries and materials are disposed cleanly (deduped) on clearHistory', () => {
+  const scene = new THREE.Scene();
+  const sm = new SceneManager(scene);
+  const rig = new RigSystem({ scene, THREE, sceneManager: sm });
+  sm.rigSystem = rig;
+
+  const grp = makeSyntheticHumanoidGroup('t-pose');
+  sm.addObject(grp, null, false, false);
+  rig.autoRigCharacter(grp, { templateId: 'humanoid_standard', mode: 'heat', showVisualizer: true });
+
+  const uniqueGeos = new Set();
+  const uniqueMats = new Set();
+  const disposedGeos = new Set();
+  const disposedMats = new Set();
+  let geoDisposeCalls = 0;
+  let matDisposeCalls = 0;
+
+  grp.traverse((node) => {
+    if (!node.userData?.isBoneJoint && !node.userData?.isBoneHitProxy) return;
+    if (node.geometry && !uniqueGeos.has(node.geometry)) {
+      uniqueGeos.add(node.geometry);
+      const orig = node.geometry.dispose.bind(node.geometry);
+      node.geometry.dispose = () => { geoDisposeCalls += 1; disposedGeos.add(node.geometry); orig(); };
+    }
+    if (node.material && !uniqueMats.has(node.material)) {
+      uniqueMats.add(node.material);
+      const orig = node.material.dispose.bind(node.material);
+      node.material.dispose = () => { matDisposeCalls += 1; disposedMats.add(node.material); orig(); };
+    }
+  });
+  assert(uniqueGeos.size >= 15 && uniqueMats.size >= 30,
+    `Expected >=15 unique proxy geos & >=30 unique proxy mats, got ${uniqueGeos.size}/${uniqueMats.size}`);
+
+  // Undoable delete -> proxies still kept alive for undo
+  sm.removeObject(grp, true, false);
+  assert(geoDisposeCalls === 0 && matDisposeCalls === 0, 'Undoable delete must not dispose proxies yet');
+
+  // Clear history -> EVERY unique proxy geometry & material disposed EXACTLY ONCE!
+  sm.clearHistory();
+  assert(disposedGeos.size === uniqueGeos.size && geoDisposeCalls === uniqueGeos.size,
+    `Expected all ${uniqueGeos.size} unique proxy geometries disposed once, got disposed=${disposedGeos.size} calls=${geoDisposeCalls}`);
+  assert(disposedMats.size === uniqueMats.size && matDisposeCalls === uniqueMats.size,
+    `Expected all ${uniqueMats.size} unique proxy materials disposed once, got disposed=${disposedMats.size} calls=${matDisposeCalls}`);
 });
 
 console.log(`\nSummary: ${passed} passed, ${failures.length} failed.`);

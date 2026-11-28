@@ -143,6 +143,8 @@ export class RemoveObjectCommand extends Command {
     this.object = object;
     this.parent = object.parent;
     this.childIndex = this.parent ? this.parent.children.indexOf(object) : -1;
+    this.collectionId = sceneManager.collectionManager?.getObjectCollectionId?.(object) || null;
+    this.localVisible = object.userData?.visible;
     // Xoá object huỷ keyframe/bone track/clip của cả cây con; chụp lại trước
     // khi xoá để Ctrl+Z trả về đúng hoạt cảnh đang có.
     this.timelineTracks = typeof sceneManager.captureTimelineTracks === 'function'
@@ -156,6 +158,10 @@ export class RemoveObjectCommand extends Command {
 
   undo() {
     this.sceneManager.addObject(this.object, this.parent, false, false);
+    if (this.localVisible !== undefined) {
+      this.object.userData = this.object.userData || {};
+      this.object.userData.visible = this.localVisible;
+    }
     if (this.parent && this.childIndex >= 0 && this.parent.children.length > 1) {
       // Restore position in children array if necessary
       const currIdx = this.parent.children.indexOf(this.object);
@@ -163,6 +169,11 @@ export class RemoveObjectCommand extends Command {
         this.parent.children.splice(currIdx, 1);
         this.parent.children.splice(this.childIndex, 0, this.object);
       }
+    }
+    if (this.collectionId && this.sceneManager.collectionManager?.collections?.has(this.collectionId)) {
+      this.sceneManager.collectionManager.moveObjectToCollection(this.object, this.collectionId);
+    } else {
+      this.sceneManager.collectionManager?.applyEffectiveVisibility?.();
     }
     if (this.timelineTracks.length) {
       this.sceneManager.restoreTimelineTracks(this.object, this.timelineTracks);
@@ -182,6 +193,8 @@ export class RemoveObjectsCommand extends Command {
       object,
       parent: object.parent,
       childIndex: object.parent ? object.parent.children.indexOf(object) : -1,
+      collectionId: sceneManager.collectionManager?.getObjectCollectionId?.(object) || null,
+      localVisible: object.userData?.visible,
       timelineTracks: typeof sceneManager.captureTimelineTracks === 'function'
         ? sceneManager.captureTimelineTracks(object)
         : []
@@ -196,14 +209,23 @@ export class RemoveObjectsCommand extends Command {
 
   undo() {
     for (let i = this.entries.length - 1; i >= 0; i -= 1) {
-      const { object, parent, childIndex, timelineTracks } = this.entries[i];
+      const { object, parent, childIndex, collectionId, localVisible, timelineTracks } = this.entries[i];
       this.sceneManager.addObject(object, parent, false, false);
+      if (localVisible !== undefined) {
+        object.userData = object.userData || {};
+        object.userData.visible = localVisible;
+      }
       if (parent && childIndex >= 0 && parent.children.length > 1) {
         const currIdx = parent.children.indexOf(object);
         if (currIdx !== -1 && currIdx !== childIndex) {
           parent.children.splice(currIdx, 1);
           parent.children.splice(Math.min(childIndex, parent.children.length), 0, object);
         }
+      }
+      if (collectionId && this.sceneManager.collectionManager?.collections?.has(collectionId)) {
+        this.sceneManager.collectionManager.moveObjectToCollection(object, collectionId);
+      } else {
+        this.sceneManager.collectionManager?.applyEffectiveVisibility?.();
       }
       if (timelineTracks?.length) {
         this.sceneManager.restoreTimelineTracks(object, timelineTracks);
@@ -474,17 +496,25 @@ export class SceneManager extends EventEmitter {
       object.name = this.generateUniqueName(object.name);
     }
 
-    // Default selectable and editable flags
+    // Default selectable and editable flags.
+    // Preserve local userData.visible when object.visible is false solely because its collection is hidden;
+    // when its collection is visible, sync userData.visible with object.visible (e.g. direct .visible=false imports).
     object.userData.selectable = object.userData.selectable !== false;
-    object.userData.visible = object.visible !== false;
+    const cidForVis = this.collectionManager?.getObjectCollectionId?.(object);
+    const colHiddenForVis = Boolean(
+      cidForVis &&
+      this.collectionManager &&
+      typeof this.collectionManager.isCollectionEffectivelyVisible === 'function' &&
+      !this.collectionManager.isCollectionEffectivelyVisible(cidForVis)
+    );
+    if (object.userData.visible === undefined || !colHiddenForVis) {
+      object.userData.visible = object.visible !== false;
+    }
     object.userData.locked = object.userData.locked || false;
 
     // Parent resolution
     const targetParent = parent || this.rootContainer;
     targetParent.add(object);
-
-    // Restore any detached SkeletonHelper / IK helper if re-added via Undo
-    this._restoreRigHelpersForAddedObject(object);
 
     // Register in map (incremental O(subtree) instead of O(N²) full scene scan)
     this.objects.set(object.userData.id, object);
@@ -501,6 +531,10 @@ export class SceneManager extends EventEmitter {
     }
 
     this.collectionManager?.ensureObjectTracked(object);
+
+    // Restore any detached SkeletonHelper / IK helper & rig state AFTER collection membership is tracked
+    this._restoreRigHelpersForAddedObject(object);
+
     this.emit('objectAdded', { object, parent: targetParent });
 
     if (selectAfter && object.userData.selectable) {
@@ -1196,7 +1230,15 @@ export class SceneManager extends EventEmitter {
 
   _commandReferencesObject(command, targetObj) {
     if (!command || !targetObj) return false;
-    if (command.object === targetObj || command.group === targetObj) return true;
+    if (
+      command.object === targetObj ||
+      command.group === targetObj ||
+      command.mesh === targetObj ||
+      command.oldMesh === targetObj ||
+      command.newMesh === targetObj
+    ) {
+      return true;
+    }
     if (Array.isArray(command.objects) && command.objects.includes(targetObj)) return true;
     if (Array.isArray(command.entries) && command.entries.some((e) => e?.object === targetObj)) return true;
     if (Array.isArray(command.commands)) {
@@ -1222,6 +1264,9 @@ export class SceneManager extends EventEmitter {
     if (!command) return out;
     if (command.object) out.add(command.object);
     if (command.group) out.add(command.group);
+    if (command.mesh) out.add(command.mesh);
+    if (command.oldMesh) out.add(command.oldMesh);
+    if (command.newMesh) out.add(command.newMesh);
     if (Array.isArray(command.objects)) {
       for (const o of command.objects) if (o) out.add(o);
     }
@@ -1234,19 +1279,22 @@ export class SceneManager extends EventEmitter {
     return out;
   }
 
-  _disposeHelperSubtree(helper) {
+  _disposeHelperSubtree(helper, disposedGeos = new Set(), disposedMats = new Set()) {
     if (!helper) return;
     if (helper.parent) helper.parent.remove(helper);
     const disposeNode = (node) => {
       if (!node) return;
-      if (node.geometry && typeof node.geometry.dispose === 'function') {
+      if (node.geometry && typeof node.geometry.dispose === 'function' && !disposedGeos.has(node.geometry)) {
+        disposedGeos.add(node.geometry);
         node.geometry.dispose();
       }
       if (node.material) {
-        if (Array.isArray(node.material)) {
-          node.material.forEach((m) => m?.dispose?.());
-        } else if (typeof node.material.dispose === 'function') {
-          node.material.dispose();
+        const mats = Array.isArray(node.material) ? node.material : [node.material];
+        for (const m of mats) {
+          if (m && typeof m.dispose === 'function' && !disposedMats.has(m)) {
+            disposedMats.add(m);
+            m.dispose();
+          }
         }
       }
     };
@@ -1257,26 +1305,82 @@ export class SceneManager extends EventEmitter {
     }
   }
 
-  _disposeDetachedRigState(object) {
+  _disposeBoneProxiesUnder(object, disposedGeos = new Set(), disposedMats = new Set()) {
+    if (!object) return;
+    const proxies = new Set();
+    const scanNode = (node) => {
+      if (!node) return;
+      if (node.userData?.isBoneJoint || node.userData?.isBoneHitProxy) {
+        proxies.add(node);
+      }
+    };
+    if (typeof object.traverse === 'function') {
+      object.traverse(scanNode);
+    }
+    const rigState = object.userData?._detachedRigState;
+    for (const skel of [rigState?.activeSkeleton, rigState?.editSkeleton, object.userData?.skeleton, object.skeleton]) {
+      if (!skel?.bones) continue;
+      for (const bone of skel.bones) {
+        if (!bone?.children) continue;
+        // Only dispose proxies on bones that are no longer attached to the live scene
+        if (this._isAttachedToScene(bone)) continue;
+        for (const child of bone.children) {
+          scanNode(child);
+        }
+      }
+    }
+    for (const proxy of proxies) {
+      if (proxy.parent) proxy.parent.remove(proxy);
+      if (proxy.userData) proxy.userData.targetBone = null;
+      if (proxy.geometry && typeof proxy.geometry.dispose === 'function' && !disposedGeos.has(proxy.geometry)) {
+        if (!dataBlockRegistry.isGeometryShared(proxy.geometry, this.rootContainer, proxy)) {
+          disposedGeos.add(proxy.geometry);
+          proxy.geometry.dispose();
+        }
+      }
+      if (proxy.material) {
+        const mats = Array.isArray(proxy.material) ? proxy.material : [proxy.material];
+        for (const m of mats) {
+          if (m && typeof m.dispose === 'function' && !disposedMats.has(m)) {
+            if (!dataBlockRegistry.isMaterialShared(m, this.rootContainer, proxy)) {
+              disposedMats.add(m);
+              m.dispose();
+            }
+          }
+        }
+      }
+    }
+  }
+
+  _disposeDetachedRigState(object, disposedGeos = new Set(), disposedMats = new Set()) {
     if (!object?.userData) return;
     const stashed = object.userData._detachedRigHelpers;
     if (Array.isArray(stashed)) {
       for (const entry of stashed) {
         if (entry?.helper) {
-          this._disposeHelperSubtree(entry.helper);
+          this._disposeHelperSubtree(entry.helper, disposedGeos, disposedMats);
         }
       }
       delete object.userData._detachedRigHelpers;
     }
+    this._disposeBoneProxiesUnder(object, disposedGeos, disposedMats);
+    const studioState = object.userData._detachedStudioState;
+    if (studioState) {
+      try { studioState.currentAction?.stop?.(); } catch (_) {}
+      try { studioState.characterMixer?.stopAllAction?.(); } catch (_) {}
+      try {
+        if (studioState.characterMixerRoot) {
+          studioState.characterMixer?.uncacheRoot?.(studioState.characterMixerRoot);
+        }
+      } catch (_) {}
+      delete object.userData._detachedStudioState;
+    }
     if (object.userData._detachedRigState) {
       delete object.userData._detachedRigState;
     }
-    if (object.userData._detachedStudioState) {
-      delete object.userData._detachedStudioState;
-    }
   }
 
-  /** Chỉ dispose snapshot geometry và helper/IK đã stash của command bị evict khi không còn live trong scene hoặc undo/redo stack. */
+  /** Chỉ dispose snapshot geometry, helper/IK đã stash và bone proxy của command bị evict khi không còn live trong scene hoặc undo/redo stack. */
   _disposeEvictedGeometry(command) {
     if (!command) return;
     if (Array.isArray(command.commands)) {
@@ -1294,14 +1398,14 @@ export class SceneManager extends EventEmitter {
         g.dispose();
       }
     }
+    const disposedGeos = new Set();
+    const disposedMats = new Set();
     const objs = this._collectCommandObjects(command);
     for (const obj of objs) {
-      if (!obj?.userData?._detachedRigHelpers && !obj?.userData?._detachedRigState && !obj?.userData?._detachedStudioState) {
+      if (!obj || this._isAttachedToScene(obj) || this._isObjectReferencedInHistory(obj)) {
         continue;
       }
-      if (!this._isAttachedToScene(obj) && !this._isObjectReferencedInHistory(obj)) {
-        this._disposeDetachedRigState(obj);
-      }
+      this._disposeDetachedRigState(obj, disposedGeos, disposedMats);
     }
   }
 
@@ -1526,8 +1630,15 @@ export class SceneManager extends EventEmitter {
       if (cur.visible === false || cur.userData?.visible === false) {
         return false;
       }
-      if (this.collectionManager && typeof this.collectionManager.isCollectionEffectivelyVisible === 'function') {
-        const cid = this.collectionManager.objectToCollection?.get?.(cur.uuid);
+      if (
+        !cur.userData?.isSystemObject &&
+        !cur.userData?.isHelper &&
+        cur !== this.rootContainer &&
+        this.collectionManager &&
+        typeof this.collectionManager.getObjectCollectionId === 'function' &&
+        typeof this.collectionManager.isCollectionEffectivelyVisible === 'function'
+      ) {
+        const cid = this.collectionManager.getObjectCollectionId(cur);
         if (cid && !this.collectionManager.isCollectionEffectivelyVisible(cid)) {
           return false;
         }
@@ -1673,6 +1784,7 @@ export class SceneManager extends EventEmitter {
             activeBone: rigSystem.activeBone,
             editArmature: rigSystem.editArmature,
             editSkeleton: rigSystem.editSkeleton,
+            editBoneRestTransforms: rigSystem.editBoneRestTransforms ? new Map(rigSystem.editBoneRestTransforms) : null,
             isPoseMode: Boolean(rigSystem.isPoseMode),
             isEditBoneMode: Boolean(rigSystem.isEditBoneMode),
             isWeightPaintMode: Boolean(rigSystem.isWeightPaintMode),
@@ -1703,21 +1815,18 @@ export class SceneManager extends EventEmitter {
     }
 
     if (studio?._characterMixerRoot && this._isNodeWithinSubtree(object, studio._characterMixerRoot)) {
-      const wasRunning = Boolean(studio._currentAction && typeof studio._currentAction.isRunning === 'function'
-        ? studio._currentAction.isRunning()
-        : studio._currentAction);
-      const clipName = studio._currentAction?.getClip?.()?.name || null;
-      const actionTime = Number(studio._currentAction?.time) || 0;
-      if (studio._currentAction?.stop) studio._currentAction.stop();
-      if (!disposeResources) {
+      if (disposeResources) {
+        try { studio._currentAction?.stop?.(); } catch (_) {}
+        try { studio._characterMixer?.stopAllAction?.(); } catch (_) {}
+        try { studio._characterMixer?.uncacheRoot?.(studio._characterMixerRoot); } catch (_) {}
+      } else {
+        // Do NOT call action.stop() on undoable delete — detaching studio._characterMixer stops render ticks
+        // while preserving 100% of Three.js AnimationAction state (paused, time, enabled, fade, scheduled).
         object.userData = object.userData || {};
         object.userData._detachedStudioState = {
           characterMixer: studio._characterMixer,
           characterMixerRoot: studio._characterMixerRoot,
           currentAction: studio._currentAction,
-          wasRunning,
-          clipName,
-          actionTime,
         };
       }
       studio._characterMixer = null;
@@ -1767,43 +1876,7 @@ export class SceneManager extends EventEmitter {
       this._isLiveOwnerSlotOccupiedByOther(studio._characterMixerRoot, object)
     );
 
-    // 1. Atomically restore RigSystem state only when no other live rig owns RigSystem
-    if (stashedRigState && rigSystem && !rigSlotOccupiedByOther) {
-      rigSystem.activeCharacter = stashedRigState.activeCharacter;
-      rigSystem.activeSkeleton = stashedRigState.activeSkeleton;
-      rigSystem.activeBone = stashedRigState.activeBone;
-      rigSystem.editArmature = stashedRigState.editArmature;
-      rigSystem.editSkeleton = stashedRigState.editSkeleton;
-      rigSystem.isPoseMode = stashedRigState.isPoseMode;
-      rigSystem.isEditBoneMode = stashedRigState.isEditBoneMode;
-      rigSystem.isWeightPaintMode = stashedRigState.isWeightPaintMode;
-      rigSystem.weightPaintMesh = stashedRigState.weightPaintMesh;
-      rigSystem.isIKEnabled = stashedRigState.isIKEnabled;
-      if (rigSystem.ikChains && stashedRigState.ikChains) {
-        rigSystem.ikChains.clear();
-        for (const [k, v] of stashedRigState.ikChains.entries()) rigSystem.ikChains.set(k, v);
-      }
-      if (rigSystem.chainBlends && stashedRigState.chainBlends) {
-        rigSystem.chainBlends.clear();
-        for (const [k, v] of stashedRigState.chainBlends.entries()) rigSystem.chainBlends.set(k, v);
-      }
-      rigSystem.activeIKHandle = stashedRigState.activeIKHandle;
-    }
-
-    // 2. Restore Studio animation mixer only when no other live character owns it
-    if (stashedStudioState && studio && !studioMixerOccupiedByOther) {
-      studio._characterMixer = stashedStudioState.characterMixer;
-      studio._characterMixerRoot = stashedStudioState.characterMixerRoot;
-      studio._currentAction = stashedStudioState.currentAction;
-      if (stashedStudioState.wasRunning && studio._currentAction) {
-        try {
-          studio._currentAction.time = stashedStudioState.actionTime || 0;
-          studio._currentAction.play();
-        } catch (_) {}
-      }
-    }
-
-    // 3. Restore helpers with strict ownership & effective visibility checks
+    // 1. Restore helpers FIRST with strict ownership & effective visibility checks
     if (Array.isArray(stashedHelpers)) {
       for (const entry of stashedHelpers) {
         const { helper, parent, ownerTag, targetRoot } = entry || {};
@@ -1813,7 +1886,6 @@ export class SceneManager extends EventEmitter {
 
         if (ownerTag === 'rigSystem') {
           if (!rigSystem || rigSlotOccupiedByOther) {
-            // Another live rig now owns rigSystem.skeletonHelper — dispose superseded helper instead of clobbering or creating duplicate!
             this._disposeHelperSubtree(helper);
             continue;
           }
@@ -1829,7 +1901,7 @@ export class SceneManager extends EventEmitter {
           const host = parent || this.scene;
           if (host && !helper.parent) host.add(helper);
           rigSystem.ikHandlesGroup = helper;
-          helper.visible = effVisible && Boolean(rigSystem.isIKEnabled);
+          helper.visible = effVisible && Boolean(stashedRigState?.isIKEnabled ?? rigSystem.isIKEnabled);
         } else if (ownerTag === 'studio') {
           if (!studio || studioHelperOccupiedByOther) {
             this._disposeHelperSubtree(helper);
@@ -1849,6 +1921,66 @@ export class SceneManager extends EventEmitter {
           try { helper.update(); } catch (_) {}
         }
       }
+    }
+
+    // 2. Atomically restore RigSystem state AND real mode/gizmo infrastructure when no other live rig owns RigSystem
+    if (stashedRigState && rigSystem && !rigSlotOccupiedByOther) {
+      rigSystem.activeCharacter = stashedRigState.activeCharacter;
+      rigSystem.activeSkeleton = stashedRigState.activeSkeleton;
+      rigSystem.activeBone = stashedRigState.activeBone;
+      rigSystem.editArmature = stashedRigState.editArmature;
+      rigSystem.editSkeleton = stashedRigState.editSkeleton;
+      if (stashedRigState.editBoneRestTransforms) {
+        rigSystem.editBoneRestTransforms = new Map(stashedRigState.editBoneRestTransforms);
+      }
+      if (rigSystem.ikChains && stashedRigState.ikChains) {
+        rigSystem.ikChains.clear();
+        for (const [k, v] of stashedRigState.ikChains.entries()) rigSystem.ikChains.set(k, v);
+      }
+      if (rigSystem.chainBlends && stashedRigState.chainBlends) {
+        rigSystem.chainBlends.clear();
+        for (const [k, v] of stashedRigState.chainBlends.entries()) rigSystem.chainBlends.set(k, v);
+      }
+      rigSystem.activeIKHandle = stashedRigState.activeIKHandle;
+      rigSystem.isIKEnabled = Boolean(stashedRigState.isIKEnabled);
+
+      if (stashedRigState.isWeightPaintMode && typeof rigSystem.enableWeightPaintMode === 'function') {
+        rigSystem.isPoseMode = Boolean(stashedRigState.isPoseMode);
+        rigSystem.enableWeightPaintMode(
+          stashedRigState.weightPaintMesh || stashedRigState.activeCharacter || object,
+          stashedRigState.activeBone
+        );
+      } else if (stashedRigState.isEditBoneMode && typeof rigSystem.enterEditBoneMode === 'function') {
+        rigSystem.enterEditBoneMode(stashedRigState.editArmature || stashedRigState.activeCharacter || object);
+        if (stashedRigState.editBoneRestTransforms) {
+          rigSystem.editBoneRestTransforms = new Map(stashedRigState.editBoneRestTransforms);
+        }
+        if (stashedRigState.activeBone && typeof rigSystem.selectBone === 'function') {
+          rigSystem.selectBone(stashedRigState.activeBone);
+        }
+      } else if (stashedRigState.isPoseMode && typeof rigSystem.setPoseMode === 'function') {
+        rigSystem.setPoseMode(true, stashedRigState.activeCharacter || object);
+        if (stashedRigState.activeBone && typeof rigSystem.selectBone === 'function') {
+          rigSystem.selectBone(stashedRigState.activeBone);
+        }
+      } else {
+        rigSystem.isPoseMode = false;
+        rigSystem.isEditBoneMode = false;
+        rigSystem.isWeightPaintMode = false;
+        rigSystem.weightPaintMesh = null;
+      }
+
+      if (rigSystem.isIKEnabled && rigSystem.ikHandlesGroup) {
+        try { rigSystem.updateIKHandlesPositions?.(); } catch (_) {}
+      }
+      this._syncRigHelpersVisibility(object);
+    }
+
+    // 3. Restore Studio animation mixer verbatim (preserves paused/running/time/fade/enabled/scheduled state!)
+    if (stashedStudioState && studio && !studioMixerOccupiedByOther) {
+      studio._characterMixer = stashedStudioState.characterMixer;
+      studio._characterMixerRoot = stashedStudioState.characterMixerRoot;
+      studio._currentAction = stashedStudioState.currentAction;
     }
 
     delete object.userData._detachedRigHelpers;
