@@ -2100,7 +2100,7 @@ class BlenderStudioHTTPRequestHandler(SimpleHTTPRequestHandler):
                 "ok": True,
                 "status": "healthy",
                 "service": "hunger-studio",
-                "release": "hunger-motion@0.9.0-beta.1",
+                "release": "hunger-motion@0.9.0-beta.2",
                 "cloudEnabled": bool(CLOUD and CLOUD.config.enabled),
                 "telemetry": True,
                 "dist": os.path.basename(os.path.abspath(self.directory)) == 'dist',

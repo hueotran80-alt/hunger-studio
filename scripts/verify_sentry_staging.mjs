@@ -23,7 +23,7 @@ if (!health.sentryConfigured) {
 
 const eventId = Array.from({ length: 32 }, () => Math.floor(Math.random() * 16).toString(16)).join('');
 const payload = {
-  release: health.release || 'hunger-motion@0.9.0-beta.1',
+  release: health.release || 'hunger-motion@0.9.0-beta.2',
   environment: health.environment || 'staging',
   sessionId: 'sentry-smoke-check',
   events: [
@@ -37,7 +37,7 @@ const payload = {
         timestamp: Math.floor(Date.now() / 1000),
         platform: 'javascript',
         level: 'fatal',
-        release: health.release || 'hunger-motion@0.9.0-beta.1',
+        release: health.release || 'hunger-motion@0.9.0-beta.2',
         environment: health.environment || 'staging',
         tags: { subsystem: 'staging-smoke-check', workspace: 'motion', fatal: 'true' },
         exception: {

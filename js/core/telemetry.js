@@ -14,7 +14,7 @@
  * Sentry Envelope v7 format whenever `SENTRY_DSN` is configured server-side.
  */
 
-export const TELEMETRY_RELEASE = 'hunger-motion@0.9.0-beta.1';
+export const TELEMETRY_RELEASE = 'hunger-motion@0.9.0-beta.2';
 const MAX_QUEUED_EVENTS = 25;
 const MAX_ERROR_STACK_CHARS = 1800;
 
